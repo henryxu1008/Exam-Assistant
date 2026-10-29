@@ -79,6 +79,13 @@ App({
     if (params.subject) store.setCurrentSubject(params.subject)
     params.__stamp = Date.now()
     this.globalData.practiceParams = params
+    // 若练习页已经是当前激活页，switchTab 不会重触发 onShow，需直接消费参数
+    const pages = getCurrentPages()
+    const cur = pages[pages.length - 1]
+    if (cur && cur.route === 'pages/practice/practice' && typeof cur.loadPending === 'function') {
+      cur.loadPending()
+      return
+    }
     // 练习页是 tabBar 页，只能 switchTab；navigateTo 到 tabBar 页必然失败，无需兜底
     wx.switchTab({ url: '/pages/practice/practice' })
   }

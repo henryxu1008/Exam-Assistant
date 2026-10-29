@@ -25,6 +25,9 @@ const https = require('https')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
+const db = cloud.database()
+const USAGE = db.collection('aiTutorUsage') // 按日累计上游调用次数，供预算护栏使用
+
 const CONFIG = {
   // 默认关闭：未显式开启或缺失密钥时，端上回落本地引擎
   enabled: (process.env.AI_TUTOR_ENABLED || 'false') === 'true',
@@ -36,7 +39,8 @@ const CONFIG = {
   maxTokens: 800,
   temperature: 0.5,
   maxHistory: 12, // 最多携带的历史轮次
-  maxCharsPerMsg: 2000 // 单条消息最长字符数
+  maxCharsPerMsg: 2000, // 单条消息最长字符数
+  dailyCallCap: Number(process.env.AI_TUTOR_DAILY_CAP || 200) // 每日上游调用次数上限，可由环境变量 AI_TUTOR_DAILY_CAP 覆盖
 }
 
 /** 上游请求超时（毫秒）：不设超时会一直挂起，耗尽云函数执行时间 */
@@ -142,24 +146,58 @@ function callLLM(messages, subject) {
   })
 }
 
+/** 当天日期 key（本地时区，格式 yyyy-mm-dd） */
+function todayKey() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 /**
- * 预算护栏（待填）：真实实现需在云数据库维护按日累计的调用次数/花费，
- * 超过上限时返回 false，让端上回落本地引擎，避免未决策前产生不可控费用。
- * 这里先留口子，CONFIG 里预留 dailyCostCap 供届时读取。
+ * 预算护栏：按日在云数据库集合 aiTutorUsage 累计上游调用次数，
+ * 超过当日上限（CONFIG.dailyCallCap，可由环境变量 AI_TUTOR_DAILY_CAP 覆盖）时返回 false，
+ * 让端上回落本地引擎，避免产生不可控费用。计数异常（如集合未建）时放行，不阻断正常答疑。
  */
-function withinBudget() {
-  // TODO: 接入持久化计数器（如集合 aiTutorUsage 按日期累计）后启用
-  return true
+async function withinBudget() {
+  const cap = Number(CONFIG.dailyCallCap) || 0
+  if (!cap || cap <= 0) return true
+  try {
+    const res = await USAGE.where({ date: todayKey() }).limit(1).get()
+    const doc = res.data && res.data[0]
+    return (doc ? doc.count : 0) < cap
+  } catch (e) {
+    return true
+  }
+}
+
+/** 成功调用上游大模型后累计当日用量；失败静默忽略，不影响主流程 */
+async function addUsage() {
+  const key = todayKey()
+  try {
+    const res = await USAGE.where({ date: key }).limit(1).get()
+    const doc = res.data && res.data[0]
+    if (doc) {
+      await USAGE.doc(doc._id).update({ data: { count: db.command.inc(1), updatedAt: Date.now() } })
+    } else {
+      await USAGE.add({ data: { date: key, count: 1, createdAt: Date.now(), updatedAt: Date.now() } })
+    }
+  } catch (e) {
+    // 计数失败不影响主流程
+  }
 }
 
 exports.main = async (event) => {
   if (!CONFIG.enabled) return { content: null, disabled: true }
-  if (!withinBudget()) return { content: null, disabled: true, reason: 'BUDGET' }
+  if (!(await withinBudget())) return { content: null, disabled: true, reason: 'BUDGET' }
 
   const { clean, subj } = sanitize(event.messages, event.subject)
   if (!clean.length) return { content: null, disabled: true }
 
   const content = await callLLM(clean, subj)
+  // 仅在有真实上游响应后累计用量，用于预算护栏
+  if (content) addUsage().catch(() => {})
   // 只回传 content，其余内部字段一律不下发到端上
   return { content: content || null }
 }

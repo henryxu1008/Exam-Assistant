@@ -55,21 +55,22 @@ Page({
 
   onShow() {
     if (!user.requireLogin()) return
-    // 先消费其他页面携带进来的参数（tabBar 页不支持 URL 传参）。
-    // 这些参数本身已带 subject / chapter，必须优先于「科目同步重建」——否则像
-    // 「学情报告 -> 切到科目 B 的章节专练」这类带着 chapter 的入口，会被科目守卫
-    // 以「整科顺序」重建并提前 return，从而把章节参数吞掉。
-    const pending = app.globalData.practiceParams
-    if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
-      this._stamp = pending.__stamp
-      this._init(pending)
-      return
-    }
+    // 消费从其他页面携带进来的参数（tabBar 页不支持 URL 传参）
+    this.loadPending()
     // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
     // 章节可能跨科失效故降级为整科顺序练习
     if (this._params && this._params.subject !== store.getCurrentSubject()) {
       const mode = this._params.mode === 'chapter' ? 'all' : this._params.mode
       this._init({ mode, chapter: '', ids: null })
+    }
+  },
+
+  /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
+  loadPending() {
+    const pending = app.globalData.practiceParams
+    if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
+      this._stamp = pending.__stamp
+      this._init(pending)
     }
   },
 

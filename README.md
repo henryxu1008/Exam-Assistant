@@ -77,7 +77,7 @@ miniprogram-4/
 
 > 需要 `unionid` 时，在云函数 `userLogin` 的环境变量中配置 `APP_SECRET`，函数会用 `code` 调 `jscode2session` 换取；不配置则用云开发原生 `OPENID`，不影响登录。
 
-> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏 `withinBudget()` 暂为占位，接入真实费用前需在云数据库维护按日累计计数。
+> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）、`AI_TUTOR_DAILY_CAP`（可选，每日上游调用次数上限，默认 200）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏已落地：每次成功调用上游大模型后，在云数据库集合 `aiTutorUsage`（按日期 `date` 累计 `count`）计数，超过上限即回落本地引擎，避免产生不可控费用。
 
 ## 题库
 
@@ -139,6 +139,7 @@ miniprogram-4/
 ## 上线前核对
 
 - **`users` 集合建索引**：控制台给 `openid`、`token` 各建一个索引，否则用户量增长后按 token 查询会全表扫描。
+- **`aiTutorUsage` 集合（启用真实大模型时才需要）**：首次调用 `aiTutor` 会由云函数自动创建；如想避免首次写入延迟，可提前在控制台新建集合 `aiTutorUsage` 并给 `date` 建索引。预算护栏按 `date` 累计每日次数，超出 `AI_TUTOR_DAILY_CAP` 即回落本地引擎。
 - **协议文本**：`utils/agreement.js` 中的主体名称与联系方式是占位内容，需替换；并与微信后台「用户隐私保护指引」保持一致，两者不一致会被驳回。
 - **隐私接口**：本小程序未调用位置、相册等隐私接口，暂无需在指引中声明。
 - 学情报告的 Canvas 图表在部分低版本基础库上可能需要适配。
