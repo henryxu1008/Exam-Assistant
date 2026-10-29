@@ -1,0 +1,84 @@
+<!--pages/mistakes/mistakes.wxml-->
+<view class="page mistakes">
+  <!-- 概览 -->
+  <view class="card head-card">
+    <view class="row between">
+      <view>
+        <view class="card-title">错题本</view>
+        <view class="card-sub">共 {{counts.all}} 道错题 · {{counts.stubborn}} 道顽固 · {{counts.due}} 道待复习</view>
+      </view>
+      <view class="head-badge">
+        <text class="head-badge-num">{{counts.all}}</text>
+        <text class="head-badge-unit">题</text>
+      </view>
+    </view>
+    <view class="row head-actions">
+      <view class="mini-btn" bindtap="redoDue">练待复习</view>
+      <view class="mini-btn" bindtap="redoStubborn">练顽固</view>
+      <view class="mini-btn primary" bindtap="redoAll">全部重练</view>
+    </view>
+  </view>
+
+  <!-- 分类 -->
+  <view class="tabs">
+    <view
+      class="tab {{tab === item.key ? 'on' : ''}}"
+      wx:for="{{tabs}}"
+      wx:key="key"
+      data-key="{{item.key}}"
+      bindtap="onTab"
+    >
+      {{item.label}}<text class="tab-num">{{item.count}}</text>
+    </view>
+  </view>
+
+  <!-- 科目筛选 -->
+  <scroll-view class="chips" scroll-x>
+    <view class="chip {{subject === '' ? 'on' : ''}}" data-subject="" bindtap="onSubjectChange">全部</view>
+    <view
+      class="chip {{subject === item.name ? 'on' : ''}}"
+      wx:for="{{subjects}}"
+      wx:key="name"
+      data-subject="{{item.name}}"
+      bindtap="onSubjectChange"
+    >{{item.name}}</view>
+  </scroll-view>
+
+  <!-- 列表 -->
+  <view class="q-item" wx:for="{{list}}" wx:key="id">
+    <view class="row q-head">
+      <text class="tag tag-gray">{{item.subject}}</text>
+      <text class="tag">{{item.chapter}}</text>
+      <text class="tag tag-gray">{{item.typeName}}</text>
+      <text class="q-wrong">错 {{item.wrong}} 次</text>
+    </view>
+
+    <view class="q-stem ellipsis-2">{{item.stem}}</view>
+
+    <view class="row q-answer">
+      <text class="q-answer-label">正确答案</text>
+      <text class="q-answer-text">{{item.answerText}}</text>
+    </view>
+
+    <view class="row q-meta">
+      <text class="small muted grow">{{item.levelText}} · 答 {{item.attempts}} 次 / 对 {{item.right}} 次 · {{item.lastText}}</text>
+      <text class="tag tag-orange" wx:if="{{item.due}}">待复习</text>
+    </view>
+
+    <view class="row q-actions">
+      <view class="act" data-id="{{item.id}}" bindtap="onRedo">重练</view>
+      <view class="act" data-id="{{item.id}}" bindtap="onAi">AI 讲解</view>
+      <view class="act" data-id="{{item.id}}" bindtap="onStar">{{item.starred ? '取消收藏' : '收藏'}}</view>
+      <view class="act primary" data-id="{{item.id}}" bindtap="onMaster">已掌握</view>
+    </view>
+  </view>
+
+  <!-- 空状态 -->
+  <view class="empty" wx:if="{{!total}}">
+    <view class="empty-icon">✓</view>
+    <view class="empty-title">{{emptyTip}}</view>
+    <view class="btn btn-primary btn-round empty-btn" bindtap="goPractice">去刷一组新题</view>
+  </view>
+
+  <view class="foot-tip small muted" wx:if="{{total}}">连续答对可提升掌握等级，标记「已掌握」后移出本页</view>
+</view>
