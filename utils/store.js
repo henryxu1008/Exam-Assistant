@@ -9,7 +9,7 @@ const bank = require('./questions.js')
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
 /** 当前数据结构版本 */
-const CURRENT_VERSION = 2
+const CURRENT_VERSION = 3
 
 /**
  * 迁移函数表：MIGRATIONS[n] 负责把版本 n 的数据升级到 n + 1
@@ -25,7 +25,21 @@ const MIGRATIONS = {
       daily[key] = d ? Object.assign({}, d, { subjects: {} }) : d
     })
     return Object.assign({}, data, { daily: daily, version: 2 })
+  },
+  // v2 -> v3：引入 AnswerAttempt 不可变作答日志与练习 Session 状态机（Issue 2/3）。
+  // 旧聚合记录（records）保留为派生来源；不可变流水无法由聚合反推，不伪造历史。
+  2: (data) => {
+    const next = Object.assign({}, data)
+    if (!Array.isArray(next.attempts)) next.attempts = []
+    if (!next.practiceSession) next.practiceSession = null
+    next.version = 3
+    return next
   }
+}
+
+/** 生成带前缀的唯一 ID（会话 / 作答 / 客户端操作） */
+function newId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
 /** 掌握等级对应的复习间隔（天），艾宾浩斯式简化版 */
@@ -39,7 +53,9 @@ const DAY = 24 * 60 * 60 * 1000
 function getDefaultState() {
   return {
     version: CURRENT_VERSION,
-    records: {}, // { qid: Record }
+    records: {}, // { qid: Record } 由 attempts 派生维护的聚合
+    attempts: [], // 不可变作答流水（AnswerAttempt），只追加不覆盖
+    practiceSession: null, // 当前练习 Session 状态机实例
     daily: {}, // { '2026-10-29': DailyStat }
     settings: {
       dailyGoal: 30,
@@ -518,6 +534,118 @@ function clearScope(openid) {
   if (openid) userScope = prev
 }
 
+/* ============================================================
+ * 练习 Session 状态机 + AnswerAttempt 不可变流水（Issue 2 / Issue 3）
+ * ============================================================
+ * Session 状态：created -> in_progress -> completed
+ *   - 每道题有独立 attemptId；同一 clientOpId 重复提交只会落库一次（幂等）
+ *   - 已提交的题在会话内回看为只读，不允许再次提交
+ *   - 主动重练会创建新 Session（新 attemptId 序列）
+ */
+
+/** 当前/最新一次练习 Session；无则返回 null */
+function getPracticeSession() {
+  return load().practiceSession || null
+}
+
+/**
+ * 创建一次练习 Session（created/in_progress）。
+ * @param {Object} opt { mode, subject, questionIds }
+ */
+function createPracticeSession(opt) {
+  const s = load()
+  const session = {
+    id: newId('ps'),
+    mode: (opt && opt.mode) || 'all',
+    subject: (opt && opt.subject) || '',
+    questionIds: (opt && opt.questionIds) || [],
+    status: 'in_progress',
+    createdAt: Date.now(),
+    completedAt: 0,
+    currentIndex: 0,
+    submitted: {} // qid -> { attemptId, clientOpId }
+  }
+  s.practiceSession = session
+  persist()
+  return session
+}
+
+/** 更新会话当前进度（前后翻页/自动下一题/暂停恢复） */
+function updatePracticeSession(patch) {
+  const s = load()
+  if (!s.practiceSession) return null
+  s.practiceSession = Object.assign({}, s.practiceSession, patch || {})
+  persist()
+  return s.practiceSession
+}
+
+/** 将会话标记为 completed */
+function completePracticeSession() {
+  return updatePracticeSession({ status: 'completed', completedAt: Date.now() })
+}
+
+/** 主动重练：作废当前会话并新建（生成新 attemptId 序列） */
+function restartPracticeSession(opt) {
+  return createPracticeSession(opt)
+}
+
+/** 读取不可变作答流水（AnswerAttempt 列表） */
+function getAttempts() {
+  return (load().attempts || []).slice()
+}
+
+/**
+ * 幂等提交一次作答。
+ * @param {Object} question 题目对象
+ * @param {Array} selected 用户作答
+ * @param {Boolean} isCorrect 判分结果
+ * @param {Number} costMs 用时
+ * @param {String} clientOpId 客户端操作 ID（同一操作的重复提交用同一 ID 实现幂等）
+ * @returns {{record: Object, attempt: Object|null, dup: Boolean}}
+ */
+function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
+  if (!question || !question.id) {
+    throw new TypeError('submitAttempt: question 非法')
+  }
+  const s = load()
+  const session = s.practiceSession
+  const opId = clientOpId || newId('op')
+
+  // 幂等：同一会话内相同 clientOpId 已提交过，直接返回已有结果，不重复落库/计数
+  if (session && session.submitted && session.submitted[question.id] && session.submitted[question.id].clientOpId === opId) {
+    return { record: getRecord(question.id), attempt: null, dup: true }
+  }
+
+  const attemptId = newId('at')
+  const attempt = {
+    id: attemptId,
+    sessionId: session ? session.id : '',
+    questionId: question.id,
+    questionVersionId: question.version || 'v1', // Issue 5 接入题目版本后填充
+    selected: Array.isArray(selected) ? selected.slice() : selected,
+    answer: question.answer,
+    score: isCorrect ? 1 : 0,
+    costMs: costMs || 0,
+    clientOpId: opId,
+    createdAt: Date.now()
+  }
+  // 不可变流水：仅追加
+  if (!s.attempts) s.attempts = []
+  s.attempts.push(attempt)
+
+  // 派生聚合统计（保持与旧 recordAnswer 一致的口径）
+  const agg = recordAnswer(question, isCorrect, costMs)
+
+  // 标记本题本会话已提交
+  if (!s.practiceSession) s.practiceSession = null
+  if (s.practiceSession) {
+    if (!s.practiceSession.submitted) s.practiceSession.submitted = {}
+    s.practiceSession.submitted[question.id] = { attemptId: attemptId, clientOpId: opId }
+  }
+  persist()
+  return { record: agg.record, attempt: attempt, dup: false }
+}
+
 module.exports = {
   REVIEW_INTERVALS,
   todayKey,
@@ -547,5 +675,13 @@ module.exports = {
   getAiMessages,
   pushAiMessage,
   clearAiMessages,
-  clearAll
+  clearAll,
+  // Issue 2/3：练习 Session 状态机 + AnswerAttempt 不可变流水
+  getPracticeSession,
+  createPracticeSession,
+  updatePracticeSession,
+  completePracticeSession,
+  restartPracticeSession,
+  getAttempts,
+  submitAttempt
 }

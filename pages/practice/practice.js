@@ -95,8 +95,6 @@ Page({
       return // 同一组参数重复进入时不重置进度
     }
     this._params = snapshot
-    // 换一组题时清空本组作答快照
-    this._snapshots = {}
 
     wx.setNavigationBarTitle({ title: MODE_TITLES[mode] })
     const queue = this._buildQueue(snapshot)
@@ -112,9 +110,10 @@ Page({
         finished: false,
         summary: null,
         emptyTip: this._emptyTip(mode)
-      })
-      return
-    }
+        })
+        this._sessionId = null
+        return
+        }
     this.setData({
       mode,
       subject,
@@ -129,6 +128,13 @@ Page({
       errorIds: [],
       emptyTip: ''
     })
+    // 新开一轮练习：创建 Session 状态机（created/in_progress），用于幂等提交与只读回看
+    const session = store.createPracticeSession({
+      mode,
+      subject,
+      questionIds: queue.map((item) => item.id)
+    })
+    this._sessionId = session.id
     this._load(0)
   },
 
@@ -171,11 +177,13 @@ Page({
     if (!queue[idx]) return
     const question = queue[idx]
     const record = store.getRecord(question.id)
-    // 本组已作答过的题：回看时还原上次作答与解析，且不允许重复提交
-    const done = (this._snapshots || {})[question.id]
+    // 本会话内已提交的题：回看为只读，从不可变流水恢复作答，不允许再次提交
+    const session = store.getPracticeSession()
+    const sub = session && session.submitted ? session.submitted[question.id] : null
     let selected = []
-    if (done) {
-      selected = done.selected.slice()
+    if (sub) {
+      const att = (store.getAttempts().find((a) => a.id === sub.attemptId)) || null
+      selected = att ? att.selected.slice() : []
     } else if (question.type === 'fill') {
       // 填空题按空位数预置空字符串，保证 selected 与 answer 等长
       selected = (question.answer || []).map(() => '')
@@ -184,8 +192,8 @@ Page({
       idx,
       question,
       selected,
-      submitted: !!done,
-      showExplain: done ? true : store.getSettings().aiExplain !== false,
+      submitted: !!sub,
+      showExplain: sub ? true : store.getSettings().aiExplain !== false,
       showAi: false,
       aiExplain: null,
       canSubmit: false,
@@ -292,10 +300,10 @@ Page({
     const correct = bank.judge(q.type, selected, q.answer)
     const cost = Date.now() - (this._startAt || Date.now())
 
-    store.recordAnswer(q, correct, cost)
-    // 记录本组作答快照，回看该题时用于还原结果并阻止重复作答
-    this._snapshots = this._snapshots || {}
-    this._snapshots[q.id] = { selected: selected, correct: correct }
+    // 幂等提交：同一次会话内同一题用同一 clientOpId，重复点击只落库一次（不重复计数）
+    const session = store.getPracticeSession()
+    const clientOpId = session ? `${session.id}:${q.id}` : undefined
+    const res = store.submitAttempt(q, selected, correct, cost, clientOpId)
 
     const errorIds = this.data.errorIds.slice()
     if (!correct && errorIds.indexOf(q.id) === -1) errorIds.push(q.id)
@@ -303,12 +311,12 @@ Page({
     this.setData({
       submitted: true,
       showExplain: true,
-      sessionTotal: this.data.sessionTotal + 1,
-      sessionCorrect: this.data.sessionCorrect + (correct ? 1 : 0),
+      sessionTotal: this.data.sessionTotal + (res.dup ? 0 : 1),
+      sessionCorrect: this.data.sessionCorrect + (correct && !res.dup ? 1 : 0),
       errorIds
     })
 
-    if (store.getSettings().autoNext && correct) {
+    if (store.getSettings().autoNext && correct && !res.dup) {
       if (this._timer) clearTimeout(this._timer)
       const self = this
       this._timer = setTimeout(() => {
@@ -344,8 +352,13 @@ Page({
     this.setData({ showAi: false })
   },
 
-  /* wxml 里 AI 面板用 catchtap 阻断冒泡，无需处理事件，保留空实现供绑定 */
-  onStop() {},
+  /* 进入后台/暂停：持久化当前进度到会话，便于恢复（Issue 2） */
+  onStop() {
+    if (store.getPracticeSession()) {
+      store.updatePracticeSession({ currentIndex: this.data.idx, status: 'in_progress' })
+    }
+    store.flush()
+  },
 
   /** 相似题加入队列 */
   onAddSimilar(e) {

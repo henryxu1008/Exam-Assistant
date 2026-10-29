@@ -83,7 +83,7 @@ test('迁移：v1 数据升级为 v2 且不丢数据', () => {
   }
   const store = freshStore(seed)
   const state = store.load()
-  assert.strictEqual(state.version, 2) // 已迁移
+  assert.strictEqual(state.version, 3) // 已迁移（v1->v2->v3）
   assert.strictEqual(store.getStudySummary().days, 1) // 日统计保留
 })
 
@@ -100,7 +100,7 @@ test('迁移幂等：已是 v2 的数据重复加载不会二次迁移/重复计
   }
   const store = freshStore(seed)
   const state = store.load()
-  assert.strictEqual(state.version, 2)
+  assert.strictEqual(state.version, 3)
   assert.strictEqual(store.getStudySummary().days, 1)
   assert.strictEqual(store.getStudySummary().timeMs, 2000)
 })
@@ -109,7 +109,7 @@ test('迁移失败回退默认状态：损坏数据不抛错', () => {
   const seed = 'not-an-object'
   const store = freshStore(seed)
   const state = store.load()
-  assert.strictEqual(state.version, 2)
+  assert.strictEqual(state.version, 3)
   assert.deepStrictEqual(state.records, {})
 })
 
@@ -148,4 +148,77 @@ test('clearScope 仅删除指定用户数据，不影响其他账号', () => {
   assert.strictEqual(Object.keys(store.getRecords()).length, 0) // A 已清空
   store.setUserScope('userB')
   assert.strictEqual(Object.keys(store.getRecords()).length, 1) // B 仍在
+})
+
+/* ---------------- Issue 2/3：练习 Session 状态机 + AnswerAttempt 幂等 ---------------- */
+
+test('createPracticeSession 进入 in_progress 并可读取', () => {
+  const store = freshStore()
+  const session = store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['a', 'b'] })
+  assert.strictEqual(session.status, 'in_progress')
+  assert.strictEqual(store.getPracticeSession().id, session.id)
+})
+
+test('submitAttempt 同一 clientOpId 重试只落库一次', () => {
+  const store = freshStore()
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  const question = q('q1', 'ch1')
+  const first = store.submitAttempt(question, ['A'], true, 100, 'op-1')
+  assert.strictEqual(first.dup, false)
+  assert.strictEqual(first.record.attempts, 1)
+  assert.strictEqual(store.getAttempts().length, 1)
+
+  // 重复点击提交：相同 clientOpId -> 幂等，不重复计数
+  const second = store.submitAttempt(question, ['A'], true, 100, 'op-1')
+  assert.strictEqual(second.dup, true)
+  assert.strictEqual(second.record.attempts, 1) // 次数未增加
+  assert.strictEqual(store.getAttempts().length, 1) // 流水未新增
+})
+
+test('submitAttempt 不同 clientOpId 视为新作答（次数累加）', () => {
+  const store = freshStore()
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  const question = q('q1', 'ch1')
+  store.submitAttempt(question, ['A'], true, 100, 'op-1')
+  store.submitAttempt(question, ['B'], false, 100, 'op-2') // 真的重做
+  assert.strictEqual(store.getRecord('q1').attempts, 2)
+  assert.strictEqual(store.getAttempts().length, 2)
+})
+
+test('已提交题在本会话内只读：submitted 标记存在', () => {
+  const store = freshStore()
+  const session = store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  store.submitAttempt(q('q1', 'ch1'), ['A'], true, 100, 'op-1')
+  assert.ok(session.submitted['q1'])
+  assert.ok(store.getPracticeSession().submitted['q1'])
+})
+
+test('主动重练生成新 Session（新 attemptId 序列）', () => {
+  const store = freshStore()
+  const s1 = store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  store.submitAttempt(q('q1', 'ch1'), ['A'], true, 100, 'op-1')
+  const s2 = store.restartPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  assert.notStrictEqual(s1.id, s2.id)
+  assert.strictEqual(Object.keys(s2.submitted || {}).length, 0) // 新会话未提交任何题
+})
+
+test('completePracticeSession 将状态置为 completed', () => {
+  const store = freshStore()
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  const done = store.completePracticeSession()
+  assert.strictEqual(done.status, 'completed')
+  assert.ok(done.completedAt > 0)
+})
+
+test('AnswerAttempt 字段完整（不可变流水）', () => {
+  const store = freshStore()
+  store.createPracticeSession({ mode: 'weak', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  const question = q('q1', 'ch1')
+  store.submitAttempt(question, ['A'], true, 123, 'op-x')
+  const att = store.getAttempts()[0]
+  assert.strictEqual(att.questionId, 'q1')
+  assert.strictEqual(att.clientOpId, 'op-x')
+  assert.strictEqual(att.score, 1)
+  assert.strictEqual(att.costMs, 123)
+  assert.ok(att.id) // 唯一作答 ID（被 session.submitted.attemptId 引用）
 })

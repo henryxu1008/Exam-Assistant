@@ -122,6 +122,8 @@ miniprogram-4/
 
 **本地数据隔离（Issue 1）**：`store.js` 按可信 `openid` 命名空间存储，账号 A 登出、账号 B 登录后无法读取 A 的数据；首启动会把旧版全局 key 一次性迁移到对应用户命名空间。会话校验以**服务端令牌验证为主**（`userProfile` 校验 token 是否仍有效，覆盖撤销/过期/跨设备失效），不再仅依赖 `wx.checkSession`；断网无云环境时保留本地会话，避免误踢出。
 
+**练习状态机与不可变作答（Issue 2 / Issue 3）**：每轮练习创建 `practiceSession`（状态 `created → in_progress → completed`），每题绑定 `attemptId`，以 `clientOpId` 实现**幂等提交**（重复点击只落库一次、不重复计数）；已提交题在会话内回看为只读，主动重练生成新 Session。单次作答作为不可变事实追加到 `attempts[]`（AnswerAttempt），聚合统计由事件派生。详见 `docs/adr/0003-answer-attempt-domain.md`。
+
 **云端**（云开发数据库集合 `users`）
 
 | 字段 | 说明 |
