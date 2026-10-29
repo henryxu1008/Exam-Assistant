@@ -167,6 +167,18 @@ GitHub Actions 在 `.github/workflows/ci.yml`：PR 中自动执行 `npm run lint
 
 **风险 / 回滚**：测试与 lint 为纯增量，不影响线上小程序；若 CI 误拦，回退对应提交即可，小程序代码本身未被改动。
 
+## 架构演进（Architecture V2）
+
+`Issue 1–4` 已落地（见上方说明）：本地测试/CI、按用户隔离与会话安全、练习状态机与 AnswerAttempt 领域模型。
+
+`Issue 5–8` 涉及后端（动态题库 / Go 模块化单体 / 云端同步 / AI 服务端），需 PostgreSQL、Go、Docker 等环境，
+本地暂以 **ADR + 数据契约** 形式交付，落地实现待后端环境就绪：
+
+- `docs/adr/0005-dynamic-question-bank.md`：动态题库、题目版本与审核发布
+- `docs/adr/0006-go-modular-monolith.md`：Go 模块化单体与 OpenAPI 契约
+- `docs/adr/0007-cloud-sync-offline-queue.md`：云端同步、离线队列与多设备一致性
+- `docs/adr/0008-ai-tutor-server.md`：AI Tutor 服务端适配、分级提示与评测
+
 ## 许可
 
 MIT
