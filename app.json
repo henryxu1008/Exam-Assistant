@@ -1,0 +1,49 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/practice/practice",
+    "pages/mistakes/mistakes",
+    "pages/ai/ai",
+    "pages/profile/profile",
+    "pages/analysis/analysis",
+    "pages/login/login"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTitleText": "备考刷题助手",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#F5F7FB"
+  },
+  "tabBar": {
+    "color": "#98A1B3",
+    "selectedColor": "#3D6BFF",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/practice/practice",
+        "text": "刷题"
+      },
+      {
+        "pagePath": "pages/mistakes/mistakes",
+        "text": "错题本"
+      },
+      {
+        "pagePath": "pages/ai/ai",
+        "text": "AI助教"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

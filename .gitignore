@@ -1,0 +1,21 @@
+# 依赖目录
+node_modules/
+miniprogram_npm/
+
+# 构建产物
+dist/
+.build/
+
+# 小程序私有配置（含本地路径、个人编译条件等）
+project.private.config.json
+
+# 日志
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
