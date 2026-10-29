@@ -1,0 +1,92 @@
+<view class="qc" wx:if="{{question}}">
+  <view class="qc-head">
+    <view class="row wrap">
+      <text class="tag">{{typeName}}</text>
+      <text class="tag tag-gray">{{question.subject}}</text>
+      <text class="tag tag-gray">{{question.chapter}}</text>
+      <text class="tag tag-orange">{{levelText}}</text>
+    </view>
+    <view class="qc-star {{starred ? 'on' : ''}}" bindtap="onStar">{{starred ? '★' : '☆'}}</view>
+  </view>
+
+  <view class="qc-stem">
+    <text class="qc-index" wx:if="{{total > 0}}">{{index + 1}}/{{total}}</text>
+    {{question.stem}}
+  </view>
+
+  <!-- 填空题 -->
+  <view class="qc-blanks" wx:if="{{type === 'fill'}}">
+    <view class="qc-blank-row" wx:for="{{blanks}}" wx:key="index">
+      <text class="qc-blank-label">第 {{item.index + 1}} 空</text>
+      <input
+        class="qc-blank-input {{item.state}}"
+        value="{{item.value}}"
+        placeholder="请输入答案"
+        placeholder-class="qc-blank-ph"
+        disabled="{{submitted}}"
+        data-index="{{item.index}}"
+        bindinput="onFillInput"
+      />
+      <text class="qc-blank-ans" wx:if="{{submitted && item.state === 'wrong'}}">{{item.answerText}}</text>
+    </view>
+  </view>
+
+  <!-- 排序题 -->
+  <block wx:elif="{{type === 'sort'}}">
+    <view class="qc-sort-head">
+      <text class="qc-sort-title">我的排序</text>
+      <text class="qc-sort-clear" wx:if="{{!submitted && sortedList.length}}" bindtap="onSortClear">清空重排</text>
+    </view>
+    <view class="qc-sort-list">
+      <view class="qc-sort-item" wx:for="{{sortedList}}" wx:key="key">
+        <text class="qc-sort-no">{{item.order}}</text>
+        <text class="qc-sort-text">{{item.text}}</text>
+        <block wx:if="{{!submitted}}">
+          <text class="qc-sort-op" data-action="up" data-index="{{index}}" bindtap="onSortMove">↑</text>
+          <text class="qc-sort-op" data-action="down" data-index="{{index}}" bindtap="onSortMove">↓</text>
+          <text class="qc-sort-op del" data-action="remove" data-index="{{index}}" bindtap="onSortMove">✕</text>
+        </block>
+      </view>
+      <view class="qc-sort-empty" wx:if="{{!sortedList.length}}">点击下方选项，按你认为的顺序依次加入</view>
+    </view>
+
+    <view class="qc-options qc-sort-pool">
+      <view
+        wx:for="{{options}}"
+        wx:key="key"
+        class="qc-option {{item.state}}"
+        data-key="{{item.key}}"
+        bindtap="onSelect"
+      >
+        <view class="qc-key">{{item.key}}</view>
+        <view class="qc-text">{{item.text}}</view>
+        <view wx:if="{{item.order}}" class="qc-sort-badge">{{item.order}}</view>
+        <view wx:if="{{item.icon}}" class="qc-icon">{{item.icon}}</view>
+      </view>
+    </view>
+  </block>
+
+  <!-- 单选 / 多选 / 判断 / 不定项 -->
+  <view class="qc-options" wx:else>
+    <view
+      wx:for="{{options}}"
+      wx:key="key"
+      class="qc-option {{item.state}}"
+      data-key="{{item.key}}"
+      bindtap="onSelect"
+    >
+      <view class="qc-key">{{item.key}}</view>
+      <view class="qc-text">{{item.text}}</view>
+      <view wx:if="{{item.icon}}" class="qc-icon">{{item.icon}}</view>
+    </view>
+  </view>
+
+  <view wx:if="{{submitted}}" class="qc-result {{isRight ? 'right' : 'wrong'}}">
+    <text class="qc-result-text">{{resultText}}</text>
+    <view class="qc-ai" bindtap="onAiTap">
+      <text class="qc-ai-logo">AI</text>
+      <text>智能细致讲解</text>
+      <text class="qc-ai-arrow">›</text>
+    </view>
+  </view>
+</view>

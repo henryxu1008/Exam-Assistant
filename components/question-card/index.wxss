@@ -1,0 +1,344 @@
+.qc {
+  background: #ffffff;
+  border-radius: 24rpx;
+  padding: 28rpx;
+  box-shadow: 0 8rpx 28rpx rgba(31, 39, 51, 0.06);
+}
+
+.qc-head {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.qc-star {
+  font-size: 40rpx;
+  line-height: 36rpx;
+  color: #c8cfdd;
+  padding-left: 16rpx;
+}
+
+.qc-star.on {
+  color: #ffb020;
+}
+
+.qc-stem {
+  margin-top: 20rpx;
+  font-size: 32rpx;
+  line-height: 52rpx;
+  color: #1f2733;
+  font-weight: 500;
+}
+
+.qc-index {
+  display: inline-block;
+  margin-right: 12rpx;
+  padding: 2rpx 12rpx;
+  border-radius: 8rpx;
+  background: #eef2ff;
+  color: #3d6bff;
+  font-size: 22rpx;
+  vertical-align: 4rpx;
+}
+
+.qc-options {
+  margin-top: 28rpx;
+}
+
+.qc-option {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  padding: 22rpx 20rpx;
+  border-radius: 16rpx;
+  background: #f7f9fc;
+  margin-bottom: 18rpx;
+  border: 2rpx solid transparent;
+}
+
+.qc-option:last-child {
+  margin-bottom: 0;
+}
+
+.qc-key {
+  width: 44rpx;
+  height: 44rpx;
+  line-height: 44rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #5a6478;
+  font-size: 26rpx;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.qc-text {
+  flex: 1;
+  margin-left: 16rpx;
+  font-size: 28rpx;
+  line-height: 44rpx;
+  color: #333c4e;
+}
+
+.qc-icon {
+  width: 40rpx;
+  text-align: center;
+  font-size: 30rpx;
+  font-weight: 700;
+  margin-top: 6rpx;
+}
+
+.qc-option.picked {
+  background: #eaf0ff;
+  border-color: #b7c8ff;
+}
+
+.qc-option.picked .qc-key {
+  background: #3d6bff;
+  color: #ffffff;
+}
+
+.qc-option.correct {
+  background: #e8f8ef;
+  border-color: #a5e3bf;
+}
+
+.qc-option.correct .qc-key {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.qc-option.correct .qc-icon {
+  color: #16a34a;
+}
+
+.qc-option.wrong {
+  background: #fdecec;
+  border-color: #ffc2c4;
+}
+
+.qc-option.wrong .qc-key {
+  background: #e5484d;
+  color: #ffffff;
+}
+
+.qc-option.wrong .qc-icon {
+  color: #e5484d;
+}
+
+/* ---------- 填空题 ---------- */
+.qc-blanks {
+  margin-top: 28rpx;
+}
+
+.qc-blank-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 18rpx;
+}
+
+.qc-blank-row:last-child {
+  margin-bottom: 0;
+}
+
+.qc-blank-label {
+  width: 116rpx;
+  font-size: 26rpx;
+  color: #5a6478;
+  flex-shrink: 0;
+}
+
+.qc-blank-input {
+  flex: 1;
+  height: 88rpx;
+  background: #f7f9fc;
+  border-radius: 16rpx;
+  padding: 0 20rpx;
+  font-size: 28rpx;
+  color: #1f2733;
+  border: 2rpx solid transparent;
+}
+
+.qc-blank-input.picked {
+  background: #eaf0ff;
+  border-color: #b7c8ff;
+}
+
+.qc-blank-input.correct {
+  background: #e8f8ef;
+  border-color: #a5e3bf;
+}
+
+.qc-blank-input.wrong {
+  background: #fdecec;
+  border-color: #ffc2c4;
+}
+
+.qc-blank-ph {
+  color: #a7aebd;
+}
+
+.qc-blank-ans {
+  margin-left: 16rpx;
+  font-size: 25rpx;
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+/* ---------- 排序题 ---------- */
+.qc-sort-head {
+  margin-top: 28rpx;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.qc-sort-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #5a6478;
+}
+
+.qc-sort-clear {
+  font-size: 25rpx;
+  color: #3d6bff;
+}
+
+.qc-sort-list {
+  margin-top: 16rpx;
+  background: #f7f9fc;
+  border-radius: 16rpx;
+  padding: 8rpx 20rpx;
+}
+
+.qc-sort-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 2rpx solid #eceff5;
+}
+
+.qc-sort-item:last-child {
+  border-bottom: none;
+}
+
+.qc-sort-no {
+  width: 40rpx;
+  height: 40rpx;
+  line-height: 40rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #3d6bff;
+  color: #ffffff;
+  font-size: 24rpx;
+  font-weight: 600;
+  margin-right: 16rpx;
+  flex-shrink: 0;
+}
+
+.qc-sort-text {
+  flex: 1;
+  font-size: 27rpx;
+  line-height: 40rpx;
+  color: #333c4e;
+}
+
+.qc-sort-op {
+  width: 56rpx;
+  text-align: center;
+  font-size: 30rpx;
+  color: #8a93a6;
+  flex-shrink: 0;
+}
+
+.qc-sort-op.del {
+  color: #e5484d;
+}
+
+.qc-sort-empty {
+  padding: 24rpx 0;
+  text-align: center;
+  font-size: 25rpx;
+  color: #a7aebd;
+}
+
+.qc-sort-pool {
+  margin-top: 24rpx;
+}
+
+.qc-sort-badge {
+  width: 40rpx;
+  height: 40rpx;
+  line-height: 40rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #eef2ff;
+  color: #3d6bff;
+  font-size: 22rpx;
+  font-weight: 600;
+  margin-left: 12rpx;
+  flex-shrink: 0;
+}
+
+.qc-result {
+  margin-top: 24rpx;
+  padding: 20rpx 22rpx;
+  border-radius: 16rpx;
+  background: #f7f9fc;
+}
+
+.qc-result.right {
+  background: #eefaf3;
+}
+
+.qc-result.wrong {
+  background: #fff5f5;
+}
+
+.qc-result-text {
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.qc-result.right .qc-result-text {
+  color: #16a34a;
+}
+
+.qc-result.wrong .qc-result-text {
+  color: #e5484d;
+}
+
+.qc-ai {
+  margin-top: 16rpx;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 16rpx 18rpx;
+  border-radius: 14rpx;
+  background: linear-gradient(135deg, #f0f4ff, #e6ecff);
+  color: #3d6bff;
+  font-size: 26rpx;
+}
+
+.qc-ai-logo {
+  width: 44rpx;
+  height: 44rpx;
+  line-height: 44rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+  color: #ffffff;
+  font-size: 20rpx;
+  font-weight: 700;
+  margin-right: 14rpx;
+}
+
+.qc-ai-arrow {
+  margin-left: auto;
+  font-size: 32rpx;
+}
