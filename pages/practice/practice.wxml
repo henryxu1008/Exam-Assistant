@@ -1,0 +1,174 @@
+<!-- pages/practice/practice.wxml -->
+<view class="page practice">
+  <!-- 顶部进度 -->
+  <view class="top-bar">
+    <view class="row between">
+      <view class="row">
+        <text class="tag">{{modeTitle}}</text>
+        <text class="tag tag-gray" wx:if="{{subject}}">{{subject}}</text>
+      </view>
+      <text class="small muted">{{idx + 1}} / {{total}} · 本组正确 {{sessionCorrect}} 题</text>
+    </view>
+    <view class="bar top-bar-line">
+      <view class="bar-inner" style="width: {{(idx + 1) / total * 100}}%"></view>
+    </view>
+  </view>
+
+  <!-- 科目筛选 -->
+  <scroll-view class="chips" scroll-x wx:if="{{total > 0 && mode !== 'single'}}">
+    <view class="chip {{subject === '' ? 'on' : ''}}" data-subject="" bindtap="onSubjectChange">全部</view>
+    <view
+      class="chip {{subject === item.name ? 'on' : ''}}"
+      wx:for="{{subjects}}"
+      wx:key="name"
+      data-subject="{{item.name}}"
+      bindtap="onSubjectChange"
+    >{{item.name}}</view>
+  </scroll-view>
+
+  <!-- 答题 -->
+  <block wx:if="{{question && !finished}}">
+    <question-card
+      question="{{question}}"
+      selected="{{selected}}"
+      submitted="{{submitted}}"
+      starred="{{starred}}"
+      index="{{idx}}"
+      total="{{total}}"
+      bind:select="onSelect"
+      bind:fill="onFill"
+      bind:sort="onSort"
+      bind:star="onStar"
+      bind:aiexplain="onAiExplain"
+    />
+
+    <!-- 基础解析 -->
+    <view class="card explain" wx:if="{{submitted && showExplain}}">
+      <view class="row between">
+        <view class="card-title">解析</view>
+        <text class="small muted" bindtap="onToggleExplain">收起</text>
+      </view>
+      <view class="explain-row">
+        <text class="explain-label">考点</text>
+        <text class="explain-text">{{question.keyPoint}}</text>
+      </view>
+      <view class="explain-row">
+        <text class="explain-label">解析</text>
+        <text class="explain-text">{{question.explain}}</text>
+      </view>
+      <view class="explain-row">
+        <text class="explain-label">易错</text>
+        <text class="explain-text warn">{{question.pitfall}}</text>
+      </view>
+    </view>
+
+    <view class="bottom-bar">
+      <view class="row">
+        <view wx:if="{{!submitted}}" class="grow btn {{canSubmit ? 'btn-primary' : 'btn-ghost'}} btn-block" bindtap="onSubmit">
+          提交答案
+        </view>
+        <block wx:else>
+          <view class="btn btn-ghost bottom-half" bindtap="onPrev">上一题</view>
+          <view class="btn btn-primary bottom-half" bindtap="onNext">
+            {{idx + 1 >= total ? '完成练习' : '下一题'}}
+          </view>
+        </block>
+      </view>
+      <view class="small muted bottom-tip" wx:if="{{typeTip}}">{{typeTip}}</view>
+    </view>
+  </block>
+
+  <!-- 空状态 -->
+  <view class="empty" wx:if="{{!total && emptyTip && !finished}}">
+    <view class="empty-icon">○</view>
+    <view class="empty-title">{{emptyTip}}</view>
+    <view class="btn btn-primary btn-round empty-btn" bindtap="gotoHome">去首页开始练习</view>
+  </view>
+
+  <!-- 本组小结 -->
+  <view class="mask" wx:if="{{finished && summary}}">
+    <view class="summary">
+      <view class="summary-title">本组小结</view>
+      <view class="summary-row">
+        <view class="summary-item">
+          <text class="summary-num">{{summary.total}}</text>
+          <text class="small muted">已答题数</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-num good">{{summary.correct}}</text>
+          <text class="small muted">答对</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-num {{summary.rate < 60 ? 'bad' : ''}}">{{summary.rate}}%</text>
+          <text class="small muted">正确率</text>
+        </view>
+      </view>
+      <view class="summary-comment">{{summary.comment}}</view>
+
+      <view class="summary-wrong" wx:if="{{summary.wrongList.length}}">
+        <view class="card-title">本组错题（已存入错题本）</view>
+        <view class="summary-wrong-item" wx:for="{{summary.wrongList}}" wx:key="id">
+          <text class="tag tag-red">{{item.chapter}}</text>
+          <text class="summary-wrong-text ellipsis-2">{{item.stem}}</text>
+        </view>
+      </view>
+
+      <view class="btn btn-primary btn-block" bindtap="restart">再来一组</view>
+      <view class="row summary-actions">
+        <view class="btn btn-ghost grow" bindtap="gotoReview">复习错题</view>
+        <view class="btn btn-ghost grow" bindtap="gotoHome">返回首页</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- AI 讲解弹层 -->
+  <view class="mask" wx:if="{{showAi && aiExplain}}" bindtap="onCloseAi">
+    <view class="ai-sheet" catchtap="onStop">
+      <view class="row between ai-sheet-head">
+        <view class="row">
+          <view class="ai-logo">AI</view>
+          <view>
+            <view class="card-title">{{aiExplain.headline}}</view>
+            <view class="card-sub">智能讲解 · 结合题目与你的答题记录</view>
+          </view>
+        </view>
+        <text class="ai-close" bindtap="onCloseAi">✕</text>
+      </view>
+
+      <scroll-view class="ai-body" scroll-y>
+        <view class="step" wx:for="{{aiExplain.steps}}" wx:key="title">
+          <view class="step-title">{{index + 1}}. {{item.title}}</view>
+          <view class="step-text">{{item.text}}</view>
+        </view>
+
+        <view class="ai-block">
+          <view class="ai-block-title">⚠️ 易错提醒</view>
+          <view class="ai-block-text">{{aiExplain.pitfall}}</view>
+        </view>
+
+        <view class="ai-block ai-mnemonic">
+          <view class="ai-block-title">🔑 记忆口诀</view>
+          <view class="ai-block-text">{{aiExplain.mnemonic}}</view>
+        </view>
+
+        <view class="ai-block" wx:if="{{aiExplain.similar.length}}">
+          <view class="ai-block-title">📌 举一反三</view>
+          <view
+            class="similar-item"
+            wx:for="{{aiExplain.similar}}"
+            wx:key="id"
+            data-id="{{item.id}}"
+            bindtap="onAddSimilar"
+          >
+            <view class="row">
+              <text class="tag tag-gray">{{item.chapter}}</text>
+              <text class="tag tag-gray">{{item.type}}</text>
+            </view>
+            <view class="similar-text ellipsis-2">{{item.stem}}</view>
+            <view class="similar-add">加入队列 ›</view>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+  </view>
+</view>

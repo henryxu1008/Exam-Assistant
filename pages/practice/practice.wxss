@@ -1,0 +1,289 @@
+/* pages/practice/practice.wxss */
+.practice {
+  padding-bottom: 220rpx;
+}
+
+.top-bar {
+  padding: 4rpx 0 16rpx;
+}
+
+.top-bar-line {
+  margin-top: 16rpx;
+}
+
+.chips {
+  white-space: nowrap;
+  margin-bottom: 16rpx;
+}
+
+.chip {
+  display: inline-block;
+  padding: 12rpx 28rpx;
+  border-radius: 999rpx;
+  background: #ffffff;
+  color: #5a6478;
+  font-size: 26rpx;
+  margin-right: 16rpx;
+}
+
+.chip.on {
+  background: #3d6bff;
+  color: #ffffff;
+}
+
+.explain {
+  margin-top: 24rpx;
+}
+
+.explain-row {
+  display: flex;
+  flex-direction: row;
+  margin-top: 18rpx;
+}
+
+.explain-label {
+  width: 76rpx;
+  flex-shrink: 0;
+  font-size: 24rpx;
+  color: #3d6bff;
+  background: #eef2ff;
+  border-radius: 8rpx;
+  height: 38rpx;
+  line-height: 38rpx;
+  text-align: center;
+  margin-right: 16rpx;
+  margin-top: 4rpx;
+}
+
+.explain-text {
+  flex: 1;
+  font-size: 27rpx;
+  line-height: 44rpx;
+  color: #4a5364;
+}
+
+.explain-text.warn {
+  color: #d97706;
+}
+
+.bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 18rpx 24rpx calc(18rpx + env(safe-area-inset-bottom));
+  background: #ffffff;
+  box-shadow: 0 -6rpx 20rpx rgba(31, 39, 51, 0.06);
+}
+
+.bottom-half {
+  width: 48%;
+}
+
+.bottom-tip {
+  margin-top: 12rpx;
+  text-align: center;
+}
+
+.empty-icon {
+  font-size: 80rpx;
+  color: #d7dde8;
+}
+
+.empty-btn {
+  margin-top: 28rpx;
+  width: 320rpx;
+}
+
+/* 小结 */
+.mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(20, 26, 38, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.summary {
+  width: 620rpx;
+  background: #ffffff;
+  border-radius: 28rpx;
+  padding: 36rpx;
+}
+
+.summary-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  text-align: center;
+}
+
+.summary-row {
+  margin-top: 28rpx;
+  display: flex;
+  flex-direction: row;
+}
+
+.summary-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.summary-num {
+  font-size: 48rpx;
+  font-weight: 700;
+}
+
+.summary-num.good {
+  color: #16a34a;
+}
+
+.summary-num.bad {
+  color: #e5484d;
+}
+
+.summary-comment {
+  margin-top: 20rpx;
+  padding: 18rpx 20rpx;
+  border-radius: 16rpx;
+  background: #f7f9fc;
+  font-size: 26rpx;
+  line-height: 40rpx;
+  color: #4a5364;
+}
+
+.summary-wrong {
+  margin-top: 24rpx;
+}
+
+.summary-wrong-item {
+  margin-top: 16rpx;
+  padding: 16rpx;
+  border-radius: 14rpx;
+  background: #fff8f8;
+}
+
+.summary-wrong-text {
+  margin-top: 10rpx;
+  font-size: 25rpx;
+  line-height: 38rpx;
+  color: #4a5364;
+}
+
+.summary-actions {
+  margin-top: 16rpx;
+}
+
+.summary-actions .btn:first-child {
+  margin-right: 16rpx;
+}
+
+/* AI 弹层 */
+.ai-sheet {
+  width: 100%;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  background: #ffffff;
+  border-radius: 28rpx 28rpx 0 0;
+  padding: 32rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-sheet-head {
+  margin-bottom: 20rpx;
+}
+
+.ai-logo {
+  width: 64rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 20rpx;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 24rpx;
+  margin-right: 16rpx;
+}
+
+.ai-close {
+  font-size: 32rpx;
+  color: #98a1b3;
+  padding-left: 16rpx;
+}
+
+.ai-body {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 56vh;
+}
+
+.step {
+  margin-bottom: 22rpx;
+}
+
+.step-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #1f2733;
+}
+
+.step-text {
+  margin-top: 8rpx;
+  font-size: 26rpx;
+  line-height: 42rpx;
+  color: #4a5364;
+}
+
+.ai-block {
+  padding: 20rpx;
+  border-radius: 16rpx;
+  background: #f7f9fc;
+  margin-bottom: 20rpx;
+}
+
+.ai-block-title {
+  font-size: 27rpx;
+  font-weight: 600;
+  margin-bottom: 10rpx;
+}
+
+.ai-block-text {
+  font-size: 26rpx;
+  line-height: 42rpx;
+  color: #4a5364;
+}
+
+.ai-mnemonic {
+  background: linear-gradient(135deg, #f0f4ff, #e6ecff);
+}
+
+.similar-item {
+  padding: 16rpx;
+  border-radius: 14rpx;
+  background: #ffffff;
+  margin-top: 14rpx;
+}
+
+.similar-text {
+  margin-top: 10rpx;
+  font-size: 25rpx;
+  line-height: 38rpx;
+  color: #333c4e;
+}
+
+.similar-add {
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: #3d6bff;
+  text-align: right;
+}

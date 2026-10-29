@@ -1,0 +1,8 @@
+{
+  "usingComponents": {
+    "question-card": "/components/question-card/index"
+  },
+  "navigationBarTitleText": "刷题",
+  "navigationBarBackgroundColor": "#ffffff",
+  "navigationBarTextStyle": "black"
+}
