@@ -103,6 +103,9 @@
   </view>
 
   <view class="agreement small muted">
-    登录即表示同意《用户协议》与《隐私政策》
+    登录即表示同意
+    <navigator class="agree-link" url="/pages/agreement/agreement?type=user">《用户协议》</navigator>
+    与
+    <navigator class="agree-link" url="/pages/agreement/agreement?type=privacy">《隐私政策》</navigator>
   </view>
 </view>

@@ -19,34 +19,79 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const db = cloud.database()
 const USERS = db.collection('users')
 
+const EDITABLE = ['nickName', 'avatarUrl', 'exam']
+
+/** 字段最长字数，超长截断 */
+const FIELD_MAX = { nickName: 32, exam: 40 }
+
+/** 微信接口请求超时（毫秒） */
+const REQUEST_TIMEOUT = 5000
+
+/**
+ * 只放行白名单字段并清洗：昵称/目标考试截断到上限，头像只接受云存储 fileID。
+ * 云函数之间不共享本地模块，此实现需与 userProfile 保持一致。
+ */
+function sanitize(event) {
+  const patch = {}
+  EDITABLE.forEach((k) => {
+    if (event[k] === undefined) return
+    const v = String(event[k] || '').trim()
+    if (k === 'avatarUrl') {
+      // 只接受云存储 fileID，外部 URL 或任意长串一律丢弃
+      if (v && v.indexOf('cloud://') !== 0) return
+      patch[k] = v
+      return
+    }
+    patch[k] = v.slice(0, FIELD_MAX[k])
+  })
+  return patch
+}
+
+/** 只回传可编辑字段，openid / unionid / token / _id 不下发到端上 */
+function publicProfile(doc) {
+  const out = {}
+  EDITABLE.forEach((k) => {
+    out[k] = doc[k] || ''
+  })
+  return out
+}
+
 /** code 换 openid/unionid（可选，需配置 APP_SECRET 环境变量） */
 function jscode2session(code, appid, secret) {
   return new Promise((resolve) => {
     const url =
       'https://api.weixin.qq.com/sns/jscode2session' +
       `?appid=${appid}&secret=${secret}&js_code=${code}&grant_type=authorization_code`
-    https
-      .get(url, (res) => {
-        let body = ''
-        res.on('data', (d) => {
-          body += d
-        })
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(body))
-          } catch (e) {
-            resolve(null)
-          }
-        })
+    const req = https.get(url, (res) => {
+      let body = ''
+      res.on('data', (d) => {
+        body += d
       })
-      .on('error', () => resolve(null))
+      res.on('end', () => {
+        let data = null
+        try {
+          data = JSON.parse(body)
+        } catch (e) {
+          data = null
+        }
+        // 微信接口出错时 HTTP 状态码仍是 200，必须校验 errcode
+        resolve(data && !data.errcode && data.openid ? data : null)
+      })
+    })
+    req.on('error', () => resolve(null))
+    // 不设超时会一直挂起，耗尽云函数执行时间
+    req.setTimeout(REQUEST_TIMEOUT, () => {
+      req.destroy()
+      resolve(null)
+    })
   })
 }
 
+/** 会话令牌：随机源必须加密学安全，Math.random() 可被预测 */
 function makeToken(openid) {
   return crypto
     .createHash('sha256')
-    .update(`${openid}:${Date.now()}:${Math.random()}`)
+    .update(`${openid}:${Date.now()}:${crypto.randomBytes(32).toString('hex')}`)
     .digest('hex')
 }
 
@@ -77,9 +122,8 @@ exports.main = async (event) => {
     tokenAt: now,
     lastLoginAt: now
   }
-  if (event.nickName !== undefined) patch.nickName = event.nickName
-  if (event.avatarUrl !== undefined) patch.avatarUrl = event.avatarUrl
-  if (event.exam !== undefined) patch.exam = event.exam
+  // 入库前清洗，避免任意长度内容或外部 URL 落库
+  Object.assign(patch, sanitize(event))
 
   const exist = await USERS.where({ openid: openid })
     .limit(1)
@@ -92,7 +136,7 @@ exports.main = async (event) => {
       ok: true,
       openid: openid,
       token: token,
-      profile: Object.assign({}, old, patch),
+      profile: publicProfile(Object.assign({}, old, patch)),
       isNew: false
     }
   }
@@ -101,9 +145,9 @@ exports.main = async (event) => {
     {
       openid: openid,
       unionid: unionid,
-      nickName: event.nickName || '',
-      avatarUrl: event.avatarUrl || '',
-      exam: event.exam || '',
+      nickName: '',
+      avatarUrl: '',
+      exam: '',
       createdAt: now
     },
     patch
@@ -113,7 +157,7 @@ exports.main = async (event) => {
     ok: true,
     openid: openid,
     token: token,
-    profile: Object.assign({ _id: add._id }, doc),
+    profile: publicProfile(doc),
     isNew: true
   }
 }

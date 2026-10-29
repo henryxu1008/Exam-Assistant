@@ -297,3 +297,9 @@
   text-align: center;
   line-height: 36rpx;
 }
+
+/* navigator 默认块级，行内展示才能与前后文案同行 */
+.agree-link {
+  display: inline;
+  color: #3d6bff;
+}

@@ -4,22 +4,48 @@
  * 说明：不依赖任何后端，全部通过 wx.setStorageSync 持久化。
  */
 
+const bank = require('./questions.js')
+
 const STORAGE_KEY = 'exam_quiz_data_v1'
+
+/** 当前数据结构版本 */
+const CURRENT_VERSION = 2
+
+/**
+ * 迁移函数表：MIGRATIONS[n] 负责把版本 n 的数据升级到 n + 1
+ * 约定：提升 CURRENT_VERSION 前必须先补对应的迁移函数，否则等于清空用户数据
+ */
+const MIGRATIONS = {
+  // v1 -> v2：日统计增加科目维度。历史作答无从反推当天各科目分布，
+  // 迁移后各科目当天的统计为 0，此后正常累计
+  1: (data) => {
+    const daily = {}
+    Object.keys(data.daily || {}).forEach((key) => {
+      const d = data.daily[key]
+      daily[key] = d ? Object.assign({}, d, { subjects: {} }) : d
+    })
+    return Object.assign({}, data, { daily: daily, version: 2 })
+  }
+}
 
 /** 掌握等级对应的复习间隔（天），艾宾浩斯式简化版 */
 const REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15]
+
+/** 连续答对该天数后，自动移出错题本 */
+const MASTER_DAYS = 3
 
 const DAY = 24 * 60 * 60 * 1000
 
 function getDefaultState() {
   return {
-    version: 1,
+    version: CURRENT_VERSION,
     records: {}, // { qid: Record }
     daily: {}, // { '2026-10-29': DailyStat }
     settings: {
       dailyGoal: 30,
       autoNext: true,
-      aiExplain: true
+      aiExplain: true,
+      currentSubject: ''
     },
     aiMessages: [],
     createdAt: Date.now()
@@ -44,11 +70,49 @@ function shortDate(key) {
   return parts.length === 3 ? `${parts[1]}-${parts[2]}` : key
 }
 
+/** 日期 key 转时间戳（按本地时区解析，避免 UTC 偏移） */
+function toTime(key) {
+  const p = String(key || '').split('-')
+  if (p.length !== 3) return NaN
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getTime()
+}
+
+/** 两个日期 key 相差天数（b - a） */
+function dayDiff(a, b) {
+  const ta = toTime(a)
+  const tb = toTime(b)
+  if (isNaN(ta) || isNaN(tb)) return NaN
+  return Math.round((tb - ta) / DAY)
+}
+
+/** 把今日并入「连续答对天」序列：同日不变、相邻日累加、中断则重置 */
+function nextRightDays(days, key) {
+  const list = (Array.isArray(days) ? days : []).slice(-MASTER_DAYS)
+  const last = list[list.length - 1]
+  if (last === key) return list
+  if (last && dayDiff(last, key) === 1) return list.concat([key]).slice(-MASTER_DAYS)
+  return [key]
+}
+
+/**
+ * 按版本链升级本地数据，无法升级到当前版本时返回 null（由调用方回落默认状态）
+ * 约定：提升 CURRENT_VERSION 前必须先补上对应的迁移函数，否则等于清空用户数据
+ */
+function migrate(raw) {
+  let data = raw
+  let v = Number(data && data.version) || 0
+  while (v < CURRENT_VERSION && MIGRATIONS[v]) {
+    data = MIGRATIONS[v](data)
+    v += 1
+  }
+  return v === CURRENT_VERSION ? data : null
+}
+
 function load() {
   if (state) return state
   try {
     const raw = wx.getStorageSync(STORAGE_KEY)
-    state = raw && raw.version === 1 ? raw : getDefaultState()
+    state = migrate(raw) || getDefaultState()
   } catch (e) {
     state = getDefaultState()
   }
@@ -59,12 +123,38 @@ function load() {
   return state
 }
 
-function persist() {
-  try {
-    wx.setStorageSync(STORAGE_KEY, state)
-  } catch (e) {
-    console.error('[store] 持久化失败', e)
+/** 写盘节流窗口（毫秒）：连续作答时合并为至多每窗口一次 */
+const FLUSH_INTERVAL = 800
+
+let flushTimer = null
+let lastFlushAt = 0
+let dirty = false
+
+/** 立即落盘：异步 API，避免全量序列化阻塞渲染 */
+function flush() {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
   }
+  if (!dirty || !state) return
+  dirty = false
+  lastFlushAt = Date.now()
+  wx.setStorage({
+    key: STORAGE_KEY,
+    data: state,
+    fail: (e) => console.error('[store] 持久化失败', e)
+  })
+}
+
+/**
+ * 标记数据已变更并安排落盘，节流到至多每 FLUSH_INTERVAL 一次。
+ * 页面进入后台时应调用 flush() 强制落盘，避免丢掉窗口内最后一次作答。
+ */
+function persist() {
+  if (!state) return
+  dirty = true
+  if (flushTimer) return
+  flushTimer = setTimeout(flush, Math.max(0, FLUSH_INTERVAL - (Date.now() - lastFlushAt)))
 }
 
 function getSettings() {
@@ -76,6 +166,26 @@ function saveSettings(patch) {
   s.settings = Object.assign({}, s.settings, patch || {})
   persist()
   return s.settings
+}
+
+/**
+ * 当前科目：全应用统一口径（刷题 / 错题 / 学情 / AI 都只统计该科目）。
+ * 未设置或值不在题库中时，回落到题库首个科目，保证「始终处于某个具体科目下」。
+ */
+function getCurrentSubject() {
+  const saved = load().settings.currentSubject
+  const subjects = bank.getSubjects()
+  if (subjects.some((s) => s.name === saved)) return saved
+  return subjects.length ? subjects[0].name : ''
+}
+
+/** 切换当前科目；传入题库中不存在的科目时忽略，返回实际生效的科目 */
+function setCurrentSubject(name) {
+  const subjects = bank.getSubjects()
+  if (!subjects.some((s) => s.name === name)) return getCurrentSubject()
+  saveSettings({ currentSubject: name })
+  flush() // 切换是显式操作，立即落盘
+  return name
 }
 
 function getRecords() {
@@ -118,6 +228,7 @@ function recordAnswer(question, isCorrect, costMs) {
     lastAt: 0,
     lastWrongAt: 0,
     nextReviewAt: 0,
+    rightDays: [],
     wrongLogs: []
   }
 
@@ -128,12 +239,16 @@ function recordAnswer(question, isCorrect, costMs) {
     r.streak += 1
     r.bestStreak = Math.max(r.bestStreak || 0, r.streak)
     r.level = Math.min(5, (r.level || 0) + 1)
+    // 连续 MASTER_DAYS 天答对的错题，自动移出错题本
+    r.rightDays = nextRightDays(r.rightDays || [], key)
+    if (r.wrong > 0 && r.rightDays.length >= MASTER_DAYS) r.mastered = true
   } else {
     r.wrong += 1
     r.streak = 0
     r.level = Math.max(0, (r.level || 0) - 2)
     r.lastWrongAt = now
     r.mastered = false // 再次答错则重新回到错题本
+    r.rightDays = []
     r.wrongLogs = (r.wrongLogs || []).concat([now]).slice(-20)
   }
   r.nextReviewAt = now + REVIEW_INTERVALS[r.level] * DAY
@@ -144,7 +259,8 @@ function recordAnswer(question, isCorrect, costMs) {
     total: 0,
     correct: 0,
     timeMs: 0,
-    chapters: {}
+    chapters: {},
+    subjects: {}
   }
   d.total += 1
   if (isCorrect) d.correct += 1
@@ -153,6 +269,12 @@ function recordAnswer(question, isCorrect, costMs) {
   c.total += 1
   if (isCorrect) c.correct += 1
   d.chapters[question.chapter] = c
+  // 科目维度：供「当前科目」口径统计（今日进度 / 趋势）
+  const sj = d.subjects[question.subject] || { total: 0, correct: 0, timeMs: 0 }
+  sj.total += 1
+  if (isCorrect) sj.correct += 1
+  sj.timeMs += costMs || 0
+  d.subjects[question.subject] = sj
   s.daily[key] = d
 
   persist()
@@ -182,6 +304,7 @@ function ensureRecord(question) {
       lastAt: 0,
       lastWrongAt: 0,
       nextReviewAt: 0,
+      rightDays: [],
       wrongLogs: []
     }
     persist()
@@ -212,26 +335,47 @@ function resetWrong(id) {
   return r
 }
 
-function getToday() {
-  const s = load()
-  return s.daily[todayKey()] || { date: todayKey(), total: 0, correct: 0, timeMs: 0, chapters: {} }
+/** 按当前科目口径取某天统计；该科目当天无记录时返回 0 值 */
+function _subjectDaily(key) {
+  const d = load().daily[key]
+  const sub = d ? (d.subjects || {})[getCurrentSubject()] : null
+  return {
+    date: key,
+    total: sub ? sub.total : 0,
+    correct: sub ? sub.correct : 0,
+    timeMs: sub ? sub.timeMs : 0
+  }
 }
 
-/** 最近 n 天的日统计（按日期升序，无数据的天补 0） */
+function getToday() {
+  return _subjectDaily(todayKey())
+}
+
+/** 最近 n 天的日统计（按日期升序，无数据的天补 0），按当前科目口径 */
 function getDailyRange(days) {
-  const s = load()
   const list = []
   const now = new Date()
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now.getTime() - i * DAY)
-    const key = todayKey(d)
-    const item = s.daily[key] || { date: key, total: 0, correct: 0, timeMs: 0, chapters: {} }
-    list.push(item)
+    list.push(_subjectDaily(todayKey(new Date(now.getTime() - i * DAY))))
   }
   return list
 }
 
 /** 连续打卡天数 */
+/** 累计学习天数与总时长：只遍历有记录的日期，无需构造整年占位对象 */
+function getStudySummary() {
+  const s = load()
+  let days = 0
+  let timeMs = 0
+  Object.keys(s.daily).forEach((key) => {
+    const d = s.daily[key]
+    if (!d) return
+    if (d.total > 0) days += 1
+    timeMs += d.timeMs || 0
+  })
+  return { days: days, timeMs: timeMs }
+}
+
 function getStreakDays() {
   const s = load()
   let streak = 0
@@ -249,32 +393,44 @@ function getStreakDays() {
   return streak
 }
 
-/** 今日待复习（到期的错题 / 低掌握度题） */
-function getDueIds(limit) {
+/**
+ * 到期待复习记录（按当前科目口径）。
+ * 与错题本「待复习」页共用同一套筛选口径，避免两处定义不一致：
+ * 排除 已掌握 / 从未作答 / 高掌握且无错记录 / 未到期且错<2。
+ * 排序：错得多的优先，其次掌握等级低的，最后到期早的。
+ */
+function getDueRecords(limit) {
   const s = load()
   const now = Date.now()
-  const ids = Object.keys(s.records)
-    .filter((id) => {
-      const r = s.records[id]
-      return r && !r.mastered && r.attempts > 0 && (r.level < 5 || r.lastWrongAt > 0)
-    })
-    .sort((a, b) => {
-      const ra = s.records[a]
-      const rb = s.records[b]
-      const scoreA = (ra.lastWrongAt ? 1 : 0) * 1e13 + (5 - ra.level) * 1e12 - (ra.nextReviewAt || 0)
-      const scoreB = (rb.lastWrongAt ? 1 : 0) * 1e13 + (5 - rb.level) * 1e12 - (rb.nextReviewAt || 0)
-      if (scoreB !== scoreA) return scoreB - scoreA
-      return (ra.nextReviewAt || 0) - (rb.nextReviewAt || 0)
-    })
-    .filter((id) => (s.records[id].nextReviewAt || 0) <= now || s.records[id].wrong >= 2)
-  return typeof limit === 'number' ? ids.slice(0, limit) : ids
+  const subject = getCurrentSubject()
+  const list = []
+  Object.keys(s.records).forEach((id) => {
+    const r = s.records[id]
+    if (!r || r.subject !== subject) return
+    if (r.mastered || !(r.attempts > 0)) return
+    if (r.level >= 5 && !r.lastWrongAt) return
+    if ((r.nextReviewAt || 0) > now && r.wrong < 2) return
+    list.push(r)
+  })
+  list.sort((a, b) => {
+    if (b.wrong !== a.wrong) return b.wrong - a.wrong
+    if (a.level !== b.level) return a.level - b.level
+    return (a.nextReviewAt || 0) - (b.nextReviewAt || 0)
+  })
+  return typeof limit === 'number' ? list.slice(0, limit) : list
+}
+
+/** 今日待复习 id 列表（与 getDueRecords 同一口径） */
+function getDueIds(limit) {
+  return getDueRecords(limit).map((r) => r.id)
 }
 
 function getWrongRecords() {
   const s = load()
+  const subject = getCurrentSubject()
   return Object.keys(s.records)
     .map((id) => s.records[id])
-    .filter((r) => r && r.wrong > 0 && !r.mastered)
+    .filter((r) => r && r.subject === subject && r.wrong > 0 && !r.mastered)
     .sort((a, b) => {
       if (b.wrong !== a.wrong) return b.wrong - a.wrong
       return (b.lastWrongAt || 0) - (a.lastWrongAt || 0)
@@ -295,11 +451,13 @@ function pushAiMessage(msg) {
 function clearAiMessages() {
   load().aiMessages = []
   persist()
+  flush() // 清空是不可逆操作，立即落盘
 }
 
 function clearAll() {
   state = getDefaultState()
   persist()
+  flush() // 清空是不可逆操作，立即落盘
 }
 
 module.exports = {
@@ -307,8 +465,11 @@ module.exports = {
   todayKey,
   shortDate,
   load,
+  flush,
   getSettings,
   saveSettings,
+  getCurrentSubject,
+  setCurrentSubject,
   getRecords,
   getRecord,
   ensureRecord,
@@ -317,7 +478,9 @@ module.exports = {
   resetWrong,
   getToday,
   getDailyRange,
+  getStudySummary,
   getStreakDays,
+  getDueRecords,
   getDueIds,
   getWrongRecords,
   getAiMessages,

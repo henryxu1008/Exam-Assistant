@@ -1,5 +1,4 @@
 // app.js
-require('./utils/store.js')
 const store = require('./utils/store.js')
 const user = require('./utils/user.js')
 
@@ -25,6 +24,11 @@ App({
     user.initCloud()
     this._sessionWaiters = []
     this._checkSession()
+  },
+
+  onHide() {
+    // 进入后台时强制落盘，避免节流窗口内的作答丢失
+    store.flush()
   },
 
   /** 启动时恢复/校验会话：未登录时 resolve，由首页拦截跳转登录页 */
@@ -71,13 +75,11 @@ App({
    */
   startPractice(options) {
     const params = Object.assign({ mode: 'all' }, options || {})
+    // 携带科目时（首页科目卡 / 学情章节专练）同步为全应用当前科目
+    if (params.subject) store.setCurrentSubject(params.subject)
     params.__stamp = Date.now()
     this.globalData.practiceParams = params
-    wx.switchTab({
-      url: '/pages/practice/practice',
-      fail: () => {
-        wx.navigateTo({ url: '/pages/practice/practice?mode=' + params.mode })
-      }
-    })
+    // 练习页是 tabBar 页，只能 switchTab；navigateTo 到 tabBar 页必然失败，无需兜底
+    wx.switchTab({ url: '/pages/practice/practice' })
   }
 })

@@ -15,10 +15,11 @@
 | 错题本 | 全部 / 顽固 / 待复习 / 收藏四分类，科目筛选，单题重练、AI 讲解、收藏、标记「已掌握」 |
 | 学情报告 | 正确率总览、知识点雷达图、近 7 天正确率趋势、模块正确率条形图、薄弱/优势清单、AI 建议 |
 | AI 助教 | 对话式答疑，支持诊断、制定计划、讲解单题、举一反三，对话本地持久化 |
-| 我的 | 学习档案、每日目标与答题偏好设置、数据管理 |
-| 登录 | 微信授权登录（强制登录），头像存云存储，资料存云数据库 |
+| 我的 | 学习档案、每日目标与答题偏好设置、数据管理、用户协议 / 隐私政策入口 |
+| 登录 | 微信授权登录（强制登录），头像存云存储，资料存云数据库；登录页可查看《用户协议》《隐私政策》 |
 
 - **间隔复习**：基于艾宾浩斯曲线，掌握等级 0–5 对应 0/1/2/4/7/15 天后复习；再次答错自动回归错题本。
+- **自动掌握**：同一道题连续 3 天答对，自动移出错题本（也可在错题本手动标记「已掌握」）。
 - **学情统计**：正确率低于 60% 且至少答过 2 题的知识点判定为薄弱。
 
 ## 技术栈
@@ -41,20 +42,29 @@ miniprogram-4/
 │   ├── ai/               # AI 助教（tab）
 │   ├── profile/          # 我的（tab）
 │   ├── analysis/         # 学情报告
+│   ├── agreement/        # 用户协议 / 隐私政策
 │   └── login/            # 登录
 ├── components/
 │   └── question-card/    # 题目卡片（单选/多选/判断/不定项/填空/排序渲染）
 ├── utils/
-│   ├── questions.js      # 题库 + 统一判分 judge()
+│   ├── questions.js      # 题库入口：直接 re-export utils/bank/index.js（对外 API 不变）
+│   ├── bank/
+│   │   ├── manifest.js   # 科目 / 章节清单（manifest 驱动，页面与统计口径都从这里取）
+│   │   ├── index.js      # 加载器：按科目懒加载分片 + 全部查询函数（统一判分 judge() 在此）
+│   │   ├── gk.js         # 分片：公共基础知识（module.exports = [题目...]）
+│   │   ├── nl.js         # 分片：职业能力测验
+│   │   └── it.js         # 分片：专业知识
 │   ├── store.js          # 答题记录 / 错题 / 复习计划 / 设置（本地存储）
 │   ├── analytics.js      # 学情统计
 │   ├── chart.js          # Canvas 2D 图表
 │   ├── ai.js             # AI 讲解与对话（规则引擎）
-│   ├── user.js           # 云开发登录与会话
+│   ├── user.js           # 云开发登录与会话（含页面登录拦截）
+│   ├── agreement.js      # 用户协议与隐私政策文本
 │   └── config.js         # 云环境配置
 └── cloudfunctions/
     ├── userLogin/        # 登录：code -> openid/token，用户落库
-    └── userProfile/      # 资料：读取 / 更新 / 登出（token 校验）
+    ├── userProfile/      # 资料：读取 / 更新 / 登出（token 校验）
+    └── aiTutor/          # AI 助教：大模型接入骨架（默认关闭，配置后启用）
 ```
 
 ## 快速开始
@@ -62,16 +72,18 @@ miniprogram-4/
 1. **开通云开发**：微信开发者工具 → 云开发，创建环境。
 2. **配置环境 ID**：修改 `utils/config.js` 的 `cloudEnv`（当前已填 `cloud1-d4gye2rcib84f0347`，换成你自己的环境 ID）。
 3. **创建数据库集合**：云开发控制台 → 数据库 → 新建集合 `users`。
-4. **部署云函数**：右键 `cloudfunctions/userLogin`、`cloudfunctions/userProfile` → 上传并部署（云端安装依赖）。
+4. **部署云函数**：右键 `cloudfunctions/userLogin`、`cloudfunctions/userProfile`、`cloudfunctions/aiTutor` → 上传并部署（云端安装依赖）。
 5. 编译运行。
 
 > 需要 `unionid` 时，在云函数 `userLogin` 的环境变量中配置 `APP_SECRET`，函数会用 `code` 调 `jscode2session` 换取；不配置则用云开发原生 `OPENID`，不影响登录。
+
+> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏 `withinBudget()` 暂为占位，接入真实费用前需在云数据库维护按日累计计数。
 
 ## 题库
 
 内置 51 道 mock 题，3 个科目：公共基础知识（22）、职业能力测验（12）、专业知识（17）。
 
-支持 6 种题型，判分统一走 `utils/questions.js` 的 `judge(type, selected, answer)`：
+支持 6 种题型，判分统一走 `utils/bank/index.js` 的 `judge(type, selected, answer)`：
 
 | type | 题型 | 题数 | 作答方式 | 判分规则 |
 | --- | --- | --- | --- | --- |
@@ -93,7 +105,11 @@ miniprogram-4/
 }
 ```
 
-替换真实题库时，直接改 `utils/questions.js` 的 `QUESTIONS` 即可，其余模块无需改动。
+**题库按科目拆分管理（已落地）**：科目 / 章节定义集中在 `utils/bank/manifest.js`（manifest 驱动，页面科目列表与统计口径都从它取）；题目数据按科目拆到 `utils/bank/<key>.js` 分片（`gk` / `nl` / `it`），经 `utils/bank/index.js` 懒加载并对外提供全部查询函数，`utils/questions.js` 仅作兼容入口。
+
+- **换科目 / 章节**：改 `manifest.js` 即可，题目分片不变。
+- **加科目**：① 在 `manifest.js` 追加一项；② 新建对应的 `utils/bank/<key>.js`（`module.exports = [题目...]`）；其余查询函数无需改动。
+- **换真实大题库 / 上云**：把各分片的 `require` 换成异步拉取（fetch / 分包加载）即可，`index.js` 其余逻辑不动。
 
 ## 数据说明
 
@@ -117,8 +133,14 @@ miniprogram-4/
 
 ## 已知限制
 
-- **AI 助教为本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。接入真实模型时打开开关并实现请求层即可。
+- **AI 助教默认走本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。已预留云函数 `aiTutor`（OpenAI 兼容 chat/completions 骨架，默认关闭、安全护栏齐全），接入真实模型时：① 在 `aiTutor` 的环境变量配置 `AI_TUTOR_ENABLED=true`、`LLM_ENDPOINT`、`LLM_API_KEY`（可选 `LLM_MODEL`）；② 把端上 `REMOTE_LLM.enabled` 改为 `true`。云函数未启用时端上自动回落本地引擎，互不影响。
 - **题库为 mock 数据**，题目内容与解析需替换为真实题库。
+
+## 上线前核对
+
+- **`users` 集合建索引**：控制台给 `openid`、`token` 各建一个索引，否则用户量增长后按 token 查询会全表扫描。
+- **协议文本**：`utils/agreement.js` 中的主体名称与联系方式是占位内容，需替换；并与微信后台「用户隐私保护指引」保持一致，两者不一致会被驳回。
+- **隐私接口**：本小程序未调用位置、相册等隐私接口，暂无需在指引中声明。
 - 学情报告的 Canvas 图表在部分低版本基础库上可能需要适配。
 
 ## 许可

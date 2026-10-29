@@ -5,6 +5,7 @@ const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const chart = require('../../utils/chart.js')
 const ai = require('../../utils/ai.js')
+const user = require('../../utils/user.js')
 
 Page({
   data: {
@@ -31,10 +32,12 @@ Page({
     weak: [],
     strong: [],
     stubborn: [],
-    advice: []
+    advice: [],
+    currentSubject: ''
   },
 
   onShow() {
+    if (!user.requireLogin()) return
     this.refresh()
   },
 
@@ -44,12 +47,14 @@ Page({
   },
 
   refresh() {
-    const overview = analytics.overview()
+    // 各指标共用同一次全量扫描结果，避免逐指标重复遍历记录表
+    const snap = analytics.snapshot()
+    const overview = analytics.overview(snap)
     const hasData = overview.total > 0
 
-    const radarRaw = analytics.radarData(6)
+    const radarRaw = analytics.radarData(6, snap)
     const trendRaw = analytics.trendData(7)
-    const chapters = analytics.chapterStats().slice(0, 8)
+    const chapters = snap.stats.slice(0, 8)
 
     const trendTable = trendRaw.map((t) =>
       Object.assign({}, t, {
@@ -83,9 +88,9 @@ Page({
             masteryText: `${c.mastery}%`
           })
         ),
-        weak: analytics.weakPoints(5).map((w) => Object.assign({}, w, { key: `${w.subject}|${w.chapter}` })),
-        strong: analytics.strongPoints(3).map((s) => Object.assign({}, s, { key: `${s.subject}|${s.chapter}` })),
-        stubborn: analytics.stubbornQuestions(5).map((s) => ({
+        weak: analytics.weakPoints(5, snap).map((w) => Object.assign({}, w, { key: `${w.subject}|${w.chapter}` })),
+        strong: analytics.strongPoints(3, snap).map((s) => Object.assign({}, s, { key: `${s.subject}|${s.chapter}` })),
+        stubborn: analytics.stubbornQuestions(5, snap).map((s) => ({
           id: s.question.id,
           stem: s.question.stem,
           chapter: s.question.chapter,
@@ -93,7 +98,8 @@ Page({
           wrong: s.record.wrong,
           days: s.days
         })),
-        advice: ai.studyAdvice()
+        advice: ai.studyAdvice(snap),
+        currentSubject: store.getCurrentSubject()
       },
       () => {
         if (hasData) this.drawCharts()

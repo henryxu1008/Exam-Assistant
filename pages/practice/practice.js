@@ -4,6 +4,7 @@ const bank = require('../../utils/questions.js')
 const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const ai = require('../../utils/ai.js')
+const user = require('../../utils/user.js')
 
 const MODE_TITLES = {
   all: '顺序练习',
@@ -53,11 +54,22 @@ Page({
   },
 
   onShow() {
-    // 处理从其他页面携带参数进入的情况（tabBar 页不支持 URL 传参）
+    if (!user.requireLogin()) return
+    // 先消费其他页面携带进来的参数（tabBar 页不支持 URL 传参）。
+    // 这些参数本身已带 subject / chapter，必须优先于「科目同步重建」——否则像
+    // 「学情报告 -> 切到科目 B 的章节专练」这类带着 chapter 的入口，会被科目守卫
+    // 以「整科顺序」重建并提前 return，从而把章节参数吞掉。
     const pending = app.globalData.practiceParams
     if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
       this._stamp = pending.__stamp
       this._init(pending)
+      return
+    }
+    // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
+    // 章节可能跨科失效故降级为整科顺序练习
+    if (this._params && this._params.subject !== store.getCurrentSubject()) {
+      const mode = this._params.mode === 'chapter' ? 'all' : this._params.mode
+      this._init({ mode, chapter: '', ids: null })
     }
   },
 
@@ -69,7 +81,10 @@ Page({
 
   _init(params) {
     const mode = MODE_TITLES[params.mode] ? params.mode : 'all'
-    const subject = params.subject || ''
+    // 从首页科目卡 / 学情章节专练进入时携带科目，先同步为全应用当前科目
+    if (params.subject) store.setCurrentSubject(params.subject)
+    // 科目是全应用统一口径，永远取全局当前值，保证「切到某科就只看该科」
+    const subject = store.getCurrentSubject()
     const chapter = params.chapter || ''
     const ids = params.ids || null
 
@@ -79,6 +94,8 @@ Page({
       return // 同一组参数重复进入时不重置进度
     }
     this._params = snapshot
+    // 换一组题时清空本组作答快照
+    this._snapshots = {}
 
     wx.setNavigationBarTitle({ title: MODE_TITLES[mode] })
     const queue = this._buildQueue(snapshot)
@@ -123,9 +140,12 @@ Page({
   },
 
   _buildQueue(params) {
-    const { mode, subject, chapter, ids } = params
+    const { mode, chapter, ids } = params
+    // 科目统一从全局读取；下述数据源在 store / analytics 层已按当前科目过滤，无需二次过滤
+    const subject = store.getCurrentSubject()
     let list = []
     if (mode === 'single') {
+      // 指定题目：来源已是当前科目（错题本 / 学情 / 举一反三），不按科目二次过滤
       list = bank.getQuestionsByIds(ids || [])
     } else if (mode === 'wrong') {
       list = store
@@ -142,10 +162,6 @@ Page({
       list = bank.filterQuestions({ subject })
       if (mode === 'random') list = bank.shuffle(list)
     }
-
-    if (subject && mode !== 'single' && mode !== 'chapter') {
-      list = list.filter((q) => q.subject === subject)
-    }
     return list.slice(0, 60)
   },
 
@@ -154,13 +170,21 @@ Page({
     if (!queue[idx]) return
     const question = queue[idx]
     const record = store.getRecord(question.id)
+    // 本组已作答过的题：回看时还原上次作答与解析，且不允许重复提交
+    const done = (this._snapshots || {})[question.id]
+    let selected = []
+    if (done) {
+      selected = done.selected.slice()
+    } else if (question.type === 'fill') {
+      // 填空题按空位数预置空字符串，保证 selected 与 answer 等长
+      selected = (question.answer || []).map(() => '')
+    }
     this.setData({
       idx,
       question,
-      // 填空题按空位数预置空字符串，保证 selected 与 answer 等长
-      selected: question.type === 'fill' ? (question.answer || []).map(() => '') : [],
-      submitted: false,
-      showExplain: store.getSettings().aiExplain !== false,
+      selected,
+      submitted: !!done,
+      showExplain: done ? true : store.getSettings().aiExplain !== false,
       showAi: false,
       aiExplain: null,
       canSubmit: false,
@@ -268,6 +292,9 @@ Page({
     const cost = Date.now() - (this._startAt || Date.now())
 
     store.recordAnswer(q, correct, cost)
+    // 记录本组作答快照，回看该题时用于还原结果并阻止重复作答
+    this._snapshots = this._snapshots || {}
+    this._snapshots[q.id] = { selected: selected, correct: correct }
 
     const errorIds = this.data.errorIds.slice()
     if (!correct && errorIds.indexOf(q.id) === -1) errorIds.push(q.id)
@@ -316,6 +343,7 @@ Page({
     this.setData({ showAi: false })
   },
 
+  /* wxml 里 AI 面板用 catchtap 阻断冒泡，无需处理事件，保留空实现供绑定 */
   onStop() {},
 
   /** 相似题加入队列 */
@@ -335,10 +363,12 @@ Page({
 
   onSubjectChange(e) {
     const subject = e.currentTarget.dataset.subject || ''
-    const mode = this.data.mode === 'single' ? 'all' : this.data.mode
-    const params = { mode, subject, chapter: '', ids: null }
+    if (!subject) return // 已去掉「全部」，dataset 里只会是具体科目
+    // 切换全应用当前科目；换科目后原章节约束失效，chapter 降级为整科顺序练习
+    store.setCurrentSubject(subject)
+    const mode = this.data.mode === 'single' || this.data.mode === 'chapter' ? 'all' : this.data.mode
     this._params = null
-    this._init(params)
+    this._init({ mode, chapter: '', ids: null })
   },
 
   _finish() {

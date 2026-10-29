@@ -12,6 +12,9 @@ const config = require('./config.js')
 
 const SESSION_KEY = 'exam_quiz_session_v1'
 
+/** 令牌有效期，略小于云函数 userProfile 的 TOKEN_TTL，留出边界余量 */
+const TOKEN_TTL = 29 * 24 * 60 * 60 * 1000
+
 function defaults() {
   return {
     logged: false,
@@ -142,6 +145,12 @@ function login(extra) {
     })
 }
 
+/** 令牌临近过期时静默重新登录换取新令牌，避免用到已被云端作废的 token */
+function ensureFreshToken(cur) {
+  if (cur.loginAt && Date.now() - cur.loginAt < TOKEN_TTL) return Promise.resolve(cur)
+  return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
+}
+
 /**
  * 校验并恢复会话：已有 token 且微信会话有效则直接复用，否则静默重新登录。
  * 从未登录过（无 token）时 resolve(null)，由调用方跳转登录页。
@@ -150,7 +159,7 @@ function login(extra) {
 function ensureSession() {
   if (!isLogged()) return Promise.resolve(null)
   return checkSession()
-    .then((valid) => (valid ? getProfile() : login()))
+    .then((valid) => (valid ? ensureFreshToken(load()) : login()))
     .catch(() => login())
 }
 
@@ -161,17 +170,19 @@ function ensureSession() {
 function updateProfile(patch) {
   const cur = load()
   if (!cur.token) return Promise.reject(new Error('未登录'))
-  return call(config.functions.profile, Object.assign({ token: cur.token, action: 'update' }, patch)).then((r) => {
-    const p = r.profile || {}
-    return persist(
-      Object.assign({}, cur, {
-        nickName: p.nickName !== undefined ? p.nickName : cur.nickName,
-        avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : cur.avatarUrl,
-        exam: p.exam !== undefined ? p.exam : cur.exam,
-        updatedAt: Date.now()
-      })
-    )
-  })
+  return ensureFreshToken(cur).then((fresh) =>
+    call(config.functions.profile, Object.assign({ token: fresh.token, action: 'update' }, patch)).then((r) => {
+      const p = r.profile || {}
+      return persist(
+        Object.assign({}, fresh, {
+          nickName: p.nickName !== undefined ? p.nickName : cur.nickName,
+          avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : cur.avatarUrl,
+          exam: p.exam !== undefined ? p.exam : cur.exam,
+          updatedAt: Date.now()
+        })
+      )
+    })
+  )
 }
 
 /** 头像上传到云存储，返回 fileID */
@@ -203,11 +214,42 @@ function displayName() {
   return p.logged ? p.nickName || '' : ''
 }
 
+/** 登录页跳转的去重标记，避免多个页面同时触发重复跳转 */
+let loginRedirecting = false
+
+/**
+ * 页面级登录拦截：应在页面 onShow 中调用。
+ * 会等 App 的会话校验结束后再判断，避免把「会话可用但尚未校验完」误判为未登录。
+ * @param {Function} [onLogged] 确认已登录后的回调，用于刷新依赖用户资料的内容
+ * @returns {Boolean} 当前是否已登录；返回 false 时不应继续渲染需登录后才有意义的内容
+ */
+function requireLogin(onLogged) {
+  if (isLogged()) {
+    if (typeof onLogged === 'function') onLogged()
+    return true
+  }
+  if (loginRedirecting) return false
+  loginRedirecting = true
+  const done = (logged) => {
+    loginRedirecting = false
+    if (logged) {
+      if (typeof onLogged === 'function') onLogged()
+      return
+    }
+    wx.navigateTo({ url: '/pages/login/login' })
+  }
+  const app = typeof getApp === 'function' ? getApp() : null
+  if (app && typeof app.whenSessionReady === 'function') app.whenSessionReady(done)
+  else done(false)
+  return false
+}
+
 module.exports = {
   initCloud,
   hasCloud,
   getProfile,
   isLogged,
+  requireLogin,
   login,
   ensureSession,
   updateProfile,

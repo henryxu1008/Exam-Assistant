@@ -32,9 +32,8 @@
     </view>
   </view>
 
-  <!-- 科目筛选 -->
+  <!-- 科目筛选（科目为全应用统一口径，切换后将影响刷题 / 学情 / AI 建议） -->
   <scroll-view class="chips" scroll-x>
-    <view class="chip {{subject === '' ? 'on' : ''}}" data-subject="" bindtap="onSubjectChange">全部</view>
     <view
       class="chip {{subject === item.name ? 'on' : ''}}"
       wx:for="{{subjects}}"

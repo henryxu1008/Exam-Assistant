@@ -2,6 +2,7 @@
 const app = getApp()
 const ai = require('../../utils/ai.js')
 const store = require('../../utils/store.js')
+const user = require('../../utils/user.js')
 
 const QUICK = [
   '我哪里最薄弱',
@@ -10,6 +11,9 @@ const QUICK = [
   '我的正确率多少',
   '有什么记忆口诀'
 ]
+
+/** 本地规则引擎模拟「思考中」的等待耗时（毫秒） */
+const REPLY_DELAY = 420
 
 Page({
   data: {
@@ -21,6 +25,11 @@ Page({
   },
 
   onLoad() {
+    this._resetMessages()
+  },
+
+  /** 载入历史消息（无历史时用欢迎语兜底），供 onLoad 与清空对话后复用 */
+  _resetMessages() {
     const list = store.getAiMessages().map((m) => this._decorate(m))
     if (!list.length) {
       list.push(
@@ -36,10 +45,12 @@ Page({
         })
       )
     }
-    this.setData({ messages: list }, () => this._scrollToLast(list.length))
+    this.setData({ messages: list, loading: false }, () => this._scrollToLast(list.length))
   },
 
   onShow() {
+    // 未登录时先去登录页，回来后再消费其他页面带来的预填内容
+    if (!user.requireLogin()) return
     // 其他页面（错题本 / 学情报告 / 练习页）携带问题跳转过来
     const pre = app.globalData.aiPreInput
     if (!pre) return
@@ -48,6 +59,10 @@ Page({
     app.globalData.aiContext = null
     this.setData({ input: pre })
     this.send(pre, context)
+  },
+
+  onUnload() {
+    this._clearReplyTimer()
   },
 
   /* ---------------- 收发 ---------------- */
@@ -75,22 +90,41 @@ Page({
     store.pushAiMessage({ role: 'user', text: content, bullets: [], cards: [] })
 
     const self = this
-    setTimeout(() => {
-      const result = ai.chat(content, context || {})
-      const extra = result.extra || null
-      const reply = {
-        role: 'ai',
-        text: result.reply,
-        bullets: result.bullets || [],
-        cards: result.cards || [],
-        mnemonic: extra ? extra.mnemonic : '',
-        similar: extra ? extra.similar : [],
-        time: Date.now()
-      }
-      const next = self.data.messages.concat([self._decorate(reply)])
-      self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
-      store.pushAiMessage(reply)
-    }, 420)
+    // 接入真实大模型后由 requestLLM 返回结果，未开启时回落本地规则引擎
+    ai
+      .requestLLM(
+        messages.slice(-6).map((m) => ({ role: m.role, content: m.text })),
+        store.getCurrentSubject()
+      )
+      .then((remote) => {
+        if (remote) return { reply: remote, bullets: [], cards: [] }
+        // 本地引擎没有网络往返，保留「打字中」的等待感
+        return new Promise((resolve) => {
+          self._replyTimer = setTimeout(() => {
+            self._replyTimer = null
+            resolve(ai.chat(content, context || {}))
+          }, REPLY_DELAY)
+        })
+      })
+      .then((result) => {
+        const extra = result.extra || null
+        const reply = {
+          role: 'ai',
+          text: result.reply,
+          bullets: result.bullets || [],
+          cards: result.cards || [],
+          mnemonic: extra ? extra.mnemonic : '',
+          similar: extra ? extra.similar : [],
+          time: Date.now()
+        }
+        const next = self.data.messages.concat([self._decorate(reply)])
+        self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
+        store.pushAiMessage(reply)
+      })
+      .catch(() => {
+        self.setData({ loading: false })
+        wx.showToast({ title: '回复失败，请重试', icon: 'none' })
+      })
   },
 
   /* ---------------- 卡片动作 ---------------- */
@@ -124,12 +158,20 @@ Page({
       success(res) {
         if (!res.confirm) return
         store.clearAiMessages()
-        self.setData({ messages: [], loading: false }, () => self.onLoad())
+        self._clearReplyTimer()
+        self._resetMessages()
       }
     })
   },
 
   /* ---------------- 工具 ---------------- */
+
+  /** 取消尚未触发的本地回复定时器，避免离页后仍执行 setData */
+  _clearReplyTimer() {
+    if (!this._replyTimer) return
+    clearTimeout(this._replyTimer)
+    this._replyTimer = null
+  },
 
   _decorate(msg) {
     this._seq = (this._seq || 0) + 1

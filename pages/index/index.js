@@ -27,6 +27,7 @@ Page({
     goalLeft: 30,
     advice: [],
     subjects: [],
+    currentSubject: '',
     weakPreview: [],
     dateText: '',
     userName: ''
@@ -41,22 +42,8 @@ Page({
 
   onShow() {
     this.refresh()
-    this._checkLogin()
-  },
-
-  /** 强制登录：会话校验未通过时跳转登录页 */
-  _checkLogin() {
-    if (app.globalData.logged) return
-    if (this._loginPushed) return
-    this._loginPushed = true
-    app.whenSessionReady((logged) => {
-      this._loginPushed = false
-      if (logged) {
-        this.refresh()
-        return
-      }
-      wx.navigateTo({ url: '/pages/login/login' })
-    })
+    // 会话校验完成后若确认已登录，用云端资料再刷新一次
+    user.requireLogin(() => this.refresh())
   },
 
   onPullDownRefresh() {
@@ -85,6 +72,7 @@ Page({
       goalLeft: Math.max(0, goal - overview.todayTotal),
       advice: ai.studyAdvice(),
       subjects: this._buildSubjects(),
+      currentSubject: store.getCurrentSubject(),
       weakPreview: analytics.weakPoints(3),
       userName: user.isLogged() ? user.displayName() : ''
     })
@@ -138,15 +126,9 @@ Page({
 
   goAi(e) {
     const text = e.currentTarget.dataset.text || ''
-    wx.switchTab({
-      url: '/pages/ai/ai',
-      success() {
-        if (text) {
-          const app = getApp()
-          app.globalData.aiPreInput = text
-        }
-      }
-    })
+    // 必须在跳转前写入：目标页 onShow 可能早于 switchTab 的 success 回调执行
+    if (text) app.globalData.aiPreInput = text
+    wx.switchTab({ url: '/pages/ai/ai' })
   },
 
   goAnalysis() {

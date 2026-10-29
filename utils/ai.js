@@ -22,18 +22,30 @@ const REMOTE_LLM = {
 
 /**
  * 预留：调用真实大模型。未开启时返回 null，页面会自动回落到本地引擎。
+ * @param {Array} messages 对话历史（已裁剪为最近若干轮）
+ * @param {String} [subject] 当前科目，透传给大模型以约束回答口径；缺省取全局当前科目
  * @returns {Promise<string|null>}
  */
-function requestLLM(messages) {
+function requestLLM(messages, subject) {
   if (!REMOTE_LLM.enabled) return Promise.resolve(null)
   return new Promise((resolve) => {
     if (!wx.cloud || typeof wx.cloud.callFunction !== 'function') {
       resolve(null)
       return
     }
+    // 透传当前科目，保证大模型回答只讲该科目（与全应用科目口径一致）
+    // 端上助手消息 role 用 'ai'，云函数白名单只认 'user'/'assistant'/'system'，
+    // 在此归一化，避免大模型侧把助手历史整段丢弃导致多轮上下文丢失
+    const payload = (messages || []).map((m) => ({
+      role: m.role === 'ai' ? 'assistant' : m.role,
+      content: m.content
+    }))
     wx.cloud
-      .callFunction({ name: REMOTE_LLM.cloudFunction, data: { messages: arguments[0] } })
-      .then((res) => resolve(res && res.result ? res.result.content : null))
+      .callFunction({
+        name: REMOTE_LLM.cloudFunction,
+        data: { messages: payload, subject: subject || store.getCurrentSubject() }
+      })
+      .then((res) => resolve((res && res.result && res.result.content) || null))
       .catch(() => resolve(null))
   })
 }
@@ -170,9 +182,9 @@ function findSimilar(question, limit) {
 /* 二、学习诊断与建议                                                     */
 /* ------------------------------------------------------------------ */
 
-/** 个性化学习建议（用于首页 / 学情报告） */
-function studyAdvice() {
-  const ov = analytics.overview()
+/** 个性化学习建议（用于首页 / 学情报告）。snap 为 analytics.snapshot() 结果，复用可避免重复全量扫描 */
+function studyAdvice(snap) {
+  const ov = analytics.overview(snap)
   const weak = analytics.weakPoints(3)
   const advice = []
 
@@ -280,8 +292,8 @@ function chat(text, context) {
   const ctx = context || {}
   const q = ctx.questionId ? bank.findQuestion(ctx.questionId) : null
 
-  // 1. 题目相关讲解
-  if ((q || /这题|这道题|这题怎么|怎么解|为什么选/.test(input)) && (q || hasAny(input, ['这题', '这道题', '怎么解', '讲一下', '解析'])) && q) {
+  // 1. 题目相关讲解：需要来源页传入当前题目，且用户确实在问这道题
+  if (q && /这题|这道题|怎么解|讲一下|解析|为什么选/.test(input)) {
     const explained = explainQuestion(q, ctx.userAnswer || [])
     return {
       reply: `${explained.headline}（${bank.typeName(q.type)}｜${q.chapter}）`,
@@ -291,6 +303,15 @@ function chat(text, context) {
         { text: '来道同类题', action: 'similar' }
       ],
       extra: explained
+    }
+  }
+
+  // 1.1 用户在 AI 页直接问「这道题」，但并未从某题跳转过来（无上下文）
+  if (!q && /这题|这道题|怎么解|讲一下|解析|为什么选/.test(input)) {
+    return {
+      reply: '请先在题目页面点「AI 讲解」，或在错题本 / 学情报告里点某题的「交给 AI 助教」，我才能针对这道题为你讲解哦。',
+      bullets: [],
+      cards: [{ text: '去刷题', action: 'practice-random' }]
     }
   }
 

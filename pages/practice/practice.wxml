@@ -1,7 +1,7 @@
 <!-- pages/practice/practice.wxml -->
 <view class="page practice">
   <!-- 顶部进度 -->
-  <view class="top-bar">
+  <view class="top-bar" wx:if="{{total > 0}}">
     <view class="row between">
       <view class="row">
         <text class="tag">{{modeTitle}}</text>
@@ -14,9 +14,8 @@
     </view>
   </view>
 
-  <!-- 科目筛选 -->
-  <scroll-view class="chips" scroll-x wx:if="{{total > 0 && mode !== 'single'}}">
-    <view class="chip {{subject === '' ? 'on' : ''}}" data-subject="" bindtap="onSubjectChange">全部</view>
+  <!-- 科目筛选：科目为全应用统一口径，这里可切换当前科目；队列为空时也要保留以便自救 -->
+  <scroll-view class="chips" scroll-x wx:if="{{mode !== 'single'}}">
     <view
       class="chip {{subject === item.name ? 'on' : ''}}"
       wx:for="{{subjects}}"

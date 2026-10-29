@@ -1,0 +1,14 @@
+<!--pages/agreement/agreement.wxml-->
+<view class="page">
+  <view class="card">
+    <view class="card-title">{{title}}</view>
+    <view class="card-sub">最近更新：{{updated}}</view>
+  </view>
+
+  <view class="card">
+    <block wx:for="{{blocks}}" wx:for-item="block" wx:key="h">
+      <view class="agree-h">{{block.h}}</view>
+      <view class="agree-p" wx:for="{{block.p}}" wx:for-item="line" wx:key="*this">{{line}}</view>
+    </block>
+  </view>
+</view>

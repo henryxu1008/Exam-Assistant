@@ -13,7 +13,7 @@
     <view class="card hero-card">
       <view class="row between">
         <view>
-          <view class="card-title">学情总览</view>
+          <view class="card-title">学情总览 · {{currentSubject}}</view>
           <view class="card-sub">累计 {{overview.total}} 题 · 覆盖 {{overview.chapterCount}} 个知识点</view>
         </view>
         <view class="rate-badge">
