@@ -144,6 +144,25 @@ miniprogram-4/
 - **隐私接口**：本小程序未调用位置、相册等隐私接口，暂无需在指引中声明。
 - 学情报告的 Canvas 图表在部分低版本基础库上可能需要适配。
 
+## 本地测试与 CI
+
+> 对应 Issue 4：在不依赖微信运行时的前提下，对判分 / 复习 / 学情等纯函数建立回归测试。
+
+工程根目录新增了 `package.json`（仅用于测试 / lint，不影响小程序运行时），需要 Node >= 18。
+
+```bash
+npm test        # 运行 test/*.test.js（node --test 默认发现）
+npm run lint    # 语法校验全部工程 JS（无外部依赖，vm.Script 解析）
+```
+
+测试通过 `test/wx-shim.js` 注入内存版 `wx` Storage 适配器，使 `store` / `analytics` 可在 Node 下运行；
+`test/date-mock.js` 提供可控 `Date` 桩，覆盖跨日、复习到期、掌握等级变化等时间相关逻辑。
+每个用例通过清除 `require` 缓存 + 清空内存存储实现相互隔离。
+
+GitHub Actions 在 `.github/workflows/ci.yml`：PR 中自动执行 `npm run lint` 与 `npm test`，失败则阻止合并。
+
+**风险 / 回滚**：测试与 lint 为纯增量，不影响线上小程序；若 CI 误拦，回退对应提交即可，小程序代码本身未被改动。
+
 ## 许可
 
 MIT
