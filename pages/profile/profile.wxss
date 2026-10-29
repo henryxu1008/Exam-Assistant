@@ -1,0 +1,225 @@
+/* pages/profile/profile.wxss */
+.avatar {
+  width: 108rpx;
+  height: 108rpx;
+  line-height: 108rpx;
+  text-align: center;
+  border-radius: 32rpx;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+  color: #ffffff;
+  font-size: 38rpx;
+  font-weight: 700;
+  margin-right: 22rpx;
+}
+
+.avatar-img {
+  width: 108rpx;
+  height: 108rpx;
+  border-radius: 32rpx;
+  margin-right: 22rpx;
+  flex-shrink: 0;
+}
+
+.avatar.guest {
+  background: linear-gradient(135deg, #dfe4ee, #b9c2d2);
+}
+
+.user-name {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #1f2733;
+}
+
+.user-level {
+  margin-top: 20rpx;
+}
+
+.user-level .tag + .tag {
+  margin-left: 12rpx;
+}
+
+.login-btn {
+  width: 160rpx;
+  height: 68rpx;
+  font-size: 27rpx;
+}
+
+.guest-tip {
+  margin-top: 20rpx;
+}
+
+/* ---------- 用户数据 ---------- */
+.user-meta {
+  margin-top: 28rpx;
+  padding-top: 24rpx;
+  border-top: 2rpx solid #f1f3f7;
+}
+
+.user-meta-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.user-meta-num {
+  font-size: 34rpx;
+  font-weight: 700;
+  color: #1f2733;
+}
+
+/* ---------- 今日进度 ---------- */
+.today-card {
+  margin-top: 24rpx;
+}
+
+.today-btn {
+  width: 200rpx;
+  height: 68rpx;
+  font-size: 26rpx;
+}
+
+.today-bar {
+  margin-top: 22rpx;
+}
+
+.today-tip {
+  margin-top: 14rpx;
+}
+
+/* ---------- 设置 ---------- */
+.goal-row {
+  margin-top: 22rpx;
+  display: flex;
+  flex-direction: row;
+}
+
+.goal-chip {
+  flex: 1;
+  height: 68rpx;
+  line-height: 68rpx;
+  text-align: center;
+  border-radius: 16rpx;
+  background: #f3f5fa;
+  color: #5a6478;
+  font-size: 25rpx;
+}
+
+.goal-chip + .goal-chip {
+  margin-left: 12rpx;
+}
+
+.goal-chip.on {
+  background: #eef2ff;
+  color: #3d6bff;
+  font-weight: 600;
+}
+
+.setting {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 24rpx 0;
+  border-top: 2rpx solid #f1f3f7;
+}
+
+.setting:first-of-type {
+  margin-top: 22rpx;
+}
+
+.setting-title {
+  font-size: 28rpx;
+  color: #1f2733;
+}
+
+/* ---------- 学习档案 ---------- */
+.archive {
+  margin-top: 24rpx;
+  display: flex;
+  flex-direction: row;
+}
+
+.archive-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.archive-num {
+  font-size: 34rpx;
+  font-weight: 700;
+  color: #1f2733;
+}
+
+.archive-num.bad {
+  color: #e5484d;
+}
+
+.archive-num.good {
+  color: #16a34a;
+}
+
+.archive-meta {
+  margin-top: 22rpx;
+  padding-top: 20rpx;
+  border-top: 2rpx solid #f1f3f7;
+}
+
+/* ---------- 菜单 ---------- */
+.menu {
+  margin-top: 24rpx;
+  padding: 8rpx 28rpx;
+}
+
+.menu-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 26rpx 0;
+}
+
+.menu-item + .menu-item {
+  border-top: 2rpx solid #f1f3f7;
+}
+
+.menu-item:active {
+  opacity: 0.7;
+}
+
+.menu-icon {
+  width: 64rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 18rpx;
+  font-size: 24rpx;
+  font-weight: 700;
+  color: #ffffff;
+  margin-right: 20rpx;
+}
+
+.mi-blue {
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+}
+
+.mi-red {
+  background: linear-gradient(135deg, #ff9a9e, #e5484d);
+}
+
+.mi-purple {
+  background: linear-gradient(135deg, #a78bfa, #7c3aed);
+}
+
+.mi-gray {
+  background: linear-gradient(135deg, #c3cadb, #9aa3b6);
+}
+
+.menu-item.danger .grow {
+  color: #e5484d;
+}
+
+.foot-tip {
+  margin-top: 32rpx;
+  text-align: center;
+}

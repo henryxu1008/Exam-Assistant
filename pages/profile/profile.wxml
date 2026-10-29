@@ -1,0 +1,177 @@
+<!--pages/profile/profile.wxml-->
+<view class="page profile">
+  <!-- 用户信息 -->
+  <view class="card user-card">
+    <!-- 已登录 -->
+    <block wx:if="{{logged}}">
+      <view class="row">
+        <image class="avatar-img" src="{{user.avatarUrl}}" mode="aspectFill" wx:if="{{user.avatarUrl}}" />
+        <view class="avatar" wx:else>{{initial}}</view>
+        <view class="grow">
+          <view class="user-name">{{user.nickName}}</view>
+          <view class="card-sub">{{user.exam || '还没有设置目标考试'}}</view>
+        </view>
+        <text class="tag" bindtap="goEdit">编辑 ›</text>
+      </view>
+      <view class="row user-level">
+        <text class="tag tag-gray">Lv.{{levelText}}</text>
+        <text class="tag tag-green">已登录</text>
+      </view>
+    </block>
+
+    <!-- 未登录 -->
+    <block wx:else>
+      <view class="row">
+        <view class="avatar guest">?</view>
+        <view class="grow">
+          <view class="user-name">未登录</view>
+          <view class="card-sub">请先完成微信授权登录</view>
+        </view>
+        <view class="btn btn-primary btn-round login-btn" bindtap="goLogin">去登录</view>
+      </view>
+      <view class="guest-tip small muted">登录后才能查看完整学习档案</view>
+    </block>
+
+    <view class="row user-meta">
+      <view class="user-meta-item">
+        <text class="user-meta-num">{{studyDays}}</text>
+        <text class="small muted">学习天数</text>
+      </view>
+      <view class="user-meta-item">
+        <text class="user-meta-num">{{overview.total}}</text>
+        <text class="small muted">累计答题</text>
+      </view>
+      <view class="user-meta-item">
+        <text class="user-meta-num">{{overview.rate}}%</text>
+        <text class="small muted">总正确率</text>
+      </view>
+      <view class="user-meta-item">
+        <text class="user-meta-num">{{overview.streakDays}}</text>
+        <text class="small muted">连续打卡</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 今日进度 -->
+  <view class="card today-card">
+    <view class="row between">
+      <view>
+        <view class="card-title">今日进度</view>
+        <view class="card-sub">已完成 {{overview.todayTotal}} / {{goal}} 题 · 正确率 {{overview.todayRate}}%</view>
+      </view>
+      <view class="btn btn-primary btn-round today-btn" bindtap="goPractice">继续刷题</view>
+    </view>
+    <view class="bar today-bar">
+      <view class="bar-inner" style="width: {{goalPercent}}%"></view>
+    </view>
+    <view class="small muted today-tip">
+      {{goalLeft > 0 ? '还差 ' + goalLeft + ' 题达成今日目标' : '今日目标已达成，去复习错题更划算'}}
+    </view>
+  </view>
+
+  <!-- 学习设置 -->
+  <view class="card">
+    <view class="card-title">学习设置</view>
+    <view class="card-sub">每日目标决定首页进度条与 AI 计划的建议题量</view>
+    <view class="goal-row">
+      <view
+        class="goal-chip {{goal === item ? 'on' : ''}}"
+        wx:for="{{goals}}"
+        wx:key="*this"
+        data-goal="{{item}}"
+        bindtap="onGoalChange"
+      >{{item}} 题</view>
+    </view>
+
+    <view class="setting">
+      <view class="grow">
+        <view class="setting-title">答对后自动下一题</view>
+        <view class="small muted">开启后正确作答会停留 1.2 秒自动跳转</view>
+      </view>
+      <switch checked="{{autoNext}}" color="#3d6bff" bindchange="onAutoNext" />
+    </view>
+
+    <view class="setting">
+      <view class="grow">
+        <view class="setting-title">默认展开解析</view>
+        <view class="small muted">提交答案后立即显示考点与易错提示</view>
+      </view>
+      <switch checked="{{aiExplain}}" color="#3d6bff" bindchange="onAiExplain" />
+    </view>
+  </view>
+
+  <!-- 学习档案 -->
+  <view class="card">
+    <view class="row between">
+      <view class="card-title">学习档案</view>
+      <text class="small muted">共 {{bankInfo.total}} 题题库</text>
+    </view>
+    <view class="archive">
+      <view class="archive-item" bindtap="goMistakes">
+        <text class="archive-num">{{overview.wrongCount}}</text>
+        <text class="small muted">错题收录</text>
+      </view>
+      <view class="archive-item">
+        <text class="archive-num bad">{{overview.stubbornCount}}</text>
+        <text class="small muted">顽固错题</text>
+      </view>
+      <view class="archive-item">
+        <text class="archive-num">{{starred}}</text>
+        <text class="small muted">收藏题目</text>
+      </view>
+      <view class="archive-item">
+        <text class="archive-num good">{{mastered}}</text>
+        <text class="small muted">已掌握</text>
+      </view>
+    </view>
+    <view class="row between archive-meta">
+      <text class="small muted">累计学习时长 {{studyTimeText}}</text>
+      <text class="small muted">{{bankInfo.subjects}} 个科目 · {{bankInfo.chapters}} 个知识点</text>
+    </view>
+  </view>
+
+  <!-- 入口 -->
+  <view class="card menu">
+    <view class="menu-item" bindtap="goAnalysis">
+      <text class="menu-icon mi-blue">报</text>
+      <text class="grow">学情报告</text>
+      <text class="small muted">查看知识点画像 ›</text>
+    </view>
+    <view class="menu-item" bindtap="goMistakes">
+      <text class="menu-icon mi-red">错</text>
+      <text class="grow">错题本</text>
+      <text class="small muted">{{overview.wrongCount}} 道待处理 ›</text>
+    </view>
+    <view class="menu-item" bindtap="goAi">
+      <text class="menu-icon mi-purple">AI</text>
+      <text class="grow">AI 学习助教</text>
+      <text class="small muted">问薄弱 / 要计划 ›</text>
+    </view>
+  </view>
+
+  <!-- 数据管理 -->
+  <view class="card menu">
+    <view class="menu-item" bindtap="onAbout">
+      <text class="menu-icon mi-gray">关</text>
+      <text class="grow">关于应用</text>
+      <text class="small muted">v{{version}} ›</text>
+    </view>
+    <view class="menu-item" wx:if="{{logged}}" bindtap="onLogout">
+      <text class="menu-icon mi-gray">退</text>
+      <text class="grow">退出登录</text>
+      <text class="small muted">清除本机资料 ›</text>
+    </view>
+    <view class="menu-item" wx:else bindtap="goLogin">
+      <text class="menu-icon mi-blue">登</text>
+      <text class="grow">登录账号</text>
+      <text class="small muted">微信一键登录 ›</text>
+    </view>
+    <view class="menu-item danger" bindtap="onClearData">
+      <text class="menu-icon mi-red">清</text>
+      <text class="grow">清空学习数据</text>
+      <text class="small muted">不可恢复 ›</text>
+    </view>
+  </view>
+
+  <view class="foot-tip small muted">数据全部保存在本机，卸载小程序将一并清除</view>
+</view>
