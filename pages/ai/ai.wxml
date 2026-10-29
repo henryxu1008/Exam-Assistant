@@ -1,0 +1,99 @@
+<!--pages/ai/ai.wxml-->
+<view class="page ai-page">
+  <!-- 头部 -->
+  <view class="ai-head">
+    <view class="row grow">
+      <view class="ai-logo">AI</view>
+      <view class="grow">
+        <view class="card-title">AI 学习助教</view>
+        <view class="card-sub">结合你的真实答题数据作答</view>
+      </view>
+    </view>
+    <text class="head-clear" bindtap="onClear">清空</text>
+  </view>
+
+  <!-- 对话区 -->
+  <scroll-view class="chat" scroll-y scroll-into-view="{{scrollTo}}" scroll-with-animation>
+    <view class="msg {{item.role}}" wx:for="{{messages}}" wx:key="mid" id="msg-{{index}}">
+      <view class="avatar {{item.role}}">{{item.role === 'ai' ? 'AI' : '我'}}</view>
+      <view class="bubble">
+        <view class="bubble-text">{{item.text}}</view>
+
+        <view class="bullets" wx:if="{{item.bullets.length}}">
+          <view class="bullet" wx:for="{{item.bullets}}" wx:for-item="b" wx:key="index">{{b}}</view>
+        </view>
+
+        <view class="ai-block" wx:if="{{item.mnemonic}}">
+          <view class="ai-block-title">🔑 记忆口诀</view>
+          <view class="ai-block-text">{{item.mnemonic}}</view>
+        </view>
+
+        <view class="ai-block" wx:if="{{item.similar.length}}">
+          <view class="ai-block-title">📌 举一反三</view>
+          <view
+            class="similar-item"
+            wx:for="{{item.similar}}"
+            wx:for-item="s"
+            wx:key="id"
+            data-id="{{s.id}}"
+            bindtap="onSimilar"
+          >
+            <text class="tag tag-gray">{{s.chapter}}</text>
+            <view class="similar-text ellipsis-2">{{s.stem}}</view>
+          </view>
+        </view>
+
+        <view class="cards" wx:if="{{item.cards.length}}">
+          <view
+            class="card-chip"
+            wx:for="{{item.cards}}"
+            wx:for-item="c"
+            wx:key="index"
+            data-action="{{c.action}}"
+            bindtap="onCard"
+          >{{c.text}} ›</view>
+        </view>
+
+        <view class="bubble-time">{{item.timeText}}</view>
+      </view>
+    </view>
+
+    <view class="msg ai" wx:if="{{loading}}">
+      <view class="avatar ai">AI</view>
+      <view class="bubble typing">
+        <text class="dot">●</text>
+        <text class="dot">●</text>
+        <text class="dot">●</text>
+      </view>
+    </view>
+
+    <view class="chat-bottom"></view>
+  </scroll-view>
+
+  <!-- 底部输入区 -->
+  <view class="dock">
+    <scroll-view class="quick" scroll-x>
+      <view
+        class="quick-item"
+        wx:for="{{quick}}"
+        wx:key="index"
+        data-text="{{item}}"
+        bindtap="onQuick"
+      >{{item}}</view>
+    </scroll-view>
+
+    <view class="input-bar">
+      <input
+        class="input"
+        value="{{input}}"
+        placeholder="问我：哪里最薄弱 / 制定计划 / 这题怎么解"
+        placeholder-class="input-ph"
+        confirm-type="send"
+        cursor-spacing="20"
+        bindinput="onInput"
+        bindconfirm="onSend"
+      />
+      <view class="send {{input ? 'on' : ''}}" bindtap="onSend">发送</view>
+    </view>
+  </view>
+</view>
