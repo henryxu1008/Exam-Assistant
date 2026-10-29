@@ -1,0 +1,10 @@
+{
+  "name": "userLogin",
+  "version": "1.0.0",
+  "description": "微信登录：code 换取 openid/token，用户落库",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  },
+  "license": "MIT"
+}

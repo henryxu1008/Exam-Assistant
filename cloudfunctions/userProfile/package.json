@@ -1,0 +1,10 @@
+{
+  "name": "userProfile",
+  "version": "1.0.0",
+  "description": "用户资料：读取 / 更新 / 登出（token 校验）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,108 @@
+<!--pages/login/login.wxml-->
+<view class="page login-page">
+  <!-- 品牌 -->
+  <view class="brand">
+    <view class="brand-logo">备</view>
+    <view class="brand-name">备考刷题助手</view>
+    <view class="brand-slogan">
+      {{step === 'login' ? '微信授权登录，开始你的备考' : '完善资料，让 AI 更懂你'}}
+    </view>
+  </view>
+
+  <!-- 未登录 -->
+  <view class="card" wx:if="{{step === 'login'}}">
+    <button class="btn-wechat" bindtap="onWechatLogin" loading="{{loading}}" hover-class="none">
+      <text class="wx-icon">微</text>
+      <text>{{loading ? '登录中…' : '微信一键登录'}}</text>
+    </button>
+
+    <view class="error-box" wx:if="{{error}}">
+      <text class="error-text">{{error}}</text>
+      <text class="error-retry" bindtap="onWechatLogin">重试</text>
+    </view>
+
+    <view class="feature">
+      <view class="feature-item">
+        <text class="feature-dot">•</text>
+        <text class="feature-text">错题本、学情报告跟随你的微信账号</text>
+      </view>
+      <view class="feature-item">
+        <text class="feature-dot">•</text>
+        <text class="feature-text">AI 助教基于你的真实答题数据给建议</text>
+      </view>
+      <view class="feature-item">
+        <text class="feature-dot">•</text>
+        <text class="feature-text">仅使用微信昵称与头像，不获取手机号</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 完善资料 -->
+  <view class="card" wx:elif="{{step === 'profile'}}">
+    <view class="avatar-wrap">
+      <button class="avatar-btn" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar" hover-class="none">
+        <image class="avatar-img" src="{{avatarPreview || form.avatarUrl}}" mode="aspectFill" wx:if="{{avatarPreview || form.avatarUrl}}" />
+        <view class="avatar-ph" wx:else>{{initial}}</view>
+      </button>
+      <view class="small muted avatar-tip">
+        {{uploading ? '头像上传中…' : '点击设置头像'}}
+      </view>
+    </view>
+
+    <view class="field">
+      <text class="field-label">昵称</text>
+      <input
+        class="field-input"
+        type="nickname"
+        value="{{form.nickName}}"
+        placeholder="请输入昵称"
+        placeholder-class="field-ph"
+        maxlength="20"
+        bindinput="onNickName"
+      />
+    </view>
+
+    <view class="field">
+      <text class="field-label">目标考试</text>
+      <input
+        class="field-input"
+        value="{{form.exam}}"
+        placeholder="例：事业单位 · 公共基础知识"
+        placeholder-class="field-ph"
+        maxlength="30"
+        bindinput="onExam"
+      />
+    </view>
+
+    <view class="error-box" wx:if="{{error}}">
+      <text class="error-text">{{error}}</text>
+    </view>
+
+    <view class="btn btn-primary btn-block save-btn" bindtap="onSave">
+      {{saving ? '保存中…' : mode === 'edit' ? '保存资料' : '保存并进入'}}
+    </view>
+  </view>
+
+  <!-- 已登录 -->
+  <view class="card" wx:else>
+    <view class="row done-head">
+      <image class="done-avatar" src="{{avatarPreview || form.avatarUrl}}" mode="aspectFill" wx:if="{{avatarPreview || form.avatarUrl}}" />
+      <view class="done-avatar ph" wx:else>{{initial}}</view>
+      <view class="grow">
+        <view class="done-name">{{form.nickName || '微信用户'}}</view>
+        <view class="card-sub">微信授权登录</view>
+      </view>
+      <text class="tag tag-green">已登录</text>
+    </view>
+
+    <view class="btn btn-primary btn-block done-btn" bindtap="goPractice">继续刷题</view>
+    <view class="row done-actions">
+      <view class="btn btn-ghost grow" bindtap="onEdit">编辑资料</view>
+      <view class="btn btn-ghost grow danger" bindtap="onLogout">退出登录</view>
+    </view>
+  </view>
+
+  <view class="agreement small muted">
+    登录即表示同意《用户协议》与《隐私政策》
+  </view>
+</view>

@@ -1,0 +1,218 @@
+/**
+ * utils/user.js
+ * 用户登录与资料 —— 微信云开发版
+ *
+ * 流程：wx.login 取 code → 云函数 userLogin 换取 openid / token → 本地缓存会话。
+ * 身份完全由云端决定，本地仅缓存会话用于渲染；未登录不可使用应用（强制登录）。
+ *
+ * 依赖：需在开发者工具中开通云开发，并部署 cloudfunctions/userLogin、cloudfunctions/userProfile。
+ */
+
+const config = require('./config.js')
+
+const SESSION_KEY = 'exam_quiz_session_v1'
+
+function defaults() {
+  return {
+    logged: false,
+    openid: '',
+    token: '',
+    nickName: '',
+    avatarUrl: '', // 云存储 fileID
+    exam: '',
+    loginAt: 0,
+    updatedAt: 0
+  }
+}
+
+let cache = null
+
+function load() {
+  if (cache) return cache
+  try {
+    const raw = wx.getStorageSync(SESSION_KEY)
+    cache = raw && typeof raw === 'object' ? Object.assign(defaults(), raw) : defaults()
+  } catch (e) {
+    cache = defaults()
+  }
+  return cache
+}
+
+function persist(profile) {
+  cache = profile
+  try {
+    wx.setStorageSync(SESSION_KEY, profile)
+  } catch (e) {
+    console.error('[user] 会话持久化失败', e)
+  }
+  return Object.assign({}, profile)
+}
+
+function getProfile() {
+  return Object.assign({}, load())
+}
+
+function isLogged() {
+  const s = load()
+  return !!s.logged && !!s.token
+}
+
+/** 初始化云开发（重复调用安全） */
+function initCloud() {
+  if (!wx.cloud || typeof wx.cloud.init !== 'function') return false
+  try {
+    const opts = { traceUser: true }
+    if (config.cloudEnv) opts.env = config.cloudEnv
+    wx.cloud.init(opts)
+    return true
+  } catch (e) {
+    return false // 已初始化
+  }
+}
+
+function hasCloud() {
+  return !!wx.cloud && typeof wx.cloud.callFunction === 'function'
+}
+
+/** 统一调用云函数，云端返回 ok:false 时按失败处理 */
+function call(name, data) {
+  if (!hasCloud()) {
+    return Promise.reject(new Error('未开通云开发，请先在开发者工具中开通'))
+  }
+  return wx.cloud
+    .callFunction({ name: name, data: data || {} })
+    .then((res) => {
+      const r = res && res.result
+      if (!r) return Promise.reject(new Error('云函数返回为空'))
+      if (r.ok === false) return Promise.reject(new Error(r.error || '云函数调用失败'))
+      return r
+    })
+}
+
+function getCode() {
+  return new Promise((resolve, reject) => {
+    if (typeof wx.login !== 'function') {
+      reject(new Error('当前环境不支持 wx.login'))
+      return
+    }
+    wx.login({
+      timeout: 10000,
+      success: (res) => {
+        if (res && res.code) resolve(res.code)
+        else reject(new Error('wx.login 未返回 code'))
+      },
+      fail: () => reject(new Error('wx.login 调用失败'))
+    })
+  })
+}
+
+/** 微信会话是否仍然有效 */
+function checkSession() {
+  return new Promise((resolve) => {
+    if (typeof wx.checkSession !== 'function') {
+      resolve(true)
+      return
+    }
+    wx.checkSession({ success: () => resolve(true), fail: () => resolve(false) })
+  })
+}
+
+/**
+ * 登录：wx.login → 云函数换取身份与 token
+ * @param {Object} extra 附加字段，如 {nickName, avatarUrl, exam}
+ * @returns {Promise<Object>} 会话资料
+ */
+function login(extra) {
+  return getCode()
+    .then((code) => call(config.functions.login, Object.assign({ code: code }, extra || {})))
+    .then((r) => {
+      const p = r.profile || {}
+      return persist(
+        Object.assign({}, load(), {
+          logged: true,
+          openid: r.openid || '',
+          token: r.token || '',
+          nickName: p.nickName || '',
+          avatarUrl: p.avatarUrl || '',
+          exam: p.exam || '',
+          loginAt: Date.now(),
+          updatedAt: Date.now()
+        })
+      )
+    })
+}
+
+/**
+ * 校验并恢复会话：已有 token 且微信会话有效则直接复用，否则静默重新登录。
+ * 从未登录过（无 token）时 resolve(null)，由调用方跳转登录页。
+ * @returns {Promise<Object|null>}
+ */
+function ensureSession() {
+  if (!isLogged()) return Promise.resolve(null)
+  return checkSession()
+    .then((valid) => (valid ? getProfile() : login()))
+    .catch(() => login())
+}
+
+/**
+ * 更新资料
+ * @param {Object} patch {nickName, avatarUrl, exam}
+ */
+function updateProfile(patch) {
+  const cur = load()
+  if (!cur.token) return Promise.reject(new Error('未登录'))
+  return call(config.functions.profile, Object.assign({ token: cur.token, action: 'update' }, patch)).then((r) => {
+    const p = r.profile || {}
+    return persist(
+      Object.assign({}, cur, {
+        nickName: p.nickName !== undefined ? p.nickName : cur.nickName,
+        avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : cur.avatarUrl,
+        exam: p.exam !== undefined ? p.exam : cur.exam,
+        updatedAt: Date.now()
+      })
+    )
+  })
+}
+
+/** 头像上传到云存储，返回 fileID */
+function uploadAvatar(tempPath) {
+  if (!tempPath) return Promise.resolve('')
+  if (!hasCloud()) return Promise.reject(new Error('未开通云开发'))
+  if (String(tempPath).indexOf('cloud://') === 0) return Promise.resolve(tempPath) // 已是 fileID
+  const openid = load().openid || 'anonymous'
+  const cloudPath = `avatars/${openid}_${Date.now()}.png`
+  return wx.cloud.uploadFile({ cloudPath: cloudPath, filePath: tempPath }).then((res) => res.fileID || '')
+}
+
+/** 退出登录：清云端 token + 清本地会话 */
+function logout() {
+  const cur = load()
+  const clear = () => persist(defaults())
+  if (!cur.token || !hasCloud()) return Promise.resolve(clear())
+  return call(config.functions.profile, { token: cur.token, action: 'logout' }).then(clear, clear)
+}
+
+/** 头像文字兜底：昵称首字 */
+function initial(name) {
+  const s = String(name || '').trim()
+  return s ? s.slice(0, 1) : '备'
+}
+
+function displayName() {
+  const p = load()
+  return p.logged ? p.nickName || '' : ''
+}
+
+module.exports = {
+  initCloud,
+  hasCloud,
+  getProfile,
+  isLogged,
+  login,
+  ensureSession,
+  updateProfile,
+  uploadAvatar,
+  logout,
+  initial,
+  displayName
+}

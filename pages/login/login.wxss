@@ -1,0 +1,299 @@
+/* pages/login/login.wxss */
+.brand {
+  padding: 48rpx 0 40rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.brand-logo {
+  width: 128rpx;
+  height: 128rpx;
+  line-height: 128rpx;
+  text-align: center;
+  border-radius: 36rpx;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+  color: #ffffff;
+  font-size: 48rpx;
+  font-weight: 700;
+  box-shadow: 0 16rpx 36rpx rgba(61, 107, 255, 0.3);
+}
+
+.brand-name {
+  margin-top: 24rpx;
+  font-size: 38rpx;
+  font-weight: 700;
+  color: #1f2733;
+}
+
+.brand-slogan {
+  margin-top: 10rpx;
+  font-size: 26rpx;
+  color: #8a93a6;
+}
+
+/* ---------- 微信登录按钮 ---------- */
+.btn-wechat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 96rpx;
+  border-radius: 24rpx;
+  background: linear-gradient(135deg, #5b86ff, #3d6bff);
+  color: #ffffff;
+  font-size: 32rpx;
+  font-weight: 600;
+  box-shadow: 0 12rpx 28rpx rgba(61, 107, 255, 0.28);
+  border: none;
+  padding: 0;
+}
+
+.btn-wechat::after {
+  border: none;
+}
+
+.btn-wechat:active {
+  opacity: 0.88;
+}
+
+.wx-icon {
+  width: 44rpx;
+  height: 44rpx;
+  line-height: 44rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  font-size: 22rpx;
+  margin-right: 14rpx;
+}
+
+/* ---------- 错误提示 ---------- */
+.error-box {
+  margin-top: 24rpx;
+  padding: 20rpx 22rpx;
+  border-radius: 16rpx;
+  background: #fdecec;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.error-text {
+  flex: 1;
+  font-size: 25rpx;
+  line-height: 36rpx;
+  color: #e5484d;
+}
+
+.error-retry {
+  margin-left: 16rpx;
+  font-size: 25rpx;
+  color: #3d6bff;
+  flex-shrink: 0;
+}
+
+/* ---------- 分割 ---------- */
+.divider {
+  margin: 36rpx 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.divider-line {
+  flex: 1;
+  height: 2rpx;
+  background: #eef1f6;
+}
+
+.divider-text {
+  margin: 0 20rpx;
+  font-size: 24rpx;
+  color: #a7aebd;
+}
+
+.btn-ghost-entry {
+  height: 88rpx;
+  line-height: 88rpx;
+  text-align: center;
+  border-radius: 24rpx;
+  background: #f3f5fa;
+  color: #5a6478;
+  font-size: 29rpx;
+}
+
+.btn-ghost-entry:active {
+  opacity: 0.8;
+}
+
+/* ---------- 功能说明 ---------- */
+.feature {
+  margin-top: 34rpx;
+  padding-top: 28rpx;
+  border-top: 2rpx solid #f1f3f7;
+}
+
+.feature-item {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  margin-bottom: 12rpx;
+}
+
+.feature-item:last-child {
+  margin-bottom: 0;
+}
+
+.feature-dot {
+  color: #3d6bff;
+  margin-right: 10rpx;
+  line-height: 40rpx;
+}
+
+.feature-text {
+  flex: 1;
+  font-size: 26rpx;
+  line-height: 40rpx;
+  color: #4a5364;
+}
+
+/* ---------- 头像 ---------- */
+.avatar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 0 8rpx;
+}
+
+.avatar-btn {
+  width: 168rpx;
+  height: 168rpx;
+  padding: 0;
+  border-radius: 50%;
+  background: #f3f5fa;
+  border: none;
+  overflow: hidden;
+}
+
+.avatar-btn::after {
+  border: none;
+}
+
+.avatar-img {
+  width: 168rpx;
+  height: 168rpx;
+  display: block;
+}
+
+.avatar-ph {
+  width: 168rpx;
+  height: 168rpx;
+  line-height: 168rpx;
+  text-align: center;
+  font-size: 60rpx;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+}
+
+.avatar-tip {
+  margin-top: 18rpx;
+}
+
+/* ---------- 表单 ---------- */
+.field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 28rpx;
+  height: 92rpx;
+  border-radius: 20rpx;
+  background: #f7f9fc;
+  padding: 0 24rpx;
+}
+
+.field-label {
+  width: 140rpx;
+  font-size: 28rpx;
+  color: #5a6478;
+  flex-shrink: 0;
+}
+
+.field-input {
+  flex: 1;
+  font-size: 28rpx;
+  color: #1f2733;
+  height: 92rpx;
+}
+
+.field-ph {
+  color: #a7aebd;
+  font-size: 27rpx;
+}
+
+.save-btn {
+  margin-top: 40rpx;
+  height: 92rpx;
+  font-size: 31rpx;
+}
+
+.skip {
+  margin-top: 24rpx;
+  text-align: center;
+  font-size: 26rpx;
+  color: #98a1b3;
+}
+
+/* ---------- 已登录 ---------- */
+.done-head {
+  padding-bottom: 8rpx;
+}
+
+.done-avatar {
+  width: 108rpx;
+  height: 108rpx;
+  border-radius: 32rpx;
+  margin-right: 22rpx;
+  flex-shrink: 0;
+}
+
+.done-avatar.ph {
+  line-height: 108rpx;
+  text-align: center;
+  font-size: 38rpx;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6f9bff, #3d6bff);
+}
+
+.done-name {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #1f2733;
+}
+
+.done-btn {
+  margin-top: 32rpx;
+  height: 92rpx;
+  font-size: 31rpx;
+}
+
+.done-actions {
+  margin-top: 20rpx;
+}
+
+.done-actions .btn + .btn {
+  margin-left: 20rpx;
+}
+
+.done-actions .danger {
+  color: #e5484d;
+}
+
+/* ---------- 协议 ---------- */
+.agreement {
+  margin-top: 40rpx;
+  text-align: center;
+  line-height: 36rpx;
+}
