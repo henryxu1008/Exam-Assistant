@@ -119,3 +119,33 @@ test('按用户隔离：切换数据种子后互不影响（为 Issue 1 预留�
   const b = freshStore() // 全新用户
   assert.strictEqual(Object.keys(b.getRecords()).length, 0)
 })
+
+test('按用户隔离：setUserScope 后账号间互不可见彼此数据', () => {
+  const store = freshStore()
+  store.setUserScope('userA')
+  store.recordAnswer(q('a1', 'ch1'), true, 100)
+  store.flush() // 强制落盘，确保切作用域后仍可恢复
+  assert.strictEqual(Object.keys(store.getRecords()).length, 1)
+
+  store.setUserScope('userB')
+  assert.strictEqual(Object.keys(store.getRecords()).length, 0) // B 看不到 A
+
+  store.setUserScope('userA')
+  assert.strictEqual(Object.keys(store.getRecords()).length, 1) // 切回 A 仍可见其数据
+})
+
+test('clearScope 仅删除指定用户数据，不影响其他账号', () => {
+  const store = freshStore()
+  store.setUserScope('userA')
+  store.recordAnswer(q('a1', 'ch1'), true, 100)
+  store.flush()
+  store.setUserScope('userB')
+  store.recordAnswer(q('b1', 'ch1'), true, 100)
+  store.flush()
+
+  store.clearScope('userA')
+  store.setUserScope('userA')
+  assert.strictEqual(Object.keys(store.getRecords()).length, 0) // A 已清空
+  store.setUserScope('userB')
+  assert.strictEqual(Object.keys(store.getRecords()).length, 1) // B 仍在
+})

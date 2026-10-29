@@ -9,6 +9,7 @@
  */
 
 const config = require('./config.js')
+const store = require('./store.js')
 
 const SESSION_KEY = 'exam_quiz_session_v1'
 
@@ -130,6 +131,8 @@ function login(extra) {
     .then((code) => call(config.functions.login, Object.assign({ code: code }, extra || {})))
     .then((r) => {
       const p = r.profile || {}
+      // 以云端可信 openid 绑定数据作用域：后续 store 读写只落在当前用户命名空间
+      store.setUserScope(r.openid || '')
       return persist(
         Object.assign({}, load(), {
           logged: true,
@@ -152,15 +155,39 @@ function ensureFreshToken(cur) {
 }
 
 /**
- * 校验并恢复会话：已有 token 且微信会话有效则直接复用，否则静默重新登录。
- * 从未登录过（无 token）时 resolve(null)，由调用方跳转登录页。
+ * 服务端校验令牌：以 token 调 userProfile 验证其是否仍有效（覆盖撤销/过期/跨设备失效）。
+ * 返回三态：'ok' 有效 / 'invalid' 服务端不认（须重新登录）/ 'unknown' 无云环境无法联网验证。
+ * 注意：wx.checkSession 仅验证微信会话是否过期，不能替代我们对自身令牌的校验。
+ */
+function verifySessionOnServer(token) {
+  if (!hasCloud()) return Promise.resolve('unknown')
+  return call(config.functions.profile, { token: token, action: 'get' })
+    .then(() => 'ok')
+    .catch(() => 'invalid')
+}
+
+/**
+ * 校验并恢复会话：以服务端令牌校验为主（而非仅依赖 wx.checkSession）。
+ * - 未登录（无 token）：resolve(null)，由调用方跳转登录页。
+ * - 服务端确认有效：临近过期则静默刷新。
+ * - 服务端不认（撤销/过期/跨设备失效）：重新登录换取新令牌与作用域。
+ * - 无法联网（unknown）：保留本地会话，避免断网时把所有用户踢出登录。
  * @returns {Promise<Object|null>}
  */
 function ensureSession() {
   if (!isLogged()) return Promise.resolve(null)
-  return checkSession()
-    .then((valid) => (valid ? ensureFreshToken(load()) : login()))
-    .catch(() => login())
+  const cur = load()
+  // 以可信 openid 绑定数据作用域，确保后续 store 读写落在当前用户命名空间（而非 anon）
+  store.setUserScope(cur.openid || 'anon')
+  return verifySessionOnServer(cur.token)
+    .then((state) => {
+      if (state === 'ok') return ensureFreshToken(cur)
+      if (state === 'invalid') {
+        return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
+      }
+      return cur // unknown：保留本地会话
+    })
+    .catch(() => cur)
 }
 
 /**
@@ -195,10 +222,13 @@ function uploadAvatar(tempPath) {
   return wx.cloud.uploadFile({ cloudPath: cloudPath, filePath: tempPath }).then((res) => res.fileID || '')
 }
 
-/** 退出登录：清云端 token + 清本地会话 */
+/** 退出登录：清云端 token + 清本地会话 + 切回匿名数据作用域 */
 function logout() {
   const cur = load()
-  const clear = () => persist(defaults())
+  const clear = () => {
+    store.setUserScope('anon')
+    return persist(defaults())
+  }
   if (!cur.token || !hasCloud()) return Promise.resolve(clear())
   return call(config.functions.profile, { token: cur.token, action: 'logout' }).then(clear, clear)
 }

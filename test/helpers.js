@@ -25,7 +25,8 @@ const CACHE_KEYS = [
 
 function freshStore(seed) {
   global.__wxStorage.clearAll()
-  if (seed) global.__wxStorage.setRaw('exam_quiz_data_v1', seed)
+  // 默认作用域为 'anon'，故按匿名作用域 key 播种（store 现按用户命名空间隔离）
+  if (seed) global.__wxStorage.setRaw('exam_quiz_data_v1__anon', seed)
   CACHE_KEYS.forEach((m) => {
     try {
       delete require.cache[require.resolve(m)]

@@ -54,6 +54,51 @@ function getDefaultState() {
 
 let state = null
 
+/**
+ * 用户隔离作用域：本地数据按 openid 命名空间存储，避免账号 A 登出、账号 B 登录后
+ * 读取到 A 的答题记录 / AI 对话（Issue 1）。未登录或无法获取 openid 时回落 'anon'。
+ * 切换账号必须调用 setUserScope 重置内存态并切到对应 key。
+ */
+let userScope = 'anon'
+
+function scopeKey() {
+  return `${STORAGE_KEY}__${userScope}`
+}
+
+/** 读取当前隔离作用域（openid 或 'anon'） */
+function getUserScope() {
+  return userScope
+}
+
+/**
+ * 切换数据存储作用域（通常在登录成功后用 openid、登出时用 null/'anon' 调用）。
+ * 会重置内存态并从新 key 重新加载；首次从旧版全局 key 迁移数据（仅一次，避免丢数据）。
+ */
+function setUserScope(openid) {
+  const next = openid && String(openid).length ? String(openid) : 'anon'
+  if (next === userScope) return userScope // 同作用域不重置内存态、不重复迁移
+  userScope = next
+  state = null
+  // 一次性迁移：旧版用全局单一 key，升级后首次进入该作用域时把全局数据搬过来，
+  // 再删除旧 key；多账号同设备时首个登录用户承接历史数据（与升级前单租户行为一致）。
+  const legacy = STORAGE_KEY
+  if (userScope !== 'anon') {
+    try {
+      const rawLegacy = wx.getStorageSync(legacy)
+      const rawScoped = wx.getStorageSync(scopeKey())
+      if (rawLegacy && typeof rawLegacy === 'object' && (!rawScoped || rawScoped === '')) {
+        wx.setStorageSync(scopeKey(), rawLegacy)
+        wx.removeStorageSync(legacy)
+      } else if (rawLegacy && typeof rawLegacy === 'object') {
+        wx.removeStorageSync(legacy)
+      }
+    } catch (e) {
+      /* 迁移失败不影响新会话 */
+    }
+  }
+  return userScope
+}
+
 /** 获取今日日期 key */
 function todayKey(date) {
   const d = date || new Date()
@@ -111,7 +156,7 @@ function migrate(raw) {
 function load() {
   if (state) return state
   try {
-    const raw = wx.getStorageSync(STORAGE_KEY)
+    const raw = wx.getStorageSync(scopeKey())
     state = migrate(raw) || getDefaultState()
   } catch (e) {
     state = getDefaultState()
@@ -140,7 +185,7 @@ function flush() {
   dirty = false
   lastFlushAt = Date.now()
   wx.setStorage({
-    key: STORAGE_KEY,
+    key: scopeKey(),
     data: state,
     fail: (e) => console.error('[store] 持久化失败', e)
   })
@@ -457,13 +502,29 @@ function clearAiMessages() {
 function clearAll() {
   state = getDefaultState()
   persist()
-  flush() // 清空是不可逆操作，立即落盘
+  flush() // 清空当前作用域（不可逆）
+}
+
+/** 清空指定（或当前）作用域的全部本地数据；用于「安全删除/切换账号」场景 */
+function clearScope(openid) {
+  const prev = userScope
+  if (openid) userScope = String(openid)
+  state = null
+  try {
+    wx.removeStorageSync(scopeKey())
+  } catch (e) {
+    /* ignore */
+  }
+  if (openid) userScope = prev
 }
 
 module.exports = {
   REVIEW_INTERVALS,
   todayKey,
   shortDate,
+  getUserScope,
+  setUserScope,
+  clearScope,
   load,
   flush,
   getSettings,

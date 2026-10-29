@@ -117,8 +117,10 @@ miniprogram-4/
 
 | key | 内容 |
 | --- | --- |
-| `exam_quiz_data_v1` | 答题记录、错题、复习计划、每日统计、设置、AI 对话 |
-| `exam_quiz_session_v1` | 登录会话缓存（openid / token / 资料），仅缓存，不是身份来源 |
+| `exam_quiz_data_v1__<openid>` | 答题记录、错题、复习计划、每日统计、设置、AI 对话；**按用户命名空间隔离**，切换账号互不可见（见 Issue 1） |
+| `exam_quiz_session_v1` | 登录会话缓存（openid / token / 资料），仅缓存，不是身份来源；token 仅存本地、不下发到公开 profile |
+
+**本地数据隔离（Issue 1）**：`store.js` 按可信 `openid` 命名空间存储，账号 A 登出、账号 B 登录后无法读取 A 的数据；首启动会把旧版全局 key 一次性迁移到对应用户命名空间。会话校验以**服务端令牌验证为主**（`userProfile` 校验 token 是否仍有效，覆盖撤销/过期/跨设备失效），不再仅依赖 `wx.checkSession`；断网无云环境时保留本地会话，避免误踢出。
 
 **云端**（云开发数据库集合 `users`）
 
