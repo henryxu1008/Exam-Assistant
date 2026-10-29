@@ -1,0 +1,157 @@
+<!-- pages/index/index.wxml -->
+<view class="page home">
+  <!-- 头部 -->
+  <view class="hero">
+    <view class="row between">
+      <view>
+        <view class="hero-title">{{greeting}}{{userName ? '，' + userName : ''}}，今天也要稳稳上岸</view>
+        <view class="hero-sub">{{dateText}} · 连续打卡 {{overview.streakDays}} 天</view>
+      </view>
+      <view class="hero-badge" bindtap="goAi" data-text="我的正确率">
+        <text class="hero-badge-num">{{overview.rate}}</text>
+        <text class="hero-badge-unit">%</text>
+      </view>
+    </view>
+
+    <view class="hero-progress">
+      <view class="row between hero-goal">
+        <text class="small">今日目标 {{goal}} 题 · 已完成 {{overview.todayTotal}} 题</text>
+        <text class="small">{{goalPercent}}%</text>
+      </view>
+      <view class="bar">
+        <view class="bar-inner" style="width: {{goalPercent}}%"></view>
+      </view>
+      <view class="small hero-tip">
+        {{goalLeft > 0 ? '还差 ' + goalLeft + ' 题达成今日目标，加油！' : '今日目标已达成，可以去复习错题啦。'}}
+      </view>
+    </view>
+  </view>
+
+  <!-- 数据概览 -->
+  <view class="stat-row">
+    <view class="stat-item" bindtap="goMistakes">
+      <text class="stat-num">{{overview.wrongCount}}</text>
+      <text class="stat-label">错题收录</text>
+    </view>
+    <view class="stat-item">
+      <text class="stat-num">{{overview.stubbornCount}}</text>
+      <text class="stat-label">顽固错题</text>
+    </view>
+    <view class="stat-item" bindtap="goReview">
+      <text class="stat-num">{{overview.dueCount}}</text>
+      <text class="stat-label">待复习</text>
+    </view>
+    <view class="stat-item" bindtap="goAnalysis">
+      <text class="stat-num">{{overview.chapterCount}}</text>
+      <text class="stat-label">已练模块</text>
+    </view>
+  </view>
+
+  <!-- AI 学习建议 -->
+  <view class="card ai-card">
+    <view class="row between">
+      <view class="row">
+        <view class="ai-logo">AI</view>
+        <view>
+          <view class="card-title">AI 学习建议</view>
+          <view class="card-sub">基于你的 {{overview.total}} 条答题记录生成</view>
+        </view>
+      </view>
+      <text class="tag" bindtap="goAi">问助教 ›</text>
+    </view>
+    <view class="ai-list">
+      <view class="ai-item" wx:for="{{advice}}" wx:key="index">
+        <text class="ai-dot">•</text>
+        <text class="ai-text">{{item}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 待复习提醒 -->
+  <view class="card review-card" wx:if="{{overview.dueCount > 0}}">
+    <view class="row between">
+      <view>
+        <view class="card-title">该复习了</view>
+        <view class="card-sub">遗忘曲线提示：{{overview.dueCount}} 道题已到复习节点</view>
+      </view>
+      <view class="btn btn-primary btn-round review-btn" bindtap="goReview">立即复习</view>
+    </view>
+  </view>
+
+  <!-- 快捷入口 -->
+  <view class="card">
+    <view class="card-title">开始练习</view>
+    <view class="grid-4">
+      <view class="grid-item" bindtap="goPractice" data-mode="random">
+        <view class="grid-icon gi-blue">随</view>
+        <text class="grid-text">随机刷题</text>
+      </view>
+      <view class="grid-item" bindtap="goWeak">
+        <view class="grid-icon gi-orange">弱</view>
+        <text class="grid-text">薄弱突破</text>
+      </view>
+      <view class="grid-item" bindtap="goPractice" data-mode="wrong">
+        <view class="grid-icon gi-red">错</view>
+        <text class="grid-text">错题重做</text>
+      </view>
+      <view class="grid-item" bindtap="goAnalysis">
+        <view class="grid-icon gi-green">报</view>
+        <text class="grid-text">学情报告</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 科目 -->
+  <view class="card">
+    <view class="row between">
+      <view class="card-title">练习科目</view>
+      <text class="small muted">共 {{overview.total}} 题已练</text>
+    </view>
+    <view class="subject-list">
+      <view
+        class="subject-item"
+        wx:for="{{subjects}}"
+        wx:key="name"
+        bindtap="goPractice"
+        data-mode="all"
+        data-subject="{{item.name}}"
+      >
+        <view class="row between">
+          <text class="subject-name">{{item.name}}</text>
+          <text class="small muted">{{item.attempted}}/{{item.count}}</text>
+        </view>
+        <view class="bar subject-bar">
+          <view
+            class="bar-inner {{item.rate && item.rate < 60 ? 'red' : ''}}"
+            style="width: {{item.percent}}%"
+          ></view>
+        </view>
+        <view class="row between small muted subject-meta">
+          <text>题库 {{item.count}} 题</text>
+          <text wx:if="{{item.attempted}}">正确率 {{item.rate}}%</text>
+          <text wx:else>尚未开始</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 薄弱预警 -->
+  <view class="card" wx:if="{{weakPreview.length}}">
+    <view class="row between">
+      <view class="card-title">需要加强</view>
+      <text class="small" bindtap="goAnalysis">完整报告 ›</text>
+    </view>
+    <view class="weak-list">
+      <view class="weak-item" wx:for="{{weakPreview}}" wx:key="chapter">
+        <view class="row between">
+          <text class="strong">{{item.chapter}}</text>
+          <text class="tag tag-red">正确率 {{item.rate}}%</text>
+        </view>
+        <view class="small muted weak-meta">已练 {{item.attempts}} 题 · 错 {{item.wrong}} 题</view>
+      </view>
+    </view>
+    <view class="btn btn-ghost btn-block weak-btn" bindtap="goWeak">针对薄弱专项练习</view>
+  </view>
+
+  <view class="foot-tip small muted">数据全部保存在本机 · 答题后自动生成学情画像</view>
+</view>
