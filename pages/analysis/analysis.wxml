@@ -1,0 +1,192 @@
+<!--pages/analysis/analysis.wxml-->
+<view class="page analysis">
+  <!-- 空状态 -->
+  <view class="empty" wx:if="{{!hasData}}">
+    <view class="empty-icon">◔</view>
+    <view class="empty-title">还没有答题数据</view>
+    <view class="small muted">完成一组练习后，这里会生成你的知识点画像</view>
+    <view class="btn btn-primary btn-round empty-btn" bindtap="goPractice">开始摸底练习</view>
+  </view>
+
+  <block wx:else>
+    <!-- 总览 -->
+    <view class="card hero-card">
+      <view class="row between">
+        <view>
+          <view class="card-title">学情总览</view>
+          <view class="card-sub">累计 {{overview.total}} 题 · 覆盖 {{overview.chapterCount}} 个知识点</view>
+        </view>
+        <view class="rate-badge">
+          <text class="rate-num">{{overview.rate}}</text>
+          <text class="rate-unit">%</text>
+        </view>
+      </view>
+      <view class="bar hero-bar">
+        <view class="bar-inner {{overview.rate < 60 ? 'red' : ''}}" style="width: {{overview.rate}}%"></view>
+      </view>
+    </view>
+
+    <view class="stat-row">
+      <view class="stat-item" bindtap="goMistakes">
+        <text class="stat-num">{{overview.wrongCount}}</text>
+        <text class="stat-label">错题</text>
+      </view>
+      <view class="stat-item">
+        <text class="stat-num bad">{{overview.stubbornCount}}</text>
+        <text class="stat-label">顽固错题</text>
+      </view>
+      <view class="stat-item" bindtap="goReview">
+        <text class="stat-num">{{overview.dueCount}}</text>
+        <text class="stat-label">待复习</text>
+      </view>
+      <view class="stat-item">
+        <text class="stat-num">{{overview.streakDays}}</text>
+        <text class="stat-label">连续打卡</text>
+      </view>
+    </view>
+
+    <!-- 雷达图 -->
+    <view class="card chart-card">
+      <view class="card-title">知识点掌握度</view>
+      <view class="card-sub">雷达面积越大，说明该模块掌握越扎实</view>
+      <canvas type="2d" id="radar" class="chart radar-chart"></canvas>
+      <view class="legend">
+        <view class="legend-item" wx:for="{{radarList}}" wx:key="name">
+          <text class="grow ellipsis">{{item.name}}</text>
+          <text class="legend-value">{{item.value}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 趋势 -->
+    <view class="card chart-card">
+      <view class="row between">
+        <view>
+          <view class="card-title">近 7 天正确率</view>
+          <view class="card-sub">今日 {{overview.todayTotal}} 题 · 正确率 {{overview.todayRate}}%</view>
+        </view>
+        <text class="tag">趋势</text>
+      </view>
+      <canvas type="2d" id="trend" class="chart trend-chart"></canvas>
+      <view class="trend-table">
+        <view class="trend-row" wx:for="{{trendTable}}" wx:key="date">
+          <text class="trend-date">{{item.date}}</text>
+          <view class="bar trend-bar">
+            <view class="bar-inner {{item.barClass}}" style="width: {{item.rate}}%"></view>
+          </view>
+          <text class="trend-value">{{item.total ? item.rate + '%' : '未练'}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 知识点正确率 -->
+    <view class="card chart-card">
+      <view class="row between">
+        <view class="card-title">模块正确率</view>
+        <text class="small muted">点击可专项练习</text>
+      </view>
+      <canvas type="2d" id="bars" class="chart bars-chart"></canvas>
+      <view class="chapter-list">
+        <view
+          class="chapter-item"
+          wx:for="{{chapters}}"
+          wx:key="key"
+          data-subject="{{item.subject}}"
+          data-chapter="{{item.chapter}}"
+          bindtap="onChapterPractice"
+        >
+          <view class="row between">
+            <text class="strong ellipsis grow">{{item.chapter}}</text>
+            <text class="tag {{item.rate >= 85 ? 'tag-green' : item.rate >= 60 ? '' : 'tag-red'}}">{{item.rate}}%</text>
+          </view>
+          <view class="bar chapter-bar">
+            <view class="bar-inner {{item.barClass}}" style="width: {{item.rate}}%"></view>
+          </view>
+          <view class="small muted chapter-meta">已练 {{item.attempts}} 题 · 错 {{item.wrong}} 题 · 掌握度 {{item.masteryText}}</view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 薄弱项 -->
+    <view class="card" wx:if="{{weak.length}}">
+      <view class="row between">
+        <view>
+          <view class="card-title">薄弱知识点</view>
+          <view class="card-sub">正确率低于 60%，建议优先攻克</view>
+        </view>
+        <text class="tag tag-red">{{weak.length}} 个</text>
+      </view>
+      <view class="weak-list">
+        <view
+          class="weak-item"
+          wx:for="{{weak}}"
+          wx:key="key"
+          data-subject="{{item.subject}}"
+          data-chapter="{{item.chapter}}"
+          bindtap="onChapterPractice"
+        >
+          <view class="row between">
+            <text class="strong">{{item.chapter}}</text>
+            <text class="tag tag-red">{{item.rate}}%</text>
+          </view>
+          <view class="small muted">已练 {{item.attempts}} 题 · 错 {{item.wrong}} 题</view>
+        </view>
+      </view>
+      <view class="btn btn-primary btn-block weak-btn" bindtap="onWeakPractice">薄弱专项突破</view>
+    </view>
+
+    <!-- 优势项 -->
+    <view class="card" wx:if="{{strong.length}}">
+      <view class="card-title">掌握较好</view>
+      <view class="card-sub">这些模块可以拉长复习间隔</view>
+      <view class="strong-list">
+        <view class="strong-item" wx:for="{{strong}}" wx:key="key">
+          <text class="grow ellipsis">{{item.chapter}}</text>
+          <text class="tag tag-green">{{item.rate}}%</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 顽固错题 -->
+    <view class="card" wx:if="{{stubborn.length}}">
+      <view class="row between">
+        <view>
+          <view class="card-title">顽固错题</view>
+          <view class="card-sub">错 2 次以上，建议配合 AI 讲解重做</view>
+        </view>
+        <text class="small" bindtap="goMistakes">错题本 ›</text>
+      </view>
+      <view class="stubborn-list">
+        <view class="stubborn-item" wx:for="{{stubborn}}" wx:key="id">
+          <view class="row">
+            <text class="tag tag-gray">{{item.chapter}}</text>
+            <text class="tag tag-red">错 {{item.wrong}} 次</text>
+            <text class="small muted">{{item.days ? item.days + ' 天前' : '今天'}}</text>
+          </view>
+          <view class="stubborn-stem ellipsis-2">{{item.stem}}</view>
+          <view class="row stubborn-actions">
+            <view class="act" data-id="{{item.id}}" bindtap="onRedo">重做</view>
+            <view class="act primary" data-id="{{item.id}}" bindtap="onAi">AI 讲解</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- AI 建议 -->
+    <view class="card ai-card">
+      <view class="row">
+        <view class="ai-logo">AI</view>
+        <view>
+          <view class="card-title">AI 学习建议</view>
+          <view class="card-sub">基于 {{overview.total}} 条答题记录生成</view>
+        </view>
+      </view>
+      <view class="ai-list">
+        <view class="ai-item" wx:for="{{advice}}" wx:key="index">
+          <text class="ai-dot">•</text>
+          <text class="ai-text">{{item}}</text>
+        </view>
+      </view>
+    </view>
+  </block>
+</view>
