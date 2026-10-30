@@ -255,6 +255,18 @@ function hasCloud() {
   return !!wx.__cloudReady && !!wx.cloud && typeof wx.cloud.callFunction === 'function'
 }
 
+/**
+ * 调用云函数并以回调方式处理结果。
+ * wx.cloud.callFunction 在支持回调的同时还会返回一个 Promise；我们只用回调消费结果，
+ * 若不处理该 Promise 的拒绝，会产生「未处理的 Promise 拒绝」——真实运行可能崩溃，
+ * 测试中会被判定为用例失败。这里统一吞掉拒绝（失败已由 fail 回调处理）。
+ */
+function callCloud(opts) {
+  const p = wx.cloud.callFunction(opts)
+  if (p && typeof p.then === 'function') p.then(null, () => {})
+  return p
+}
+
 function getToken() {
   try {
     const s = wx.getStorageSync(SESSION_KEY)
@@ -413,7 +425,7 @@ function pullFromCloud(onDone) {
     if (typeof onDone === 'function') onDone(true)
   }
   const fetchPage = () => {
-    wx.cloud.callFunction({
+    callCloud({
       name: config.functions.studySync,
       data: { token: getToken(), action: 'get', skip: skip },
       success: (res) => {
@@ -468,7 +480,7 @@ function pushToCloud() {
   const cursor = getAttemptCursor()
   const newAttempts = attemptsAll.slice(cursor)
   if (newAttempts.length) payload.attempts = newAttempts
-  wx.cloud.callFunction({
+  callCloud({
     name: config.functions.studySync,
     data: { token: getToken(), action: 'update', stats: payload },
     success: () => { setAttemptCursor(attemptsAll.length) },
@@ -479,7 +491,7 @@ function pushToCloud() {
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
 function deleteCloud() {
   if (!hasCloud() || !isLogged()) return
-  wx.cloud.callFunction({
+  callCloud({
     name: config.functions.studySync,
     data: { token: getToken(), action: 'delete' },
     fail: () => {} // 删除失败静默：下次清空时再试
