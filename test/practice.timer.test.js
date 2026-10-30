@@ -12,7 +12,8 @@ let capturedPage = null
 global.Page = (def) => {
   capturedPage = def
 }
-global.getApp = () => ({ globalData: {} })
+const __app = { globalData: {} }
+global.getApp = () => __app
 
 require('../pages/practice/practice.js')
 
@@ -123,4 +124,55 @@ test('评审 P2：登录切换存储作用域后 onShow 重建练习到新作用
   const sess = store.getPracticeSession()
   assert.strictEqual(sess.sessionTotal, 1)
   assert.strictEqual(sess.sessionCorrect, 1)
+})
+
+test('评审 P2：登录切换作用域时保留此前已建立的 pending 单题练习请求（不丢题）', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  const user = require('../utils/user.js')
+  user.requireLogin = () => true
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  const targetIds = [real[3].id]
+  // 第一次：在 anon 作用域消费 pending 建立单题会话
+  global.getApp().globalData.practiceParams = { mode: 'single', ids: targetIds, __stamp: 1111 }
+  const page = makePage([], null)
+  page.onShow()
+  assert.strictEqual(page.data.mode, 'single')
+  assert.strictEqual(page.data.total, 1, 'pending 单题请求应建立会话')
+  // 第二次：登录切换到 userX，pending 已被消费，触发作用域重建
+  store.setUserScope('userX')
+  store.setCurrentSubject(helpers.SUBJECT)
+  page.onShow()
+  assert.strictEqual(store.getUserScope(), 'userX')
+  assert.strictEqual(page.data.mode, 'single', '仍应为单题练习')
+  assert.strictEqual(page.data.total, 1, '作用域切换后不应丢弃 pending 单题请求')
+  assert.strictEqual(page.data.queue[0].id, targetIds[0])
+  assert.ok(page._sessionId, '应在新作用域重建会话')
+})
+
+test('评审 P2：清空学习数据后返回练习页应重建会话（不沿用已删除会话）', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  const user = require('../utils/user.js')
+  user.requireLogin = () => true
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: [real[0].id, real[1].id], params: { mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null } })
+  const page = makePage([], null)
+  page._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
+  page._scope = store.getUserScope()
+  const oldId = page._sessionId
+  assert.ok(oldId)
+  // 清空学习数据：删除持久化会话（作用域/科目不变）
+  store.clearAll()
+  assert.strictEqual(store.getPracticeSession(), null)
+  // 返回练习页：应检测到持久化会话缺失并重建，而非沿用已删除会话
+  page.onShow()
+  assert.ok(page._sessionId, '应重建新会话')
+  assert.notStrictEqual(page._sessionId, oldId, '不应沿用已删除会话')
+  // 提交应落到新会话，进度可累加（不再归零）
+  store.submitAttempt({ id: real[1].id, type: real[1].type, answer: real[1].answer, subject: helpers.SUBJECT, chapter: real[1].chapter }, real[1].answer, true, 100, 'op-x')
+  const sess = store.getPracticeSession()
+  assert.strictEqual(sess.sessionTotal, 1)
 })

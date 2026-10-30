@@ -57,17 +57,53 @@ Page({
 
   onShow() {
     if (!user.requireLogin()) return
-    // 消费从其他页面携带进来的参数（tabBar 页不支持 URL 传参）
-    this.loadPending()
     const curScope = store.getUserScope()
-    // 存储作用域已切换（登录/登出）：重建/恢复练习到新作用域，而非沿用旧作用域的会话
-    // （评审 P2：登录后匿名作用域会话失效，但仅科目判断会保留旧页面，导致进度归零且无法只读回看）
-    if (this._scope && this._scope !== curScope) {
-      this._params = null
-      this._init({ mode: this.data.mode, subject: store.getCurrentSubject(), chapter: this.data.chapter, ids: null, fresh: false })
+    const scopeChanged = this._scope && this._scope !== curScope
+
+    // 1) 优先消费从其它页面显式进入的 pending 参数（如「练习这道题」单题请求），
+    //    直接落在新作用域，保留用户意图（避免被后续作用域切换逻辑覆盖）
+    const pending = app.globalData.practiceParams
+    if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
+      this._stamp = pending.__stamp
+      pending.fresh = true
+      this._init(pending)
       this._scope = curScope
       return
     }
+
+    // 2) 存储作用域已切换（登录/登出）：重建到新作用域，并保留此前请求的 ids
+    //    （评审 P2：登录切换作用域时不要丢弃 pending 单题练习请求，否则 _buildQueue 收不到 ids 变空队列）
+    if (scopeChanged) {
+      const saved = this._params
+      this._params = null
+      this._init({
+        mode: this.data.mode,
+        subject: store.getCurrentSubject(),
+        chapter: this.data.chapter,
+        ids: saved ? saved.ids : null,
+        fresh: true // 强制重建到新作用域，不复用旧作用域会话
+      })
+      this._scope = curScope
+      return
+    }
+
+    // 3) 持久化会话已被清空（如「清空学习数据」）但页面仍持有旧会话引用：
+    //    重建练习，避免提交落到不存在的会话、进度归零、且无法只读回看（评审 P2）
+    const persisted = store.getPracticeSession()
+    if (this._sessionId && (!persisted || persisted.id !== this._sessionId)) {
+      const saved = this._params
+      this._params = null
+      this._init({
+        mode: this.data.mode,
+        subject: store.getCurrentSubject(),
+        chapter: this.data.chapter,
+        ids: saved ? saved.ids : null,
+        fresh: true
+      })
+      this._scope = curScope
+      return
+    }
+
     this._scope = curScope
     // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
     // 章节可能跨科失效故降级为整科顺序练习
