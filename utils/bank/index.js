@@ -245,20 +245,49 @@ async function loadCloudBank() {
   return false
 }
 
-/** 一次性把内置静态题库种入云端（仅当云端为空）；受本地 seed 标记保护，不会反复覆盖 */
+/** 登录会话存储键，与 utils/user.js 保持一致（避免 require user 造成循环依赖） */
+const SESSION_KEY = 'exam_quiz_session_v1'
+
+/** 读取本地会话令牌；题库写入是鉴权操作，没有令牌就不该发起（云端会直接拒绝） */
+function getToken() {
+  try {
+    const s = wx.getStorageSync(SESSION_KEY)
+    return (s && s.token) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+/**
+ * 一次性把内置静态题库种入云端（仅当云端为空）；受本地 seed 标记保护，不会反复覆盖。
+ * 云端同时做了鉴权：无令牌拒绝；题库已存在时仅管理员可强制覆盖（评审 P1）。
+ * @param {Object} [opt] { force: true } 由管理员工具调用时显式全量覆盖
+ */
 const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
-async function pushStaticBankToCloud() {
+async function pushStaticBankToCloud(opt) {
   if (!hasCloud()) return false
   try {
-    if (wx.getStorageSync(SEED_FLAG_KEY)) return false
+    const force = !!(opt && opt.force)
+    if (!force && wx.getStorageSync(SEED_FLAG_KEY)) return false
+    const token = getToken()
+    if (!token) return false // 未登录：云端会拒绝，不浪费一次调用
     const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'get' } })
     const r = res && res.result
-    if (r && r.ok && r.bank) {
+    if (!force && r && r.ok && r.bank) {
       wx.setStorageSync(SEED_FLAG_KEY, 1) // 云端已存在，标记已种
       return false
     }
     const staticBank = buildStaticSource()
-    await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'set', bank: staticBank } })
+    const res2 = await wx.cloud.callFunction({
+      name: config.functions.bankSync,
+      data: { action: 'set', token: token, bank: staticBank, force: force }
+    })
+    const r2 = res2 && res2.result
+    if (!r2 || !r2.ok) {
+      // BANK_EXISTS 说明云端已有题库（可能是并发初始化），本地按「已种入」处理即可
+      if (r2 && r2.error === 'BANK_EXISTS') wx.setStorageSync(SEED_FLAG_KEY, 1)
+      return false
+    }
     wx.setStorageSync(SEED_FLAG_KEY, 1)
     return true
   } catch (e) {

@@ -205,6 +205,22 @@ function ensureSession() {
 }
 
 /**
+ * 同步把数据作用域绑定到本地缓存会话对应的账号（不涉及网络，可安全在启动早期调用）。
+ *
+ * 必须在 store.load() 之前调用：冷启动且本地已有登录缓存时，若先以 anon 作用域加载，
+ * 随后 ensureSession() 才切到缓存账号，切换前那次上传会把匿名态的空档案当作该账号的
+ * 档案整doc覆盖到云端——在新设备上等于先毁掉正要恢复的那份备份（评审 P1）。
+ *
+ * 注意：ensureSession() 内部也会绑定一次，这里是为覆盖「load 早于会话校验」的窗口；
+ * 两者作用域一致时 setUserScope 会直接返回，不会重复迁移或重置内存态。
+ * @returns {String} 绑定后的作用域（openid 或 'anon'）
+ */
+function bindStoredScope() {
+  const cur = load()
+  return store.setUserScope(cur.logged && cur.openid ? cur.openid : 'anon')
+}
+
+/**
  * 更新资料
  * @param {Object} patch {nickName, avatarUrl, exam}
  */
@@ -361,6 +377,7 @@ module.exports = {
   requireLogin,
   login,
   ensureSession,
+  bindStoredScope,
   updateProfile,
   uploadAvatar,
   logout,

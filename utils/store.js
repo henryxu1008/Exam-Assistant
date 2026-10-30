@@ -84,6 +84,13 @@ let state = null
  */
 let userScope = 'anon'
 
+/**
+ * 云端同步代次：切换作用域或清空数据即递增（A→B→A 也算新代次，不能只比较 openid）。
+ * 云端请求发起后代次 / 作用域 / 令牌任一变化，回包一律丢弃，
+ * 避免把账号 A 的档案并入账号 B 的内存态并随之上传（评审 P1）。
+ */
+let cloudSyncGeneration = 0
+
 // 当前进程内的对话代次：账号切换或删除历史即递增，阻止缓存页面和旧异步回复复用。
 // 不随普通消息追加变化；A→B→A 也必须产生新代次，不能只比较 openid。
 let aiConversationVersion = 0
@@ -121,6 +128,8 @@ function setUserScope(openid) {
   userScope = next
   state = null
   aiConversationVersion += 1
+  // 作用域已变，作废所有在途云端请求（其回包属于旧账号）
+  cloudSyncGeneration += 1
   // 切换到真实账号后，允许下次 load 再次从云端拉取该账号的档案
   if (next !== 'anon') bootPulled = false
   // 一次性迁移：旧版用全局单一 key，升级后首次进入该作用域时把全局数据搬过来，
@@ -276,6 +285,16 @@ function getToken() {
   }
 }
 
+/** 当前会话绑定的 openid；未登录或会话已清空时返回 '' */
+function getSessionOpenid() {
+  try {
+    const s = wx.getStorageSync(SESSION_KEY)
+    return (s && s.openid) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
 function isLogged() {
   try {
     const s = wx.getStorageSync(SESSION_KEY)
@@ -397,21 +416,36 @@ function mergeDaily(ld, rd) {
   }
 }
 
-/** 从云端拉取学习档案，与本地双向合并后写回本地并上传云端，实现多端最终一致 */
 /**
  * 从云端拉取学习档案，与本地双向合并后写回本地并上传云端，实现多端最终一致。
  * 作答流水可能很多（单查上限 100 条），采用顺序分页拉取：每页带 skip，
  * 服务端返回 hasMore / nextSkip，直到取完所有页再一次性合并。
+ *
+ * 一致性防护（评审 P1）：发起时快照「同步代次 + 作用域 + 令牌」，
+ * 每次回包（含每个分页）先校验三者未变，否则丢弃。
+ * 否则账号 A 的拉取在登出 / 切到 B 之后回来，会把 A 的答题记录与 AI 对话
+ * 并入当前（属于 B 的）内存态，并随后续落盘以 B 的令牌上传。
+ * 分页复用同一个 token 快照，避免一次拉取横跨两个账号。
+ *
  * @param {Function} [onDone] 拉取（含所有分页）结束后回调，便于测试；生产调用通常省略
  */
 function pullFromCloud(onDone) {
   if (!hasCloud() || !isLogged()) return
   if (bootPulled) return
+  const gen = cloudSyncGeneration
+  const scope = userScope
+  const token = getToken()
   bootPulled = true
   let skip = 0
   let stats = null
   const allAttempts = []
+  /** 发起后账号环境已变化：回包属于旧账号，一律丢弃 */
+  const stale = () => (gen !== cloudSyncGeneration || scope !== userScope || getToken() !== token)
+  const abort = () => {
+    if (typeof onDone === 'function') onDone(false)
+  }
   const finish = (ok) => {
+    if (stale()) { abort(); return }
     if (!ok) {
       // 拉取失败：允许下次（重新登录/重启）再试
       bootPulled = false
@@ -420,6 +454,9 @@ function pullFromCloud(onDone) {
     }
     if (stats || allAttempts.length) {
       state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
+      // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
+      // 关闭后离线重开即丢失，本地独有数据也不会按承诺上传（评审 P2）
+      dirty = true
       flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
     }
     if (typeof onDone === 'function') onDone(true)
@@ -427,8 +464,9 @@ function pullFromCloud(onDone) {
   const fetchPage = () => {
     callCloud({
       name: config.functions.studySync,
-      data: { token: getToken(), action: 'get', skip: skip },
+      data: { token: token, action: 'get', skip: skip },
       success: (res) => {
+        if (stale()) { abort(); return }
         const r = res && res.result
         if (!r || !r.ok) { finish(false); return }
         if (r.stats) stats = r.stats
@@ -436,7 +474,9 @@ function pullFromCloud(onDone) {
           for (let i = 0; i < r.attempts.length; i++) allAttempts.push(r.attempts[i])
         }
         if (r.hasMore) {
-          skip = (typeof r.nextSkip === 'number') ? r.nextSkip : skip + r.attempts.length
+          skip = (typeof r.nextSkip === 'number')
+            ? r.nextSkip
+            : skip + (Array.isArray(r.attempts) ? r.attempts.length : 0)
           fetchPage()
           return
         }
@@ -467,6 +507,11 @@ function setAttemptCursor(n) {
 /** 把当前学习档案增量上传到云端（白名单字段由云函数再次校验） */
 function pushToCloud() {
   if (!hasCloud() || !isLogged() || !state) return
+  // 作用域必须与会话身份一致才允许上传（评审 P1）：
+  // 冷启动时若仍停留在 anon 作用域，这里上传的会是匿名态的空档案，
+  // 而 studySync 按 openid 整doc覆盖，等于用空数据毁掉该账号的云端备份。
+  const openid = getSessionOpenid()
+  if (!openid || userScope !== openid) return
   const payload = {
     records: state.records,
     daily: state.daily,
@@ -479,11 +524,20 @@ function pushToCloud() {
   const attemptsAll = state.attempts || []
   const cursor = getAttemptCursor()
   const newAttempts = attemptsAll.slice(cursor)
-  if (newAttempts.length) payload.attempts = newAttempts
+  // 本次上传覆盖到的流水终点：请求在途期间 attempts 可能继续追加，
+  // 必须按发起时的长度推进光标，否则会跳过这段新增作答。
+  const syncedUpTo = attemptsAll.length
   callCloud({
     name: config.functions.studySync,
-    data: { token: getToken(), action: 'update', stats: payload },
-    success: () => { setAttemptCursor(attemptsAll.length) },
+    // attempts 必须作为顶层字段：云函数只从 event.attempts 读取，
+    // 而 stats 会过白名单过滤掉 attempts——放进 payload 会导致
+    // 「流水一条都没上传，光标却已推进」（评审 P1）。
+    data: { token: getToken(), action: 'update', stats: payload, attempts: newAttempts },
+    // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标
+    success: (res) => {
+      const r = res && res.result
+      if (r && r.ok) setAttemptCursor(syncedUpTo)
+    },
     fail: () => {} // 上传失败静默：下次 flush 会再次尝试
   })
 }
@@ -810,6 +864,8 @@ function clearAiMessages() {
 function clearAll() {
   state = getDefaultState()
   aiConversationVersion += 1
+  // 在途的云端拉取若回来，会把刚清空的档案再并回来
+  cloudSyncGeneration += 1
   setAttemptCursor(0) // 重置作答上传光标，避免清空后新作答因光标错位而不上传
   deleteCloud() // 同步删除云端学习档案与作答流水，保证本地与云端一并清空
   persist()
@@ -825,6 +881,7 @@ function clearScope(openid) {
     dirty = false
     state = null
     aiConversationVersion += 1
+    cloudSyncGeneration += 1
   }
   try {
     wx.removeStorageSync(`${STORAGE_KEY}__${target}`)

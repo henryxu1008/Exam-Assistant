@@ -25,6 +25,10 @@ App({
     // store.load 会触发云端拉取，必须在 cloud 就绪之后调用，否则报 "Cloud API isn't enabled"
     user.initCloud()
 
+    // 冷启动且本地已有登录缓存时，先把数据作用域绑定到该账号，再加载本地仓储。
+    // 否则会以 anon 作用域加载并在切作用域时用空档案覆盖该账号的云端备份（评审 P1）。
+    user.bindStoredScope()
+
     // 初始化本地数据仓储（答题记录 / 错题 / 学情）
     store.load()
 
