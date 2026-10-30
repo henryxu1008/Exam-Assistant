@@ -51,12 +51,24 @@ Page({
       chapter: options && options.chapter ? decodeURIComponent(options.chapter) : '',
       ids: null
     })
+    // 记录当前存储作用域，供 onShow 检测登录/登出导致的切换（评审 P2）
+    this._scope = store.getUserScope()
   },
 
   onShow() {
     if (!user.requireLogin()) return
     // 消费从其他页面携带进来的参数（tabBar 页不支持 URL 传参）
     this.loadPending()
+    const curScope = store.getUserScope()
+    // 存储作用域已切换（登录/登出）：重建/恢复练习到新作用域，而非沿用旧作用域的会话
+    // （评审 P2：登录后匿名作用域会话失效，但仅科目判断会保留旧页面，导致进度归零且无法只读回看）
+    if (this._scope && this._scope !== curScope) {
+      this._params = null
+      this._init({ mode: this.data.mode, subject: store.getCurrentSubject(), chapter: this.data.chapter, ids: null, fresh: false })
+      this._scope = curScope
+      return
+    }
+    this._scope = curScope
     // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
     // 章节可能跨科失效故降级为整科顺序练习
     if (this._params && this._params.subject !== store.getCurrentSubject()) {

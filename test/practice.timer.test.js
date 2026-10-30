@@ -97,3 +97,30 @@ test('评审 P2：_finish 标记会话完成，重建页面不再恢复已完成
   page2._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
   assert.ok(page2._sessionId && page2._sessionId !== firstId, '已完成轮次不应被恢复')
 })
+
+test('评审 P2：登录切换存储作用域后 onShow 重建练习到新作用域（进度不归零）', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  const user = require('../utils/user.js')
+  user.requireLogin = () => true // 绕过真实登录重定向
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  // 匿名作用域下已开始一轮并提交一题
+  store.setUserScope('anon')
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: [real[0].id, real[1].id], params: { mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null } })
+  store.submitAttempt({ id: real[0].id, type: real[0].type, answer: real[0].answer, subject: helpers.SUBJECT, chapter: real[0].chapter }, real[0].answer, true, 100, 'op-a')
+  const page = makePage([], null)
+  page._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
+  page._scope = store.getUserScope() // 页面记忆此前作用域为 anon
+  // 模拟登录：切换到 userX 作用域
+  store.setUserScope('userX')
+  store.setCurrentSubject(helpers.SUBJECT)
+  page.onShow() // loadPending 无参数；作用域变化 -> 重建到新作用域
+  assert.strictEqual(store.getUserScope(), 'userX')
+  assert.ok(page._sessionId, '应已在新作用域创建/恢复会话')
+  // 新作用域下提交应被计入进度（不再因沿用旧会话而归零）
+  store.submitAttempt({ id: real[1].id, type: real[1].type, answer: real[1].answer, subject: helpers.SUBJECT, chapter: real[1].chapter }, real[1].answer, true, 100, 'op-b')
+  const sess = store.getPracticeSession()
+  assert.strictEqual(sess.sessionTotal, 1)
+  assert.strictEqual(sess.sessionCorrect, 1)
+})
