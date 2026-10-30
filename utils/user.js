@@ -183,11 +183,19 @@ function ensureSession() {
     .then((state) => {
       if (state === 'ok') return ensureFreshToken(cur)
       if (state === 'invalid') {
+        // 服务明确拒绝（撤销/过期/跨设备失效）：必须撤销本地会话、要求重新登录；
+        // 若自动重登也失败，则显式清除缓存会话（返回 null），不允许带着失效令牌继续
         return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
+          .then((p) => ((p && p.token) ? p : null))
+          .catch(() => {
+            store.setUserScope('anon')
+            persist(defaults())
+            return null
+          })
       }
-      return cur // unknown：保留本地会话
+      return cur // unknown（联网不可用）：保留本地会话，避免误踢出
     })
-    .catch(() => cur)
+    .catch(() => cur) // 网络/调用异常等同 unknown，保留本地会话
 }
 
 /**

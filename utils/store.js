@@ -93,6 +93,15 @@ function getUserScope() {
 function setUserScope(openid) {
   const next = openid && String(openid).length ? String(openid) : 'anon'
   if (next === userScope) return userScope // 同作用域不重置内存态、不重复迁移
+  // 切换前先把当前作用域的待落盘数据同步写入，避免节流定时器在 state 置空后丢失
+  // （评审 P2：Flush pending changes before switching user scopes）
+  if (state) {
+    try {
+      wx.setStorageSync(scopeKey(), state)
+    } catch (e) {
+      /* 忽略写入失败 */
+    }
+  }
   userScope = next
   state = null
   // 一次性迁移：旧版用全局单一 key，升级后首次进入该作用域时把全局数据搬过来，
@@ -559,6 +568,7 @@ function createPracticeSession(opt) {
     mode: (opt && opt.mode) || 'all',
     subject: (opt && opt.subject) || '',
     questionIds: (opt && opt.questionIds) || [],
+    params: (opt && opt.params) || null, // 用于「重进页面恢复未完成会话」时比对参数
     status: 'in_progress',
     createdAt: Date.now(),
     completedAt: 0,

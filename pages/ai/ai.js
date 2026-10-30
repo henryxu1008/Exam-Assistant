@@ -62,6 +62,7 @@ Page({
   },
 
   onUnload() {
+    this._reqToken = (this._reqToken || 0) + 1 // 作废在途请求，避免回页面后窜改状态
     this._clearReplyTimer()
   },
 
@@ -83,6 +84,10 @@ Page({
     const content = String(text || '').trim()
     if (!content || this.data.loading) return
 
+    // 请求令牌：每次发送递增；在途响应若令牌已变化（被清空/新消息）则视为过期，丢弃，避免窜改状态/存储
+    this._reqToken = (this._reqToken || 0) + 1
+    const token = this._reqToken
+
     const messages = this.data.messages.concat([
       this._decorate({ role: 'user', text: content, bullets: [], cards: [], time: Date.now() })
     ])
@@ -94,9 +99,11 @@ Page({
     ai
       .requestLLM(
         messages.slice(-6).map((m) => ({ role: m.role, content: m.text })),
-        store.getCurrentSubject()
+        store.getCurrentSubject(),
+        context // 含 questionId/userAnswer，供远端大模型看到题目（评审 P2）
       )
       .then((remote) => {
+        if (token !== self._reqToken) return undefined // 已过期，丢弃
         if (remote) return { reply: remote, bullets: [], cards: [] }
         // 本地引擎没有网络往返，保留「打字中」的等待感
         return new Promise((resolve) => {
@@ -107,6 +114,8 @@ Page({
         })
       })
       .then((result) => {
+        if (token !== self._reqToken) return // 已过期（被清空/新消息），不更新状态
+        if (!result) return
         const extra = result.extra || null
         const reply = {
           role: 'ai',
@@ -122,6 +131,7 @@ Page({
         store.pushAiMessage(reply)
       })
       .catch(() => {
+        if (token !== self._reqToken) return
         self.setData({ loading: false })
         wx.showToast({ title: '回复失败，请重试', icon: 'none' })
       })
@@ -158,6 +168,7 @@ Page({
       success(res) {
         if (!res.confirm) return
         store.clearAiMessages()
+        self._reqToken = (self._reqToken || 0) + 1 // 作废在途请求，避免陈旧响应写回已清空对话
         self._clearReplyTimer()
         self._resetMessages()
       }

@@ -61,7 +61,7 @@ Page({
     // 章节可能跨科失效故降级为整科顺序练习
     if (this._params && this._params.subject !== store.getCurrentSubject()) {
       const mode = this._params.mode === 'chapter' ? 'all' : this._params.mode
-      this._init({ mode, chapter: '', ids: null })
+      this._init({ mode, chapter: '', ids: null, fresh: true })
     }
   },
 
@@ -70,6 +70,7 @@ Page({
     const pending = app.globalData.practiceParams
     if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
       this._stamp = pending.__stamp
+      pending.fresh = true // 从其它页面显式进入新的一轮，不恢复旧会话
       this._init(pending)
     }
   },
@@ -88,13 +89,44 @@ Page({
     const subject = store.getCurrentSubject()
     const chapter = params.chapter || ''
     const ids = params.ids || null
+    const fresh = !!params.fresh
 
-    const snapshot = { mode, subject, chapter, ids }
+    const snapshot = { mode, subject, chapter, ids, fresh }
     const prev = this._params
-    if (prev && prev.mode === mode && prev.subject === subject && prev.chapter === chapter && prev.ids === ids && this.data.total) {
+    if (!fresh && prev && prev.mode === mode && prev.subject === subject && prev.chapter === chapter && prev.ids === ids && this.data.total) {
       return // 同一组参数重复进入时不重置进度
     }
     this._params = snapshot
+
+    // 恢复未完成的会话：app 重启/页面重建后，参数一致且存在 in_progress 的练习，则续做而非重开
+    // （评审 P2：Restore unfinished practice sessions before creating a new one）
+    const existing = store.getPracticeSession()
+    if (!fresh && existing && existing.status === 'in_progress' && existing.params &&
+        existing.params.mode === mode && existing.params.subject === subject &&
+        existing.params.chapter === chapter && existing.params.ids === ids) {
+      const queue = (existing.questionIds || []).map((id) => bank.findQuestion(id)).filter(Boolean)
+      if (queue.length) {
+        this.setData({
+          mode,
+          subject,
+          chapter,
+          modeTitle: MODE_TITLES[mode],
+          queue,
+          total: queue.length,
+          question: null,
+          finished: false,
+          summary: null,
+          sessionCorrect: existing.sessionCorrect || 0,
+          sessionTotal: existing.sessionTotal || 0,
+          errorIds: existing.errorIds || [],
+          emptyTip: ''
+        })
+        this._sessionId = existing.id
+        const startIdx = Math.min(existing.currentIndex || 0, queue.length - 1)
+        this._load(startIdx)
+        return
+      }
+    }
 
     wx.setNavigationBarTitle({ title: MODE_TITLES[mode] })
     const queue = this._buildQueue(snapshot)
@@ -132,7 +164,8 @@ Page({
     const session = store.createPracticeSession({
       mode,
       subject,
-      questionIds: queue.map((item) => item.id)
+      questionIds: queue.map((item) => item.id),
+      params: snapshot
     })
     this._sessionId = session.id
     this._load(0)
@@ -207,6 +240,10 @@ Page({
       starred: record ? !!record.starred : false
     })
     this._startAt = Date.now()
+    // 记录当前进度，便于 app 重启后恢复未完成会话
+    if (store.getPracticeSession()) {
+      store.updatePracticeSession({ currentIndex: idx })
+    }
   },
 
   /* ---------------- 交互 ---------------- */
@@ -388,7 +425,7 @@ Page({
     store.setCurrentSubject(subject)
     const mode = this.data.mode === 'single' || this.data.mode === 'chapter' ? 'all' : this.data.mode
     this._params = null
-    this._init({ mode, chapter: '', ids: null })
+    this._init({ mode, chapter: '', ids: null, fresh: true })
   },
 
   _finish() {
@@ -414,7 +451,8 @@ Page({
       mode: this.data.mode,
       subject: this.data.subject,
       chapter: this.data.chapter,
-      ids: null
+      ids: null,
+      fresh: true
     }
     if (this.data.mode === 'single') params.mode = 'all'
     this._init(params)

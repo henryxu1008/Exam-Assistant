@@ -50,3 +50,29 @@ test('_load 到已提交题不会因残留定时器前进（只读回看）', ()
   assert.strictEqual(page._timer, null)
   assert.strictEqual(page.data.submitted, true) // 只读回看状态
 })
+
+test('评审 P2：重建页面时恢复未完成的会话（进度/已提交只读回看）', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  // 取当前科目下两道真实题目的 id（store 按题目 id 恢复队列，必须用真实存在 id）
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  const qA = real[0]
+  const qB = real[1]
+  // 模拟已进行中的一轮：创建会话、提交 qA、进度停在 qB
+  store.createPracticeSession({
+    mode: 'all',
+    subject: helpers.SUBJECT,
+    questionIds: [qA.id, qB.id],
+    params: { mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null }
+  })
+  store.submitAttempt({ id: qA.id, type: qA.type, answer: qA.answer, subject: helpers.SUBJECT, chapter: qA.chapter }, qA.answer, true, 100, 'op-a')
+  store.updatePracticeSession({ currentIndex: 1 })
+  // 重建页面（app 重启后再次进入练习），参数一致且非 fresh -> 应恢复而非重开
+  const page = makePage([], null)
+  page._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
+  assert.strictEqual(page.data.total, 2, '队列应恢复为 2 题')
+  assert.strictEqual(page.data.idx, 1, '进度应恢复到 qB')
+  assert.strictEqual(page._sessionId, store.getPracticeSession().id, '复用同一会话 id')
+  assert.strictEqual(page.data.submitted, false, '当前题 qB 未提交 -> 可作答')
+})

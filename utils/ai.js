@@ -24,9 +24,10 @@ const REMOTE_LLM = {
  * 预留：调用真实大模型。未开启时返回 null，页面会自动回落到本地引擎。
  * @param {Array} messages 对话历史（已裁剪为最近若干轮）
  * @param {String} [subject] 当前科目，透传给大模型以约束回答口径；缺省取全局当前科目
+ * @param {Object} [context] 可选，当前题目上下文 { questionId, userAnswer }
  * @returns {Promise<string|null>}
  */
-function requestLLM(messages, subject) {
+function requestLLM(messages, subject, context) {
   if (!REMOTE_LLM.enabled) return Promise.resolve(null)
   return new Promise((resolve) => {
     if (!wx.cloud || typeof wx.cloud.callFunction !== 'function') {
@@ -40,6 +41,21 @@ function requestLLM(messages, subject) {
       role: m.role === 'ai' ? 'assistant' : m.role,
       content: m.content
     }))
+    // 题目上下文注入：让远端大模型能看到被讲解的题干/选项/用户作答与标准答案，
+    // 否则远端只会收到一句「这道题怎么解？」而看不到题目（评审 P2：Include the selected question in remote explanation requests）
+    const ctx = context || {}
+    if (ctx.questionId) {
+      const q = bank.findQuestion(ctx.questionId)
+      if (q) {
+        const optText = (q.options || []).map((o) => `${o.key}. ${o.text}`).join('；')
+        const ansText = answerText(q, q.answer)
+        const userAns = Array.isArray(ctx.userAnswer) && ctx.userAnswer.length ? answerText(q, ctx.userAnswer) : '（未作答）'
+        payload.unshift({
+          role: 'system',
+          content: `【当前正在讲解的题目】科目：${q.subject}｜章节：${q.chapter}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
+        })
+      }
+    }
     wx.cloud
       .callFunction({
         name: REMOTE_LLM.cloudFunction,

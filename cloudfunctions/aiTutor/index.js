@@ -156,48 +156,48 @@ function todayKey() {
 }
 
 /**
- * 预算护栏：按日在云数据库集合 aiTutorUsage 累计上游调用次数，
- * 超过当日上限（CONFIG.dailyCallCap，可由环境变量 AI_TUTOR_DAILY_CAP 覆盖）时返回 false，
- * 让端上回落本地引擎，避免产生不可控费用。计数异常（如集合未建）时放行，不阻断正常答疑。
+ * 预算护栏（原子预约）：先确保当日用量文档存在，再以「条件自增」原子地预约一次调用名额。
+ * 仅当 count < cap 时自增成功（updated===1），并发请求无法同时越界；越界返回 false，端上回落本地引擎。
+ * 计数异常（如集合未建）时放行，不阻断正常答疑。
  */
-async function withinBudget() {
+async function reserveDailyQuota() {
   const cap = Number(CONFIG.dailyCallCap) || 0
   if (!cap || cap <= 0) return true
+  const key = todayKey()
   try {
-    const res = await USAGE.where({ date: todayKey() }).limit(1).get()
-    const doc = res.data && res.data[0]
-    return (doc ? doc.count : 0) < cap
+    let res = await USAGE.where({ date: key }).limit(1).get()
+    let doc = res.data && res.data[0]
+    if (!doc) {
+      // 并发首次写入可能冲突，忽略重复创建错误后重新读取
+      try {
+        await USAGE.add({ data: { date: key, count: 0, createdAt: Date.now(), updatedAt: Date.now() } })
+      } catch (e) {
+        /* 并发创建冲突忽略 */
+      }
+      res = await USAGE.where({ date: key }).limit(1).get()
+      doc = res.data && res.data[0]
+    }
+    if (!doc) return true
+    // 条件自增：仅当 count < cap 时 +1；updated===1 视为预约成功（并发安全）
+    const upd = await USAGE.where({ _id: doc._id, count: db.command.lt(cap) }).update({
+      data: { count: db.command.inc(1), updatedAt: Date.now() }
+    })
+    const updated = (upd && upd.updated) || (upd && upd.stats && upd.stats.updated) || 0
+    return updated === 1
   } catch (e) {
     return true
   }
 }
 
-/** 成功调用上游大模型后累计当日用量；失败静默忽略，不影响主流程 */
-async function addUsage() {
-  const key = todayKey()
-  try {
-    const res = await USAGE.where({ date: key }).limit(1).get()
-    const doc = res.data && res.data[0]
-    if (doc) {
-      await USAGE.doc(doc._id).update({ data: { count: db.command.inc(1), updatedAt: Date.now() } })
-    } else {
-      await USAGE.add({ data: { date: key, count: 1, createdAt: Date.now(), updatedAt: Date.now() } })
-    }
-  } catch (e) {
-    // 计数失败不影响主流程
-  }
-}
-
 exports.main = async (event) => {
   if (!CONFIG.enabled) return { content: null, disabled: true }
-  if (!(await withinBudget())) return { content: null, disabled: true, reason: 'BUDGET' }
+  // 原子预约配额：成功才调用上游，避免并发绕过每日上限（评审 P2：Reserve daily AI quota atomically before calling upstream）
+  if (!(await reserveDailyQuota())) return { content: null, disabled: true, reason: 'BUDGET' }
 
   const { clean, subj } = sanitize(event.messages, event.subject)
   if (!clean.length) return { content: null, disabled: true }
 
   const content = await callLLM(clean, subj)
-  // 仅在有真实上游响应后累计用量，用于预算护栏
-  if (content) addUsage().catch(() => {})
   // 只回传 content，其余内部字段一律不下发到端上
   return { content: content || null }
 }

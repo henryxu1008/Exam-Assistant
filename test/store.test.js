@@ -30,9 +30,12 @@ test('recordAnswer 答错降级 level 并进入错题本', () => {
 test('REVIEW_INTERVALS 与掌握等级映射 nextReviewAt', () => {
   const store = freshStore()
   assert.deepStrictEqual(store.REVIEW_INTERVALS, [0, 1, 2, 4, 7, 15])
+  // 冻结时间，避免 recordAnswer 内部与断言之间时钟前进导致毫秒级不等（评审 P2 时间冻结）
+  mockDate(BASE)
   const r = store.recordAnswer(q('t1', 'ch1'), true, 1000).record
-  const expectNext = Date.now() + store.REVIEW_INTERVALS[r.level] * DAY
+  const expectNext = BASE + store.REVIEW_INTERVALS[r.level] * DAY
   assert.strictEqual(r.nextReviewAt, expectNext)
+  restoreDate()
 })
 
 test('错题重练：连续 MASTER_DAYS 天答对自动移出错题本', () => {
@@ -221,4 +224,27 @@ test('AnswerAttempt 字段完整（不可变流水）', () => {
   assert.strictEqual(att.score, 1)
   assert.strictEqual(att.costMs, 123)
   assert.ok(att.id) // 唯一作答 ID（被 session.submitted.attemptId 引用）
+})
+
+/* ---------------- 评审 P2 修复回归 ---------------- */
+
+test('setUserScope 切换作用域前先落盘当前数据，避免节流写入丢答案（评审 P2）', () => {
+  const store = freshStore()
+  store.recordAnswer(q('t1', 'ch1'), true, 100) // 调度了节流 flush，但数据仍在内存
+  store.setUserScope('userX') // 切到新作用域（切换前应先把 anon 数据落盘）
+  store.setUserScope('anon') // 切回
+  const r = store.getRecord('t1')
+  assert.ok(r, '切回后应能读到切换前在 anon 作用域提交的作答')
+  assert.strictEqual(r.right, 1)
+})
+
+test('getDueRecords 包含错>=2 的题（即便 nextReviewAt 在未来），保证 redoDue 与之口径一致', () => {
+  const store = freshStore()
+  mockDate(BASE)
+  store.recordAnswer(q('t1', 'ch1'), false, 100)
+  store.recordAnswer(q('t1', 'ch1'), false, 100) // 错 2 次 -> 顽固
+  mockDate(BASE + 100 * DAY) // 推进到未来，nextReviewAt 远超 now
+  const due = store.getDueRecords()
+  assert.ok(due.some((x) => x.id === 't1'), '错>=2 的题应出现在待复习（mistakes.redoDue 依赖同一选择器）')
+  restoreDate()
 })

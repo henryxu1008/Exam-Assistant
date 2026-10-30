@@ -205,9 +205,13 @@ Page({
     app.startPractice({ mode: 'single', ids })
   },
 
-  /** 只练到期复习 */
+  /** 只练到期复习——与「待复习」列表共用同一选择器 getDueRecords()，避免列表有题却提示无题 */
   redoDue() {
-    const ids = this._ids((r) => (r.nextReviewAt || 0) <= Date.now())
+    const subject = store.getCurrentSubject()
+    const ids = store
+      .getDueRecords()
+      .filter((r) => r.subject === subject)
+      .map((r) => r.id)
     if (!ids.length) {
       wx.showToast({ title: '暂无待复习题目', icon: 'none' })
       return

@@ -69,7 +69,9 @@ global.wx = {
   setStorageSync,
   setStorage,
   getStorage,
-  removeStorageSync
+  removeStorageSync,
+  // 导航栏标题设置：单测无 UI，设为无操作
+  setNavigationBarTitle: () => {}
 }
 
 global.__wxStorage = {

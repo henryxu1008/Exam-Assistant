@@ -146,6 +146,31 @@ test('无云环境（断网）时保留本地会话，不踢出用户', () => {
   })
 })
 
+test('服务端明确拒绝令牌且自动重登失败时清除会话（评审 P2）', () => {
+  const user = freshUser()
+  let loginCalls = 0
+  cloudHandler = (name) => {
+    if (name === 'userProfile') return { ok: false, error: 'INVALID_TOKEN' } // 校验时明确拒绝
+    if (name === 'userLogin') {
+      loginCalls += 1
+      if (loginCalls === 1) return { ok: true, openid: 'OPENID_X', token: 'TOK_OLD', profile: {} } // 初始登录成功
+      return { ok: false, error: 'LOGIN_FAILED' } // 自动重登失败
+    }
+    return { ok: true }
+  }
+  return user
+    .login()
+    .then(() => {
+      assert.strictEqual(user.isLogged(), true) // 初始登录已建立会话
+      return user.ensureSession()
+    })
+    .then((p) => {
+      // 明确拒绝 + 无法刷新 -> 撤销会话并要求重新登录，不允许带着失效令牌继续
+      assert.strictEqual(p, null)
+      assert.strictEqual(user.isLogged(), false)
+    })
+})
+
 test('登出：清除会话并切回匿名作用域', () => {
   const user = freshUser()
   cloudHandler = (name) => {
