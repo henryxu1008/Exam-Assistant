@@ -54,6 +54,12 @@ function publicProfile(doc) {
   return out
 }
 
+/** 只撤销读取时的令牌；并发新登录写入的新令牌不属于本次操作。 */
+function clearTokenIfCurrent(doc) {
+  return USERS.where({ _id: doc._id, token: doc.token })
+    .update({ data: { token: '', tokenAt: 0 } })
+}
+
 async function findByToken(token) {
   if (!token) return null
   const res = await USERS.where({ token: token })
@@ -63,9 +69,7 @@ async function findByToken(token) {
   if (!doc) return null
   // 过期令牌直接作废，小程序端会静默重新登录换取新令牌
   if (!doc.tokenAt || Date.now() - doc.tokenAt > TOKEN_TTL) {
-    await USERS.doc(doc._id)
-      .update({ data: { token: '', tokenAt: 0 } })
-      .catch(() => {})
+    await clearTokenIfCurrent(doc).catch(() => {})
     return null
   }
   return doc
@@ -81,7 +85,7 @@ exports.main = async (event) => {
   const action = event.action || 'get'
 
   if (action === 'logout') {
-    await USERS.doc(user._id).update({ data: { token: '', tokenAt: 0 } })
+    await clearTokenIfCurrent(user)
     return { ok: true }
   }
 
