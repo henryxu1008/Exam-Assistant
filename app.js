@@ -119,10 +119,17 @@ App({
     store.flush()
   },
 
-  /** 启动时恢复/校验会话：未登录时 resolve，由首页拦截跳转登录页 */
+  /**
+   * 启动时恢复/校验会话：未登录时 resolve，由首页拦截跳转登录页。
+   *
+   * 这里**不能**走 guardEntry()：会话恢复只是读取当前登录态，不是「使用功能」。
+   * 一旦在此拦截，sessionReady 永远停在 false，而后面即便运营解除强制更新、
+   * _applyRuntimeConfig 清掉了阻断态，也没有任何路径会再补一次会话初始化——
+   * 所有 whenSessionReady 的等待者将永久挂起，页面永远不初始化。
+   * 鉴权必须与入口限制解耦（评审 P1 4425408864）。
+   */
   _checkSession() {
     const self = this
-    if (this.guardEntry()) return
     user
       .ensureSession()
       .then((profile) => {

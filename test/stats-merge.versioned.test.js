@@ -60,6 +60,26 @@ test('清空后再新增的对话不会被旧快照复活', () => {
   assert.deepEqual(merged.aiMessages, [], '纪元更低的旧对话不得覆盖已清空状态')
 })
 
+test('合并后的对话按时间升序排列（评审 P2 4425408887）', () => {
+  const seq = (from, to) => {
+    const arr = []
+    for (let i = from; i <= to; i++) arr.push({ time: i, role: 'u', text: 'm' + i })
+    return arr
+  }
+  // 上传侧只带最近 60 条窗口（pushAiMessage 的保留上限），服务端存着更早的 1–60
+  const server = baseState({ aiMessages: seq(1, 60), aiEpoch: 0 })
+  const upload = baseState({ aiMessages: seq(61, 120), aiEpoch: 0 })
+
+  const times = mergeStats(server, upload).aiMessages.map((m) => m.time)
+  assert.deepEqual(
+    times.slice().sort((a, b) => a - b),
+    times,
+    '顺序不能依赖哪一侧在前，否则下游取「最后 N 条」会拿到旧对话'
+  )
+  // 保留上限会截掉末尾之外的内容：必须留下最新的 61–120
+  assert.deepEqual(times.slice(-60), seq(61, 120).map((m) => m.time))
+})
+
 test('同一纪元内的对话仍按 time 并集去重（不误删）', () => {
   const a = baseState({ aiMessages: [{ time: 1, role: 'u' }], aiEpoch: 2 })
   const b = baseState({ aiMessages: [{ time: 1, role: 'u' }, { time: 2, role: 'a' }], aiEpoch: 2 })

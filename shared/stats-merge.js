@@ -116,6 +116,23 @@ function pickNewer(a, b, fallbackKeys) {
 }
 
 /**
+ * 按 time 升序排序；没有 time 的条目保持原有相对次序，排在末尾。
+ *
+ * 合并后的对话顺序不能依赖「哪一侧在前」：上传侧受保留上限约束，
+ * 往往只带最近一段窗口，直接拼接会把新消息排到旧消息之前（评审 P2 4425408887）。
+ */
+function sortByTime(list) {
+  const withTime = []
+  const without = []
+  ;(list || []).forEach((m, i) => {
+    if (m && typeof m.time === 'number') withTime.push({ m: m, i: i })
+    else without.push({ m: m, i: i })
+  })
+  withTime.sort((x, y) => x.m.time - y.m.time || x.i - y.i)
+  return withTime.concat(without).map((x) => x.m)
+}
+
+/**
  * 合并两份学习档案。
  *
  * 语义（除 settings 外均为对称的「并集 / 取较新或较大」）：
@@ -180,7 +197,9 @@ function mergeStats(base, incoming) {
       seen[t] = true
       ai.push(m)
     })
-    out.aiMessages = ai
+    // 必须排序后再交给下游：AI 页取「最后 6 条」作模型上下文、
+    // pushAiMessage 保留「最后 60 条」——顺序错了会拿旧对话当上下文并截掉最新记录
+    out.aiMessages = sortByTime(ai)
   }
 
   // attempts：按 id 去重取并集（不可变流水，按 id 并集即可）
@@ -264,6 +283,7 @@ module.exports = {
   mergeDaily,
   mergeStats,
   mergeSession,
+  sortByTime,
   versionOf,
   bumpVersion,
   canonical,
