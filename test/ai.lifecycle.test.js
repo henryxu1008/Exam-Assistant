@@ -40,7 +40,7 @@ beforeEach(() => {
   global.clearTimeout = (key) => timers.delete(key)
   ai.requestLLM = (...args) => new Promise((resolve, reject) => requests.push({ args, resolve, reject }))
   ai.chat = () => ({ reply: '本地回复', bullets: [], cards: [] })
-  user.requireLogin = () => logged
+  user.requireLogin = (onLogged) => { if (logged && onLogged) onLogged(); return logged }
   wx.showModal = (options) => { modal = options }
 })
 

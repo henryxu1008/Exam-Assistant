@@ -25,10 +25,10 @@ Page({
   },
 
   onLoad() {
-    this._resetMessages()
+    this._conversationVersion = null
   },
 
-  /** 载入历史消息（无历史时用欢迎语兜底），供 onLoad 与清空对话后复用 */
+  /** 认证完成后载入历史消息（无历史时用欢迎语兜底）。 */
   _resetMessages() {
     this._invalidateReply()
     this._conversationVersion = store.getAiConversationVersion()
@@ -56,10 +56,15 @@ Page({
   },
 
   onShow() {
-    // 登录拦截前移除旧账号内容；预填请求必须在新账号历史载入后消费。
+    if (user.requireLogin(() => this._showConversation())) return
+    // 待校验或未登录时不展示缓存历史；全局预填输入继续保留，认证后再消费。
+    this._invalidateReply()
+    this._conversationVersion = null
+    this.setData({ messages: [], input: '', loading: false, scrollTo: '' })
+  },
+
+  _showConversation() {
     this._syncConversation()
-    // 未登录时先去登录页，回来后再消费其他页面带来的预填内容
-    if (!user.requireLogin()) return
     // 其他页面（错题本 / 学情报告 / 练习页）携带问题跳转过来
     const pre = app.globalData.aiPreInput
     if (!pre) return
@@ -90,6 +95,7 @@ Page({
   },
 
   send(text, context) {
+    if (!user.requireLogin()) return
     this._syncConversation()
     const content = String(text || '').trim()
     if (!content || this.data.loading) return
@@ -185,6 +191,7 @@ Page({
   },
 
   onClear() {
+    if (!user.requireLogin()) return
     this._syncConversation()
     const version = this._conversationVersion
     const self = this

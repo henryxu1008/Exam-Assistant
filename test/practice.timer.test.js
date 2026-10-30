@@ -27,6 +27,11 @@ function makePage(queue, timer) {
   return page
 }
 
+function allowLogin(onLogged) {
+  if (onLogged) onLogged()
+  return true
+}
+
 test('_load 切换题目时清除挂起的自动下一题定时器（P2 回归）', () => {
   const queue = [
     { id: 'q1', type: 'single', answer: ['A'] },
@@ -104,7 +109,7 @@ test('评审 P2：登录切换存储作用域后 onShow 重建练习到新作用
   const helpers = require('./helpers.js')
   const bank = require('../utils/bank/index.js')
   const user = require('../utils/user.js')
-  user.requireLogin = () => true // 绕过真实登录重定向
+  user.requireLogin = allowLogin // 绕过真实登录重定向，保留 guard 的回调契约
   const real = bank.filterQuestions({ subject: helpers.SUBJECT })
   // 匿名作用域下已开始一轮并提交一题
   store.setUserScope('anon')
@@ -131,7 +136,7 @@ test('评审 P2：登录切换作用域时保留此前已建立的 pending 单�
   const helpers = require('./helpers.js')
   const bank = require('../utils/bank/index.js')
   const user = require('../utils/user.js')
-  user.requireLogin = () => true
+  user.requireLogin = allowLogin
   const real = bank.filterQuestions({ subject: helpers.SUBJECT })
   const targetIds = [real[3].id]
   // 第一次：在 anon 作用域消费 pending 建立单题会话
@@ -158,7 +163,7 @@ test('评审 P2：清空学习数据后返回练习页应重建会话（不沿�
   const helpers = require('./helpers.js')
   const bank = require('../utils/bank/index.js')
   const user = require('../utils/user.js')
-  user.requireLogin = () => true
+  user.requireLogin = allowLogin
   const real = bank.filterQuestions({ subject: helpers.SUBJECT })
   store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: [real[0].id, real[1].id], params: { mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null } })
   const page = makePage([], null)
@@ -184,7 +189,7 @@ test('评审 P2：单题练习后从其它页面切换科目，返回练习应�
   const helpers = require('./helpers.js')
   const bank = require('../utils/bank/index.js')
   const user = require('../utils/user.js')
-  user.requireLogin = () => true
+  user.requireLogin = allowLogin
   const real = bank.filterQuestions({ subject: helpers.SUBJECT })
   store.setCurrentSubject(helpers.SUBJECT)
   // 从错题本进入单题练习（ids 指向当前科目某题）

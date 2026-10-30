@@ -653,9 +653,14 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
   const session = s.practiceSession
   const opId = clientOpId || newId('op')
 
-  // 幂等：同一会话内相同 clientOpId 已提交过，直接返回已有结果，不重复落库/计数
-  if (session && session.submitted && session.submitted[question.id] && session.submitted[question.id].clientOpId === opId) {
-    return { record: getRecord(question.id), attempt: null, dup: true }
+  // submitted 只保留本题最后一次答案，不能作为历史操作的去重索引。
+  // 以持久化流水查找业务幂等键，one→two→重试 one 也不会再落库或覆盖最新答案。
+  const existing = session && (s.attempts || []).find((a) =>
+    a.sessionId === session.id && a.questionId === question.id && a.clientOpId === opId
+  )
+  const latest = session && session.submitted && session.submitted[question.id]
+  if (existing || (latest && latest.clientOpId === opId)) {
+    return { record: getRecord(question.id), attempt: existing || null, dup: true }
   }
 
   const attemptId = newId('at')

@@ -264,27 +264,37 @@ let loginRedirecting = false
  * 页面级登录拦截：应在页面 onShow 中调用。
  * 会等 App 的会话校验结束后再判断，避免把「会话可用但尚未校验完」误判为未登录。
  * @param {Function} [onLogged] 确认已登录后的回调，用于刷新依赖用户资料的内容
- * @returns {Boolean} 当前是否已登录；返回 false 时不应继续渲染需登录后才有意义的内容
+ * @returns {Boolean} 启动校验已完成且已登录才返回 true；false 也可能表示等待中。
+ * 依赖登录的初始化应放在 onLogged 回调中，以覆盖同步放行与异步恢复两条路径。
  */
 function requireLogin(onLogged) {
-  if (isLogged()) {
-    if (typeof onLogged === 'function') onLogged()
-    return true
-  }
-  if (loginRedirecting) return false
-  loginRedirecting = true
-  const done = (logged) => {
-    loginRedirecting = false
-    if (logged) {
-      if (typeof onLogged === 'function') onLogged()
-      return
-    }
-    wx.navigateTo({ url: '/pages/login/login' })
-  }
   const app = typeof getApp === 'function' ? getApp() : null
-  if (app && typeof app.whenSessionReady === 'function') app.whenSessionReady(done)
-  else done(false)
-  return false
+  const currentPage = () => {
+    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+    return pages[pages.length - 1]
+  }
+  const owner = currentPage()
+  const done = () => {
+    // 启动校验完成前页面可能已隐藏或销毁，不初始化过期页面。
+    if (owner && currentPage() !== owner) return false
+    if (isLogged()) {
+      if (typeof onLogged === 'function') onLogged()
+      return true
+    }
+    if (loginRedirecting || (currentPage() && currentPage().route === 'pages/login/login')) return false
+    loginRedirecting = true
+    wx.navigateTo({
+      url: '/pages/login/login',
+      complete: () => { loginRedirecting = false }
+    })
+    return false
+  }
+  // 缓存令牌存在也不能抢在启动校验之前放行；unknown 最终保留会话，仍可离线使用。
+  if (app && app.globalData && app.globalData.sessionReady === false && typeof app.whenSessionReady === 'function') {
+    app.whenSessionReady(done)
+    return false
+  }
+  return done()
 }
 
 module.exports = {

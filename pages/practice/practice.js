@@ -45,18 +45,20 @@ Page({
 
   onLoad(options) {
     this.setData({ subjects: bank.getSubjects() })
-    this._init({
+    // 先保留路由意图；启动认证完成后才读取用户进度、创建或恢复练习。
+    this._initialParams = {
       mode: (options && options.mode) || 'all',
       subject: options && options.subject ? decodeURIComponent(options.subject) : '',
       chapter: options && options.chapter ? decodeURIComponent(options.chapter) : '',
       ids: null
-    })
-    // 记录当前存储作用域，供 onShow 检测登录/登出导致的切换（评审 P2）
-    this._scope = store.getUserScope()
+    }
   },
 
   onShow() {
-    if (!user.requireLogin()) return
+    user.requireLogin(() => this._showPractice())
+  },
+
+  _showPractice() {
     const curScope = store.getUserScope()
     const scopeChanged = this._scope && this._scope !== curScope
 
@@ -67,6 +69,14 @@ Page({
       this._stamp = pending.__stamp
       pending.fresh = true
       this._init(pending)
+      this._scope = curScope
+      this._initialParams = null
+      return
+    }
+
+    if (!this._params) {
+      this._init(this._initialParams || { mode: 'all' })
+      this._initialParams = null
       this._scope = curScope
       return
     }
@@ -116,6 +126,7 @@ Page({
 
   /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
   loadPending() {
+    if (!user.requireLogin()) return
     const pending = app.globalData.practiceParams
     if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
       this._stamp = pending.__stamp
@@ -370,6 +381,7 @@ Page({
   },
 
   onStar() {
+    if (!user.requireLogin()) return
     const q = this.data.question
     if (!q) return
     store.ensureRecord(q)
@@ -379,6 +391,7 @@ Page({
   },
 
   onSubmit() {
+    if (!user.requireLogin()) return
     const q = this.data.question
     if (!q || this.data.submitted) return
     const selected = this.data.selected.slice()
@@ -470,6 +483,7 @@ Page({
   },
 
   onSubjectChange(e) {
+    if (!user.requireLogin()) return
     const subject = e.currentTarget.dataset.subject || ''
     if (!subject) return // 已去掉「全部」，dataset 里只会是具体科目
     // 切换全应用当前科目；换科目后原章节约束失效，chapter 降级为整科顺序练习
@@ -503,6 +517,7 @@ Page({
   },
 
   restart() {
+    if (!user.requireLogin()) return
     this._params = null
     const params = {
       mode: this.data.mode,

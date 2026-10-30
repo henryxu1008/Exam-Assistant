@@ -37,12 +37,11 @@ Page({
   },
 
   onShow() {
-    if (!user.requireLogin()) return
-    this.refresh()
+    user.requireLogin(() => this.refresh())
   },
 
   onPullDownRefresh() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 

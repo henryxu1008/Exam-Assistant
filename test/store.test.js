@@ -315,3 +315,38 @@ test('submitAttempt 同步更新会话聚合统计（恢复会话用，评审 P2
   assert.strictEqual(sess.sessionCorrect, 2)
   assert.strictEqual(sess.errorIds.length, 0, '改对后不应再计入错题')
 })
+
+test('同题 one→two→重试 one 只记录两次，不回滚最后一次答案或重复统计', () => {
+  const store = freshStore()
+  store.createPracticeSession({ questionIds: ['q1'] })
+  const first = store.submitAttempt(q('q1'), ['A'], true, 100, 'one')
+  const last = store.submitAttempt(q('q1'), ['B'], false, 200, 'two')
+  const before = JSON.stringify(store.load())
+  const retry = store.submitAttempt(q('q1'), ['A'], true, 100, 'one')
+  assert.strictEqual(retry.dup, true)
+  assert.strictEqual(retry.attempt.id, first.attempt.id)
+  assert.strictEqual(JSON.stringify(store.load()), before)
+  assert.strictEqual(store.getPracticeSession().submitted.q1.attemptId, last.attempt.id)
+})
+
+test('持久化并重新加载后仍按历史流水去重，下一会话可独立使用同一操作 ID', () => {
+  let store = freshStore()
+  store.createPracticeSession({ questionIds: ['q1'] })
+  store.submitAttempt(q('q1'), ['A'], true, 100, 'one')
+  store.submitAttempt(q('q1'), ['B'], false, 100, 'two')
+  store.flush()
+  store = freshStore(wx.getStorageSync('exam_quiz_data_v1__anon'))
+  assert.strictEqual(store.submitAttempt(q('q1'), ['A'], true, 100, 'one').dup, true)
+  assert.strictEqual(store.getAttempts().length, 2)
+  store.createPracticeSession({ questionIds: ['q1'] })
+  assert.strictEqual(store.submitAttempt(q('q1'), ['A'], true, 100, 'one').dup, false)
+  assert.strictEqual(store.getAttempts().length, 3)
+})
+
+test('流水幂等键保持会话、题目、操作 ID 的既有边界', () => {
+  const store = freshStore()
+  store.createPracticeSession({ questionIds: ['q1', 'q2'] })
+  store.submitAttempt(q('q1'), ['A'], true, 100, 'one')
+  assert.strictEqual(store.submitAttempt(q('q2'), ['A'], true, 100, 'one').dup, false)
+  assert.strictEqual(store.getAttempts().length, 2)
+})

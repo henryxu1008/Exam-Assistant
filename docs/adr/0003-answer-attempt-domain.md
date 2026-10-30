@@ -42,6 +42,11 @@ Record(派生) { id=questionId, attempts, right, wrong, level, ... } 由 attempt
 | PracticeSession | `id` | 唯一 |
 | PracticeSession | `submitted[qid]` | `{ attemptId, clientOpId }` 只读回看依据 |
 
+`submitted[qid]` 只表示该题最近一次提交，用于只读回看；幂等判断查询完整的持久化
+`attempts[]`，按 `(sessionId, questionId, clientOpId)` 匹配。即使同题先提交 `one`、再提交
+`two`、最后重试 `one`，也只保留两条流水，返回原 `one` 的 attempt，不重计聚合或覆盖
+`two` 的回看标记。该行为在存储重新加载后保持一致，不增加新的持久化索引或迁移字段。
+
 本地为单文件 JSON；上云后建议索引：`attempts(sessionId)`、`attempts(questionId)`、
 `attempts(clientOpId)`、`records(openid, questionId)`。
 

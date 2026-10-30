@@ -124,6 +124,8 @@ miniprogram-4/
 
 **AI 对话生命周期**：页面历史与异步回复绑定到仓储中的对话代次。切换账号（包括 A→B→A）、清空学习数据或清空对话都会使旧代次失效；页面先重载当前账号历史，再消费预填问题。远程成功、异常回落、本地延迟回复和清空确认框均校验所属代次，避免旧操作写入新用户或复活已删除的对话。
 
+**启动认证与页面初始化**：缓存登录不代表启动校验已经完成。页面通过 `requireLogin(onLogged)` 等待 `whenSessionReady`，认证完成后才刷新用户数据、创建/恢复练习和消费 AI 预填内容；校验确认不可用时跳转登录。网络不可达返回 unknown 时继续保留离线练习能力，已离开的页面不执行过期初始化回调。
+
 **练习状态机与不可变作答（Issue 2 / Issue 3）**：每轮练习创建 `practiceSession`（状态 `created → in_progress → completed`），每题绑定 `attemptId`，以 `clientOpId` 实现**幂等提交**（重复点击只落库一次、不重复计数）；已提交题在会话内回看为只读，主动重练生成新 Session。单次作答作为不可变事实追加到 `attempts[]`（AnswerAttempt），聚合统计由事件派生。详见 `docs/adr/0003-answer-attempt-domain.md`。
 
 **云端**（云开发数据库集合 `users`）

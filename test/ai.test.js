@@ -56,7 +56,8 @@ test('chat 正确率查询返回含真实数据的要点', () => {
   assert.ok(r.bullets.some((b) => /正确率/.test(b)), '应基于真实数据给出正确率要点')
 })
 
-test('评审 P2：个性化查询走本地引擎，页面落到含真实数据的回复', () => {
+test('评审 P2：个性化查询走本地引擎，页面落到含真实数据的回复', (t) => {
+  t.mock.method(require('../utils/user.js'), 'requireLogin', () => true)
   const ai = require('../utils/ai.js')
   const page = makePage()
   page.send('我的正确率多少', {})

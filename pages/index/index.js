@@ -35,19 +35,16 @@ Page({
 
   onLoad() {
     this.setData({
-      goal: store.getSettings().dailyGoal,
       dateText: this._buildDateText()
     })
   },
 
   onShow() {
-    this.refresh()
-    // 会话校验完成后若确认已登录，用云端资料再刷新一次
     user.requireLogin(() => this.refresh())
   },
 
   onPullDownRefresh() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 
