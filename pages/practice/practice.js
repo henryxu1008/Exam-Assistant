@@ -62,17 +62,8 @@ Page({
     const curScope = store.getUserScope()
     const scopeChanged = this._scope && this._scope !== curScope
 
-    // 1) 优先消费从其它页面显式进入的 pending 参数（如「练习这道题」单题请求），
-    //    直接落在新作用域，保留用户意图（避免被后续作用域切换逻辑覆盖）
-    const pending = app.globalData.practiceParams
-    if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
-      this._stamp = pending.__stamp
-      pending.fresh = true
-      this._init(pending)
-      this._scope = curScope
-      this._initialParams = null
-      return
-    }
+    // 显式新请求优先：它携带用户当前选择的科目/章节/题目，不继承旧页面约束。
+    if (this._consumePending()) return
 
     if (!this._params) {
       this._init(this._initialParams || { mode: 'all' })
@@ -81,58 +72,44 @@ Page({
       return
     }
 
-    // 2) 存储作用域已切换（登录/登出）：重建到新作用域，并保留此前请求的 ids
-    //    （评审 P2：登录切换作用域时不要丢弃 pending 单题练习请求，否则 _buildQueue 收不到 ids 变空队列）
-    if (scopeChanged) {
-      const saved = this._params
-      this._params = null
-      this._init({
-        mode: this.data.mode,
-        subject: store.getCurrentSubject(),
-        chapter: this.data.chapter,
-        ids: saved ? saved.ids : null,
-        fresh: true // 强制重建到新作用域，不复用旧作用域会话
-      })
-      this._scope = curScope
-      return
-    }
-
-    // 3) 持久化会话已被清空（如「清空学习数据」）但页面仍持有旧会话引用：
-    //    重建练习，避免提交落到不存在的会话、进度归零、且无法只读回看（评审 P2）
+    const saved = this._params
+    const subject = store.getCurrentSubject()
+    const subjectChanged = saved.subject !== subject
     const persisted = store.getPracticeSession()
-    if (this._sessionId && (!persisted || persisted.id !== this._sessionId)) {
-      const saved = this._params
-      this._params = null
+    const sessionChanged = this._sessionId && (!persisted || persisted.id !== this._sessionId)
+
+    // 自动重建共用一处参数归一化，避免切账号/清空会话提前返回，漏掉同时发生的换科。
+    // 仍在同一科目时保留章节/单题意图；换科后清除所有旧题集约束，专项模式退回整科。
+    if (scopeChanged || sessionChanged || subjectChanged) {
+      const mode = subjectChanged && (saved.mode === 'single' || saved.mode === 'chapter') ? 'all' : saved.mode
       this._init({
-        mode: this.data.mode,
-        subject: store.getCurrentSubject(),
-        chapter: this.data.chapter,
-        ids: saved ? saved.ids : null,
+        mode,
+        subject,
+        chapter: subjectChanged ? '' : saved.chapter,
+        ids: subjectChanged ? null : saved.ids,
         fresh: true
       })
-      this._scope = curScope
-      return
     }
-
     this._scope = curScope
-    // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
-    // single/chapter 模式依赖具体题集（ids/章节），跨科后失效，降级为整科顺序练习（与 onSubjectChange 一致），
-    // 否则保留 single 且 ids:null 会让 _buildQueue 产出空队列（评审 P2）
-    if (this._params && this._params.subject !== store.getCurrentSubject()) {
-      const mode = this._params.mode === 'single' || this._params.mode === 'chapter' ? 'all' : this._params.mode
-      this._init({ mode, chapter: '', ids: null, fresh: true })
-    }
   },
 
   /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
   loadPending() {
     if (!user.requireLogin()) return
+    return this._consumePending()
+  },
+
+  /** onShow 与当前页直达入口共用消费逻辑，同步请求标记与页面所属作用域。 */
+  _consumePending() {
     const pending = app.globalData.practiceParams
     if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
       this._stamp = pending.__stamp
-      pending.fresh = true // 从其它页面显式进入新的一轮，不恢复旧会话
-      this._init(pending)
+      this._init(Object.assign({}, pending, { fresh: true }))
+      this._scope = store.getUserScope()
+      this._initialParams = null
+      return true
     }
+    return false
   },
 
   onUnload() {
