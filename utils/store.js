@@ -7,6 +7,12 @@
 const bank = require('./questions.js')
 const config = require('./config.js')
 
+/**
+ * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
+ * 避免端上与云端的合并语义漂移。
+ */
+const { CURRENT_VERSION, getDefaultState, mergeStats } = require('../shared/stats-merge.js')
+
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
 /** 登录会话存储键，与 utils/user.js 保持一致（避免 require user 造成循环依赖） */
@@ -14,9 +20,6 @@ const SESSION_KEY = 'exam_quiz_session_v1'
 
 /** attempts 流水已上传到云端的光标（按作用域隔离），值 = 已同步的本地 attempts 下标 */
 const ATTEMPT_CURSOR_KEY = 'exam_quiz_attempt_cursor_v1'
-
-/** 当前数据结构版本 */
-const CURRENT_VERSION = 3
 
 /**
  * 迁移函数表：MIGRATIONS[n] 负责把版本 n 的数据升级到 n + 1
@@ -56,24 +59,6 @@ const REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15]
 const MASTER_DAYS = 3
 
 const DAY = 24 * 60 * 60 * 1000
-
-function getDefaultState() {
-  return {
-    version: CURRENT_VERSION,
-    records: {}, // { qid: Record } 由 attempts 派生维护的聚合
-    attempts: [], // 不可变作答流水（AnswerAttempt），只追加不覆盖
-    practiceSession: null, // 当前练习 Session 状态机实例
-    daily: {}, // { '2026-10-29': DailyStat }
-    settings: {
-      dailyGoal: 30,
-      autoNext: true,
-      aiExplain: true,
-      currentSubject: ''
-    },
-    aiMessages: [],
-    createdAt: Date.now()
-  }
-}
 
 let state = null
 
@@ -308,112 +293,26 @@ function isLogged() {
 let bootPulled = false
 
 /**
- * 双向合并本地与云端学习档案（纯函数，便于单测）。
- * 策略：
- *  - records：按 qid 取 lastAt 较新的一方（无 lastAt 的一方被另一方覆盖）；
- *  - daily：按日期 key 取并集，同日各指标取较大值（total/correct/timeMs），
- *           chapters/subjects 取键并集、同键指标取较大；
- *  - practiceSession：取 createdAt 较新的一方，均无则保留非 null 的；
- *  - aiMessages：按 time 去重取并集（云端在前、本地在后）；
- *  - settings：云端优先（多端冲突极少，且保证换设备后设置一致）；
- *  - version：取较大值。
- * @returns {Object} 合并后的完整 state（缺失字段用默认值补齐）
+ * 捕获当前账号上下文快照。
+ *
+ * 云端请求与它的完成回调之间可能隔着一次账号切换 / 登出 / 清空数据。
+ * 回调里若直接读当前全局 userScope，就会把 A 的结果写到 B 名下。
+ * 因此所有云端调用统一：发起时 capture，回包时先 isStaleContext 再落地。
+ *
+ * @returns {{gen: Number, scope: String, token: String}}
  */
-function mergeStats(local, remote) {
-  const def = getDefaultState()
-  const L = local || {}
-  const R = remote || {}
-  const out = Object.assign({}, def, L)
-
-  // records：按 qid 取 lastAt 较新方
-  const records = Object.assign({}, R.records || {})
-  Object.keys(L.records || {}).forEach((id) => {
-    const lr = L.records[id]
-    const rr = records[id]
-    if (!rr) { records[id] = lr; return }
-    if ((lr.lastAt || 0) >= (rr.lastAt || 0)) records[id] = lr
-  })
-  out.records = records
-
-  // daily：按日期并集，同日指标取较大
-  const daily = Object.assign({}, R.daily || {})
-  Object.keys(L.daily || {}).forEach((key) => {
-    const ld = L.daily[key]
-    const rd = daily[key]
-    if (!rd) { daily[key] = ld; return }
-    daily[key] = mergeDaily(ld, rd)
-  })
-  out.daily = daily
-
-  // practiceSession：取较新方
-  const ls = L.practiceSession
-  const rs = R.practiceSession
-  if (ls && rs) out.practiceSession = (ls.createdAt || 0) >= (rs.createdAt || 0) ? ls : rs
-  else out.practiceSession = ls || rs || null
-
-  // aiMessages：按 time 去重取并集
-  const seen = {}
-  const ai = []
-  ;(R.aiMessages || []).concat(L.aiMessages || []).forEach((m) => {
-    const t = m && m.time
-    if (t == null) { ai.push(m); return }
-    if (seen[t]) return
-    seen[t] = true
-    ai.push(m)
-  })
-  out.aiMessages = ai
-
-  // attempts：按 id 去重取并集（云端在前、本地在后）；不可变流水，按 id 并集即可
-  const seenA = {}
-  const attempts = []
-  ;(R.attempts || []).concat(L.attempts || []).forEach((a) => {
-    const id = a && a.id
-    if (id == null) { attempts.push(a); return }
-    if (seenA[id]) return
-    seenA[id] = true
-    attempts.push(a)
-  })
-  out.attempts = attempts
-
-  // settings：云端优先
-  out.settings = Object.assign({}, def.settings, L.settings || {}, R.settings || {})
-
-  // version：取较大
-  out.version = Math.max(L.version || 0, R.version || 0, def.version)
-  return out
+function captureSyncContext() {
+  return { gen: cloudSyncGeneration, scope: userScope, token: getToken() }
 }
 
-/** 合并单日统计：同日各指标取较大值，chapters/subjects 取键并集、同键指标取较大 */
-function mergeDaily(ld, rd) {
-  const chapters = Object.assign({}, rd.chapters || {})
-  Object.keys(ld.chapters || {}).forEach((c) => {
-    const lc = ld.chapters[c]
-    const rc = chapters[c]
-    if (!rc) { chapters[c] = lc; return }
-    chapters[c] = {
-      total: Math.max(lc.total || 0, rc.total || 0),
-      correct: Math.max(lc.correct || 0, rc.correct || 0)
-    }
-  })
-  const subjects = Object.assign({}, rd.subjects || {})
-  Object.keys(ld.subjects || {}).forEach((s) => {
-    const ls = ld.subjects[s]
-    const rs = subjects[s]
-    if (!rs) { subjects[s] = ls; return }
-    subjects[s] = {
-      total: Math.max(ls.total || 0, rs.total || 0),
-      correct: Math.max(ls.correct || 0, rs.correct || 0),
-      timeMs: Math.max(ls.timeMs || 0, rs.timeMs || 0)
-    }
-  })
-  return {
-    date: ld.date || rd.date,
-    total: Math.max(ld.total || 0, rd.total || 0),
-    correct: Math.max(ld.correct || 0, rd.correct || 0),
-    timeMs: Math.max(ld.timeMs || 0, rd.timeMs || 0),
-    chapters: chapters,
-    subjects: subjects
-  }
+/**
+ * 判断回包是否已过期（发起环境不再有效）。
+ * 代次覆盖 A→B→A，作用域覆盖切号，令牌覆盖登出 / 重登换新令牌。
+ * @param {{gen: Number, scope: String, token: String}} ctx
+ * @returns {Boolean}
+ */
+function isStaleContext(ctx) {
+  return ctx.gen !== cloudSyncGeneration || ctx.scope !== userScope || getToken() !== ctx.token
 }
 
 /**
@@ -421,8 +320,8 @@ function mergeDaily(ld, rd) {
  * 作答流水可能很多（单查上限 100 条），采用顺序分页拉取：每页带 skip，
  * 服务端返回 hasMore / nextSkip，直到取完所有页再一次性合并。
  *
- * 一致性防护（评审 P1）：发起时快照「同步代次 + 作用域 + 令牌」，
- * 每次回包（含每个分页）先校验三者未变，否则丢弃。
+ * 一致性防护（评审 P1）：发起时 captureSyncContext()，
+ * 每次回包（含每个分页）先 isStaleContext() 校验，失效即丢弃。
  * 否则账号 A 的拉取在登出 / 切到 B 之后回来，会把 A 的答题记录与 AI 对话
  * 并入当前（属于 B 的）内存态，并随后续落盘以 B 的令牌上传。
  * 分页复用同一个 token 快照，避免一次拉取横跨两个账号。
@@ -432,20 +331,16 @@ function mergeDaily(ld, rd) {
 function pullFromCloud(onDone) {
   if (!hasCloud() || !isLogged()) return
   if (bootPulled) return
-  const gen = cloudSyncGeneration
-  const scope = userScope
-  const token = getToken()
+  const ctx = captureSyncContext()
   bootPulled = true
   let skip = 0
   let stats = null
   const allAttempts = []
-  /** 发起后账号环境已变化：回包属于旧账号，一律丢弃 */
-  const stale = () => (gen !== cloudSyncGeneration || scope !== userScope || getToken() !== token)
   const abort = () => {
     if (typeof onDone === 'function') onDone(false)
   }
   const finish = (ok) => {
-    if (stale()) { abort(); return }
+    if (isStaleContext(ctx)) { abort(); return }
     if (!ok) {
       // 拉取失败：允许下次（重新登录/重启）再试
       bootPulled = false
@@ -464,9 +359,9 @@ function pullFromCloud(onDone) {
   const fetchPage = () => {
     callCloud({
       name: config.functions.studySync,
-      data: { token: token, action: 'get', skip: skip },
+      data: { token: ctx.token, action: 'get', skip: skip },
       success: (res) => {
-        if (stale()) { abort(); return }
+        if (isStaleContext(ctx)) { abort(); return }
         const r = res && res.result
         if (!r || !r.ok) { finish(false); return }
         if (r.stats) stats = r.stats
@@ -488,19 +383,23 @@ function pullFromCloud(onDone) {
   fetchPage()
 }
 
-/** attempts 上传光标：返回已同步到云端的本地 attempts 下标（按当前作用域隔离） */
-function getAttemptCursor() {
+/**
+ * attempts 上传光标：返回已同步到云端的本地 attempts 下标（按作用域隔离）。
+ * 必须显式传入发起时的作用域：上传确认回来时 userScope 可能已经切到别的账号，
+ * 用全局 userScope 会把 A 已确认的长度写进 B 的光标，导致 B 的作答被永久跳过。
+ */
+function getAttemptCursor(scope) {
   try {
-    const v = wx.getStorageSync(`${ATTEMPT_CURSOR_KEY}__${userScope}`)
+    const v = wx.getStorageSync(`${ATTEMPT_CURSOR_KEY}__${scope || userScope}`)
     return typeof v === 'number' && v >= 0 ? v : 0
   } catch (e) {
     return 0
   }
 }
 
-function setAttemptCursor(n) {
+function setAttemptCursor(n, scope) {
   try {
-    wx.setStorageSync(`${ATTEMPT_CURSOR_KEY}__${userScope}`, n)
+    wx.setStorageSync(`${ATTEMPT_CURSOR_KEY}__${scope || userScope}`, n)
   } catch (e) {}
 }
 
@@ -512,6 +411,7 @@ function pushToCloud() {
   // 而 studySync 按 openid 整doc覆盖，等于用空数据毁掉该账号的云端备份。
   const openid = getSessionOpenid()
   if (!openid || userScope !== openid) return
+  const ctx = captureSyncContext()
   const payload = {
     records: state.records,
     daily: state.daily,
@@ -522,7 +422,7 @@ function pushToCloud() {
   }
   // 增量上传作答流水：只传本地尚未同步的新增部分（按光标切片），云端按 _id 幂等 upsert
   const attemptsAll = state.attempts || []
-  const cursor = getAttemptCursor()
+  const cursor = getAttemptCursor(ctx.scope)
   const newAttempts = attemptsAll.slice(cursor)
   // 本次上传覆盖到的流水终点：请求在途期间 attempts 可能继续追加，
   // 必须按发起时的长度推进光标，否则会跳过这段新增作答。
@@ -532,11 +432,15 @@ function pushToCloud() {
     // attempts 必须作为顶层字段：云函数只从 event.attempts 读取，
     // 而 stats 会过白名单过滤掉 attempts——放进 payload 会导致
     // 「流水一条都没上传，光标却已推进」（评审 P1）。
-    data: { token: getToken(), action: 'update', stats: payload, attempts: newAttempts },
-    // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标
+    data: { token: ctx.token, action: 'update', stats: payload, attempts: newAttempts },
+    // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标。
+    // 且确认必须落回它发起时的作用域：账号 A 的上传在切到 B 之后才确认，
+    // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
     success: (res) => {
       const r = res && res.result
-      if (r && r.ok) setAttemptCursor(syncedUpTo)
+      if (!r || !r.ok) return
+      if (isStaleContext(ctx)) return
+      setAttemptCursor(syncedUpTo, ctx.scope)
     },
     fail: () => {} // 上传失败静默：下次 flush 会再次尝试
   })
@@ -545,9 +449,11 @@ function pushToCloud() {
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
 function deleteCloud() {
   if (!hasCloud() || !isLogged()) return
+  const ctx = captureSyncContext()
   callCloud({
     name: config.functions.studySync,
-    data: { token: getToken(), action: 'delete' },
+    // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
+    data: { token: ctx.token, action: 'delete' },
     fail: () => {} // 删除失败静默：下次清空时再试
   })
 }

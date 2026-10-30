@@ -1,12 +1,12 @@
 /**
  * 云函数 studySync
- * 入参：{ token, action: 'get' | 'update', stats?, attempts? }
+ * 入参：{ token, action: 'get' | 'update' | 'delete', stats?, attempts? }
  * 出参：{ ok, stats?, attempts? }
  *
  * action=get：返回当前用户的学习档案（studyStats 文档）+ 一页作答流水（attempts 集合）。
  *   作答流水按 createdAt + _id 升序分页，单页上限 100 条；前端带 skip 顺序翻页直到 hasMore 为 false，
  *   从而支持超过 100/1000 条的大流水（云数据库单查上限 100，直接 .get() 会被截断）。
- * action=update：upsert 学习档案（白名单字段），并把新增作答流水 upsert 进 attempts 集合。
+ * action=update：与服务端已有档案「合并」后 upsert（白名单字段），并把新增作答流水 upsert 进 attempts 集合。
  * action=delete：删除当前用户的学习档案（studyStats 文档）与全部作答流水（attempts 集合），
  *   对应前端「清空学习数据」，保证本地与云端一并清空。
  *
@@ -14,6 +14,13 @@
  *  - 聚合/派生数据（records/daily/settings/practiceSession/aiMessages/version）存 studyStats 单文档（按 openid）。
  *  - 原始作答流水 attempts 量可能较大且只追加，单独存 attempts 集合（每条一个文档，
  *    _id = attempt.id、openid 归属），避免单文档 16MB 上限与并发覆盖。
+ *
+ * 为什么必须用合并而不是整doc覆盖（评审 P1 4422245834）：
+ *  端上只在「每个作用域启动后」拉取一次，之后的每次 flush 都是直接上传本地快照。
+ *  两台设备恢复同一账号后各自练习、各自上传，若服务端无条件 set()，
+ *  后到的一方的整份文档会抹掉另一端新增的 records / daily / aiMessages。
+ *  因此在事务内「先读已有快照 → 与本次上传 mergeStats 合并 → 再写入」，
+ *  让并发上传是累加而非互相覆盖。合并实现与端上共用 shared/stats-merge.js。
  *
  * 依赖集合：users（校验令牌）、studyStats、attempts。
  */
@@ -27,8 +34,10 @@ const USERS = db.collection('users')
 const STATS = db.collection('studyStats')
 const ATTEMPTS = db.collection('attempts')
 
-/** 令牌有效期，与小程序端 utils/user.js 的 TOKEN_TTL 保持一致 */
-const TOKEN_TTL = 30 * 24 * 60 * 60 * 1000
+/** 与端上 utils/store.js 相同的合并语义；部署副本随本函数一起上传 */
+const { mergeStats } = require('./stats-merge.js')
+/** 令牌校验（与 userProfile 保持一致）；部署副本随本函数一起上传 */
+const { findByToken } = require('./auth.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'practiceSession', 'aiMessages', 'version']
@@ -61,20 +70,24 @@ function sanitizeAttempt(a) {
   return out
 }
 
-async function findByToken(token) {
-  if (!token) return null
-  const res = await USERS.where({ token: token }).limit(1).get()
-  const doc = res.data && res.data.length ? res.data[0] : null
-  if (!doc) return null
-  if (!doc.tokenAt || Date.now() - doc.tokenAt > TOKEN_TTL) return null
-  return doc
+/**
+ * 读取服务端已有档案快照；不存在返回 null。
+ * 事务内读取不存在的文档会抛错，这里统一归一化为 null。
+ */
+async function readExisting(getDoc) {
+  try {
+    const got = await getDoc()
+    return (got && got.data) || null
+  } catch (e) {
+    return null
+  }
 }
 
 exports.main = async (event) => {
   const token = event.token
   if (!token) return { ok: false, error: 'NO_TOKEN' }
 
-  const user = await findByToken(token)
+  const user = await findByToken(USERS, token)
   if (!user) return { ok: false, error: 'INVALID_TOKEN' }
 
   const openid = user.openid
@@ -116,9 +129,30 @@ exports.main = async (event) => {
   }
 
   if (action === 'update') {
-    const clean = sanitizeStats(event.stats)
-    clean.updatedAt = Date.now()
-    await STATS.doc(openid).set({ data: Object.assign({ _id: openid, openid: openid }, clean) })
+    const incoming = sanitizeStats(event.stats)
+
+    // 事务内「读已有快照 → 合并 → 写入」：并发上传互相累加，而不是后到者覆盖前者。
+    // old 版这里是无条件 set()，两台设备各自练习后同步会丢一端的进度。
+    const write = async (tx) => {
+      const ref = tx.collection('studyStats').doc(openid)
+      const existing = await readExisting(() => ref.get())
+      const merged = mergeStats(existing, incoming)
+      merged._id = openid
+      merged.openid = openid
+      merged.updatedAt = Date.now()
+      await ref.set({ data: merged })
+    }
+
+    if (typeof db.runTransaction === 'function') {
+      try {
+        await db.runTransaction(write)
+      } catch (e) {
+        return { ok: false, error: 'TX_FAILED' }
+      }
+    } else {
+      // 旧版 SDK 无事务：退化为「读—合并—写」兜底（存在极小并发窗口）
+      await write({ collection: (name) => db.collection(name) })
+    }
 
     // 增量 upsert 新增作答流水：同一 _id 重复写入是幂等的，不会重复落库
     const list = Array.isArray(event.attempts) ? event.attempts : []

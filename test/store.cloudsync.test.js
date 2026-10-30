@@ -394,6 +394,63 @@ test('分页拉取全程复用发起时的令牌快照', async () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * 3b) 上传确认必须落回发起时的作用域（评审 P1 4422245827）
+ * ------------------------------------------------------------------ */
+
+test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永久跳过）', async () => {
+  const store = freshStore()
+  let pendingUpdate = null
+  global.wx.__cloudReady = true
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      const isUpdate = opts.data && opts.data.action === 'update'
+      if (isUpdate) {
+        // 只记录调用、不自动回调，模拟「上传在途」；稍后手动触发其 success
+        pendingUpdate = opts
+        return new Promise(() => {})
+      }
+      const result = { ok: true, attempts: [], hasMore: false, nextSkip: null }
+      if (opts && opts.success) opts.success({ result })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+  login('o1', 'tokA')
+
+  store.setUserScope('o1')
+  store.load()
+  store.submitAttempt(q('x1'), ['A'], true, 100, 'op-1')
+  store.flush() // 发起 A 的上传，尚未确认
+
+  // 上传在途时切到账号 B
+  login('o2', 'tokB')
+  store.setUserScope('o2')
+  store.load()
+
+  // A 的上传此刻才确认：手动触发它发起时绑定的 success 回调
+  pendingUpdate.success({ result: { ok: true } })
+  await tick()
+
+  // B 的第一条作答必须仍被上传：若光标被 A 的确认污染，这里会是空数组
+  const calls = []
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      calls.push(opts)
+      if (opts && opts.success) opts.success({ result: { ok: true } })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+  store.submitAttempt(q('y1'), ['A'], false, 100, 'op-2')
+  store.flush()
+
+  const update = calls.filter((c) => c.data && c.data.action === 'update').pop()
+  assert.ok(update, '应发起一次上传')
+  assert.ok(
+    (update.data.attempts || []).some((a) => a.questionId === 'y1'),
+    'B 的首条作答不得被 A 的过期确认跳过'
+  )
+})
+
+/* ------------------------------------------------------------------ *
  * 4) 题库种子上传需要登录身份
  * ------------------------------------------------------------------ */
 

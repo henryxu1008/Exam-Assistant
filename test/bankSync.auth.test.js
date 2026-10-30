@@ -2,9 +2,10 @@
  * bankSync 云函数写权限回归测试（PR #10 评审发现 P1）
  *
  * 题库是全体用户共享的内容，原实现任何人都能直接调用 set 覆盖它，
- * 从而篡改所有用户看到的题目与答案。这里锁定两件事：
- *  - 写入必须持有有效且未过期的登录令牌；
- *  - 题库一旦建立，普通调用不得覆盖；只有管理员显式 force 才可以。
+ * 从而篡改所有用户看到的题目与答案。这里锁定三件事：
+ *  - 写入必须持有有效且未过期的登录令牌，匿名直调直接拒绝；
+ *  - 题库一旦建立，普通调用不得覆盖，只有管理员可显式 force；
+ *  - 管理员判定走 shared/auth.js，密钥未配置时 fail-closed。
  */
 
 const { test } = require('node:test')
@@ -12,6 +13,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
+const crypto = require('node:crypto')
 
 const NOW = new Date('2026-10-30T06:00:00Z').getTime()
 const DAY = 86400000
@@ -21,7 +23,7 @@ const USER_TOKEN = 'user-token'
 const ADMIN_TOKEN = 'admin-token'
 const ADMIN_OPENID = 'admin-openid'
 
-function harness({ admins = [] } = {}) {
+function harness({ admins = [], env = {} } = {}) {
   const collections = {
     questions: new Map(),
     users: new Map([
@@ -70,11 +72,9 @@ function harness({ admins = [] } = {}) {
 
   const db = { collection: collection }
 
-  // 事务：串行执行以模拟可串行化隔离——后到的事务会看到先到事务的写入
+  // 事务：串行执行以模拟可串行化隔离——后到的事务能看到先到事务的写入
   let queue = Promise.resolve()
-  let attempts = 0
   db.runTransaction = (fn) => {
-    attempts += 1
     const run = queue.then(() => fn({ collection: collection }))
     queue = run.then(
       () => {},
@@ -89,19 +89,34 @@ function harness({ admins = [] } = {}) {
     }
   }
 
-  const source = fs.readFileSync(path.join(__dirname, '../cloudfunctions/bankSync/index.js'), 'utf8')
-  const exports = {}
-  vm.runInNewContext(source, {
-    exports,
-    Date: FixedDate,
-    process: { env: {} },
-    require(module) {
-      if (module === 'wx-server-sdk') return { init() {}, database: () => db }
-      throw new Error(`unexpected module ${module}`)
-    }
-  })
+  const processEnv = Object.assign({}, env)
 
-  return { main: exports.main, txAttempts: () => attempts }
+  /** 在受控 VM 中加载一个模块（模拟云函数运行时的独立模块作用域） */
+  function loadModule(absPath) {
+    const exports = {}
+    const module = { exports: exports }
+    vm.runInNewContext(fs.readFileSync(absPath, 'utf8'), {
+      exports,
+      module,
+      Date: FixedDate,
+      Buffer, // 云函数运行在 Node 中，鉴权用到常量时间比较
+      process: { env: processEnv },
+      require(name) {
+        if (name === 'wx-server-sdk') return { init() {}, database: () => db }
+        if (name === 'crypto') return crypto
+        // 云函数内的部署副本：与 shared/ 下的源文件同名
+        if (name.indexOf('./') === 0) {
+          return loadModule(path.join(path.dirname(absPath), name))
+        }
+        throw new Error(`unexpected module ${name}`)
+      }
+    })
+    // 必须返回 module.exports 而非 exports：被加载模块可能整体替换 module.exports
+    return module.exports
+  }
+
+  const main = loadModule(path.join(__dirname, '../cloudfunctions/bankSync/index.js')).main
+  return { main: main, db: db }
 }
 
 const BANK = { manifest: { subjects: [{ key: 'gk', name: '公基' }] }, questions: { gk: [] } }
@@ -189,10 +204,8 @@ test('并发首次初始化只有一个成功，另一个收到 BANK_EXISTS', as
     h.main({ action: 'set', token: USER_TOKEN, bank: BANK }),
     h.main({ action: 'set', token: ADMIN_TOKEN, bank: BANK })
   ])
-  const oks = results.filter((r) => r.ok).length
-  const exists = results.filter((r) => r.error === 'BANK_EXISTS').length
-  assert.equal(oks, 1, '只允许一个初始化成功')
-  assert.equal(exists, 1, '另一个必须被拒绝')
+  assert.equal(results.filter((r) => r.ok).length, 1, '只允许一个初始化成功')
+  assert.equal(results.filter((r) => r.error === 'BANK_EXISTS').length, 1, '另一个必须被拒绝')
 })
 
 /* ------------------------------------------------------------------ *
@@ -228,8 +241,18 @@ test('管理员可显式 force 覆盖已有题库', async () => {
   assert.equal(got.bank.updatedBy, ADMIN_OPENID)
 })
 
-test('未配置管理员名单时，任何人都无法覆盖已有题库', async () => {
-  const h = harness() // admins 为空
+test('管理员密钥可作为无登录身份调用的凭据（控制台运行）', async () => {
+  const h = harness({ env: { ADMIN_SECRET: 's3cret' } })
+  await h.main({ action: 'set', token: USER_TOKEN, bank: BANK })
+
+  const next = { manifest: { subjects: [] }, questions: { viaSecret: [] } }
+  const r = await h.main({ action: 'set', adminSecret: 's3cret', force: true, bank: next })
+  assert.equal(r.ok, true, '持有密钥的管理员应可强制覆盖')
+  assert.deepEqual((await h.main({ action: 'get' })).bank.questions, { viaSecret: [] })
+})
+
+test('未配置任何管理员凭据时，任何人都无法覆盖已有题库（fail-closed）', async () => {
+  const h = harness() // admins 为空且无 ADMIN_SECRET
   await h.main({ action: 'set', token: USER_TOKEN, bank: BANK })
 
   const r = await h.main({
@@ -242,6 +265,20 @@ test('未配置管理员名单时，任何人都无法覆盖已有题库', async
   assert.equal(r.error, 'NOT_ADMIN')
   const got = await h.main({ action: 'get' })
   assert.deepEqual(got.bank.questions, BANK.questions)
+})
+
+test('错误的管理员密钥被拒绝', async () => {
+  const h = harness({ env: { ADMIN_SECRET: 's3cret' } })
+  await h.main({ action: 'set', token: USER_TOKEN, bank: BANK })
+
+  const r = await h.main({
+    action: 'set',
+    adminSecret: 'wrong',
+    force: true,
+    bank: { manifest: { subjects: [] }, questions: { nope: [] } }
+  })
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'NOT_ADMIN')
 })
 
 test('写入只保留 manifest / questions 白名单字段', async () => {
