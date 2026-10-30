@@ -9,8 +9,15 @@
  */
 
 const config = require('./config.js')
+const store = require('./store.js')
 
 const SESSION_KEY = 'exam_quiz_session_v1'
+
+/** 令牌有效期，略小于云函数 userProfile 的 TOKEN_TTL，留出边界余量 */
+const TOKEN_TTL = 29 * 24 * 60 * 60 * 1000
+
+// 只有明确的身份拒绝才撤销本地会话；业务故障与传输失败保留 unknown 状态。
+const SESSION_REJECTIONS = ['INVALID_TOKEN', 'NO_TOKEN']
 
 function defaults() {
   return {
@@ -84,7 +91,11 @@ function call(name, data) {
     .then((res) => {
       const r = res && res.result
       if (!r) return Promise.reject(new Error('云函数返回为空'))
-      if (r.ok === false) return Promise.reject(new Error(r.error || '云函数调用失败'))
+      if (r.ok === false) {
+        const e = new Error(r.error || '云函数调用失败')
+        e.code = r.error || 'SERVER_ERROR'
+        return Promise.reject(e)
+      }
       return r
     })
 }
@@ -127,6 +138,8 @@ function login(extra) {
     .then((code) => call(config.functions.login, Object.assign({ code: code }, extra || {})))
     .then((r) => {
       const p = r.profile || {}
+      // 以云端可信 openid 绑定数据作用域：后续 store 读写只落在当前用户命名空间
+      store.setUserScope(r.openid || '')
       return persist(
         Object.assign({}, load(), {
           logged: true,
@@ -142,16 +155,52 @@ function login(extra) {
     })
 }
 
+/** 令牌临近过期时静默重新登录换取新令牌，避免用到已被云端作废的 token */
+function ensureFreshToken(cur) {
+  if (cur.loginAt && Date.now() - cur.loginAt < TOKEN_TTL) return Promise.resolve(cur)
+  return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
+}
+
 /**
- * 校验并恢复会话：已有 token 且微信会话有效则直接复用，否则静默重新登录。
- * 从未登录过（无 token）时 resolve(null)，由调用方跳转登录页。
+ * 服务端校验令牌：以 token 调 userProfile 验证其是否仍有效（覆盖撤销/过期/跨设备失效）。
+ * 返回三态：'ok' 有效 / 'invalid' 服务端不认（须重新登录）/ 'unknown' 无云环境无法联网验证。
+ * 注意：wx.checkSession 仅验证微信会话是否过期，不能替代我们对自身令牌的校验。
+ */
+function verifySessionOnServer(token) {
+  if (!hasCloud()) return Promise.resolve('unknown')
+  return call(config.functions.profile, { token: token, action: 'get' })
+    .then(() => 'ok')
+    // 仅当服务端显式拒绝才算 invalid；传输层（断网）失败视为 unknown，保留本地会话
+    .catch((e) => e && SESSION_REJECTIONS.indexOf(e.code) !== -1 ? 'invalid' : 'unknown')
+}
+
+/**
+ * 校验并恢复会话：以服务端令牌校验为主（而非仅依赖 wx.checkSession）。
+ * - 未登录（无 token）：resolve(null)，由调用方跳转登录页。
+ * - 服务端确认有效：临近过期则静默刷新。
+ * - 服务端不认（撤销/过期/跨设备失效）：重新登录换取新令牌与作用域。
+ * - 无法联网（unknown）：保留本地会话，避免断网时把所有用户踢出登录。
  * @returns {Promise<Object|null>}
  */
 function ensureSession() {
   if (!isLogged()) return Promise.resolve(null)
-  return checkSession()
-    .then((valid) => (valid ? getProfile() : login()))
-    .catch(() => login())
+  const cur = load()
+  // 以可信 openid 绑定数据作用域，确保后续 store 读写落在当前用户命名空间（而非 anon）
+  store.setUserScope(cur.openid || 'anon')
+  return verifySessionOnServer(cur.token)
+    .then((state) => {
+      if (state === 'ok') return ensureFreshToken(cur)
+      if (state === 'invalid') {
+        // 已知失效与未知状态不可混淆：先撤销旧会话，自动重登只有拿到新令牌才可恢复。
+        store.setUserScope('anon')
+        persist(defaults())
+        return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
+          .then((p) => ((p && p.token) ? p : null))
+          .catch(() => null)
+      }
+      return cur // unknown（联网不可用）：保留本地会话，避免误踢出
+    })
+    .catch(() => cur) // 网络/调用异常等同 unknown，保留本地会话
 }
 
 /**
@@ -161,17 +210,19 @@ function ensureSession() {
 function updateProfile(patch) {
   const cur = load()
   if (!cur.token) return Promise.reject(new Error('未登录'))
-  return call(config.functions.profile, Object.assign({ token: cur.token, action: 'update' }, patch)).then((r) => {
-    const p = r.profile || {}
-    return persist(
-      Object.assign({}, cur, {
-        nickName: p.nickName !== undefined ? p.nickName : cur.nickName,
-        avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : cur.avatarUrl,
-        exam: p.exam !== undefined ? p.exam : cur.exam,
-        updatedAt: Date.now()
-      })
-    )
-  })
+  return ensureFreshToken(cur).then((fresh) =>
+    call(config.functions.profile, Object.assign({ token: fresh.token, action: 'update' }, patch)).then((r) => {
+      const p = r.profile || {}
+      return persist(
+        Object.assign({}, fresh, {
+          nickName: p.nickName !== undefined ? p.nickName : cur.nickName,
+          avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : cur.avatarUrl,
+          exam: p.exam !== undefined ? p.exam : cur.exam,
+          updatedAt: Date.now()
+        })
+      )
+    })
+  )
 }
 
 /** 头像上传到云存储，返回 fileID */
@@ -184,10 +235,13 @@ function uploadAvatar(tempPath) {
   return wx.cloud.uploadFile({ cloudPath: cloudPath, filePath: tempPath }).then((res) => res.fileID || '')
 }
 
-/** 退出登录：清云端 token + 清本地会话 */
+/** 退出登录：清云端 token + 清本地会话 + 切回匿名数据作用域 */
 function logout() {
   const cur = load()
-  const clear = () => persist(defaults())
+  const clear = () => {
+    store.setUserScope('anon')
+    return persist(defaults())
+  }
   if (!cur.token || !hasCloud()) return Promise.resolve(clear())
   return call(config.functions.profile, { token: cur.token, action: 'logout' }).then(clear, clear)
 }
@@ -203,11 +257,52 @@ function displayName() {
   return p.logged ? p.nickName || '' : ''
 }
 
+/** 登录页跳转的去重标记，避免多个页面同时触发重复跳转 */
+let loginRedirecting = false
+
+/**
+ * 页面级登录拦截：应在页面 onShow 中调用。
+ * 会等 App 的会话校验结束后再判断，避免把「会话可用但尚未校验完」误判为未登录。
+ * @param {Function} [onLogged] 确认已登录后的回调，用于刷新依赖用户资料的内容
+ * @returns {Boolean} 启动校验已完成且已登录才返回 true；false 也可能表示等待中。
+ * 依赖登录的初始化应放在 onLogged 回调中，以覆盖同步放行与异步恢复两条路径。
+ */
+function requireLogin(onLogged) {
+  const app = typeof getApp === 'function' ? getApp() : null
+  const currentPage = () => {
+    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+    return pages[pages.length - 1]
+  }
+  const owner = currentPage()
+  const done = () => {
+    // 启动校验完成前页面可能已隐藏或销毁，不初始化过期页面。
+    if (owner && currentPage() !== owner) return false
+    if (isLogged()) {
+      if (typeof onLogged === 'function') onLogged()
+      return true
+    }
+    if (loginRedirecting || (currentPage() && currentPage().route === 'pages/login/login')) return false
+    loginRedirecting = true
+    wx.navigateTo({
+      url: '/pages/login/login',
+      complete: () => { loginRedirecting = false }
+    })
+    return false
+  }
+  // 缓存令牌存在也不能抢在启动校验之前放行；unknown 最终保留会话，仍可离线使用。
+  if (app && app.globalData && app.globalData.sessionReady === false && typeof app.whenSessionReady === 'function') {
+    app.whenSessionReady(done)
+    return false
+  }
+  return done()
+}
+
 module.exports = {
   initCloud,
   hasCloud,
   getProfile,
   isLogged,
+  requireLogin,
   login,
   ensureSession,
   updateProfile,

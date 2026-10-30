@@ -4,6 +4,7 @@ const bank = require('../../utils/questions.js')
 const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const ai = require('../../utils/ai.js')
+const user = require('../../utils/user.js')
 
 const MODE_TITLES = {
   all: '顺序练习',
@@ -44,21 +45,71 @@ Page({
 
   onLoad(options) {
     this.setData({ subjects: bank.getSubjects() })
-    this._init({
+    // 先保留路由意图；启动认证完成后才读取用户进度、创建或恢复练习。
+    this._initialParams = {
       mode: (options && options.mode) || 'all',
       subject: options && options.subject ? decodeURIComponent(options.subject) : '',
       chapter: options && options.chapter ? decodeURIComponent(options.chapter) : '',
       ids: null
-    })
+    }
   },
 
   onShow() {
-    // 处理从其他页面携带参数进入的情况（tabBar 页不支持 URL 传参）
+    user.requireLogin(() => this._showPractice())
+  },
+
+  _showPractice() {
+    const curScope = store.getUserScope()
+    const scopeChanged = this._scope && this._scope !== curScope
+
+    // 显式新请求优先：它携带用户当前选择的科目/章节/题目，不继承旧页面约束。
+    if (this._consumePending()) return
+
+    if (!this._params) {
+      this._init(this._initialParams || { mode: 'all' })
+      this._initialParams = null
+      this._scope = curScope
+      return
+    }
+
+    const saved = this._params
+    const subject = store.getCurrentSubject()
+    const subjectChanged = saved.subject !== subject
+    const persisted = store.getPracticeSession()
+    const sessionChanged = this._sessionId && (!persisted || persisted.id !== this._sessionId)
+
+    // 自动重建共用一处参数归一化，避免切账号/清空会话提前返回，漏掉同时发生的换科。
+    // 仍在同一科目时保留章节/单题意图；换科后清除所有旧题集约束，专项模式退回整科。
+    if (scopeChanged || sessionChanged || subjectChanged) {
+      const mode = subjectChanged && (saved.mode === 'single' || saved.mode === 'chapter') ? 'all' : saved.mode
+      this._init({
+        mode,
+        subject,
+        chapter: subjectChanged ? '' : saved.chapter,
+        ids: subjectChanged ? null : saved.ids,
+        fresh: true
+      })
+    }
+    this._scope = curScope
+  },
+
+  /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
+  loadPending() {
+    if (!user.requireLogin()) return
+    return this._consumePending()
+  },
+
+  /** onShow 与当前页直达入口共用消费逻辑，同步请求标记与页面所属作用域。 */
+  _consumePending() {
     const pending = app.globalData.practiceParams
     if (pending && pending.__stamp && pending.__stamp !== this._stamp) {
       this._stamp = pending.__stamp
-      this._init(pending)
+      this._init(Object.assign({}, pending, { fresh: true }))
+      this._scope = store.getUserScope()
+      this._initialParams = null
+      return true
     }
+    return false
   },
 
   onUnload() {
@@ -69,16 +120,50 @@ Page({
 
   _init(params) {
     const mode = MODE_TITLES[params.mode] ? params.mode : 'all'
-    const subject = params.subject || ''
+    // 从首页科目卡 / 学情章节专练进入时携带科目，先同步为全应用当前科目
+    if (params.subject) store.setCurrentSubject(params.subject)
+    // 科目是全应用统一口径，永远取全局当前值，保证「切到某科就只看该科」
+    const subject = store.getCurrentSubject()
     const chapter = params.chapter || ''
     const ids = params.ids || null
+    const fresh = !!params.fresh
 
-    const snapshot = { mode, subject, chapter, ids }
+    const snapshot = { mode, subject, chapter, ids, fresh }
     const prev = this._params
-    if (prev && prev.mode === mode && prev.subject === subject && prev.chapter === chapter && prev.ids === ids && this.data.total) {
+    if (!fresh && prev && prev.mode === mode && prev.subject === subject && prev.chapter === chapter && prev.ids === ids && this.data.total) {
       return // 同一组参数重复进入时不重置进度
     }
     this._params = snapshot
+
+    // 恢复未完成的会话：app 重启/页面重建后，参数一致且存在 in_progress 的练习，则续做而非重开
+    // （评审 P2：Restore unfinished practice sessions before creating a new one）
+    const existing = store.getPracticeSession()
+    if (!fresh && existing && existing.status === 'in_progress' && existing.params &&
+        existing.params.mode === mode && existing.params.subject === subject &&
+        existing.params.chapter === chapter && existing.params.ids === ids) {
+      const queue = (existing.questionIds || []).map((id) => bank.findQuestion(id)).filter(Boolean)
+      if (queue.length) {
+        this.setData({
+          mode,
+          subject,
+          chapter,
+          modeTitle: MODE_TITLES[mode],
+          queue,
+          total: queue.length,
+          question: null,
+          finished: false,
+          summary: null,
+          sessionCorrect: existing.sessionCorrect || 0,
+          sessionTotal: existing.sessionTotal || 0,
+          errorIds: existing.errorIds || [],
+          emptyTip: ''
+        })
+        this._sessionId = existing.id
+        const startIdx = Math.min(existing.currentIndex || 0, queue.length - 1)
+        this._load(startIdx)
+        return
+      }
+    }
 
     wx.setNavigationBarTitle({ title: MODE_TITLES[mode] })
     const queue = this._buildQueue(snapshot)
@@ -94,9 +179,10 @@ Page({
         finished: false,
         summary: null,
         emptyTip: this._emptyTip(mode)
-      })
-      return
-    }
+        })
+        this._sessionId = null
+        return
+        }
     this.setData({
       mode,
       subject,
@@ -111,6 +197,14 @@ Page({
       errorIds: [],
       emptyTip: ''
     })
+    // 新开一轮练习：创建 Session 状态机（created/in_progress），用于幂等提交与只读回看
+    const session = store.createPracticeSession({
+      mode,
+      subject,
+      questionIds: queue.map((item) => item.id),
+      params: snapshot
+    })
+    this._sessionId = session.id
     this._load(0)
   },
 
@@ -123,9 +217,12 @@ Page({
   },
 
   _buildQueue(params) {
-    const { mode, subject, chapter, ids } = params
+    const { mode, chapter, ids } = params
+    // 科目统一从全局读取；下述数据源在 store / analytics 层已按当前科目过滤，无需二次过滤
+    const subject = store.getCurrentSubject()
     let list = []
     if (mode === 'single') {
+      // 指定题目：来源已是当前科目（错题本 / 学情 / 举一反三），不按科目二次过滤
       list = bank.getQuestionsByIds(ids || [])
     } else if (mode === 'wrong') {
       list = store
@@ -142,25 +239,37 @@ Page({
       list = bank.filterQuestions({ subject })
       if (mode === 'random') list = bank.shuffle(list)
     }
-
-    if (subject && mode !== 'single' && mode !== 'chapter') {
-      list = list.filter((q) => q.subject === subject)
-    }
     return list.slice(0, 60)
   },
 
   _load(idx) {
     const queue = this.data.queue
     if (!queue[idx]) return
+    // 切换题目时清除挂起的「自动下一题」定时器，避免回看上一题时残留定时器
+    // 命中 `submitted` 后又自动前进，打断复习（评审 P2 发现）
+    if (this._timer) {
+      clearTimeout(this._timer)
+      this._timer = null
+    }
     const question = queue[idx]
     const record = store.getRecord(question.id)
+    // 本会话内已提交的题：回看为只读，从不可变流水恢复作答，不允许再次提交
+    const session = store.getPracticeSession()
+    const sub = session && session.submitted ? session.submitted[question.id] : null
+    let selected = []
+    if (sub) {
+      const att = (store.getAttempts().find((a) => a.id === sub.attemptId)) || null
+      selected = att ? att.selected.slice() : []
+    } else if (question.type === 'fill') {
+      // 填空题按空位数预置空字符串，保证 selected 与 answer 等长
+      selected = (question.answer || []).map(() => '')
+    }
     this.setData({
       idx,
       question,
-      // 填空题按空位数预置空字符串，保证 selected 与 answer 等长
-      selected: question.type === 'fill' ? (question.answer || []).map(() => '') : [],
-      submitted: false,
-      showExplain: store.getSettings().aiExplain !== false,
+      selected,
+      submitted: !!sub,
+      showExplain: sub ? true : store.getSettings().aiExplain !== false,
       showAi: false,
       aiExplain: null,
       canSubmit: false,
@@ -168,6 +277,10 @@ Page({
       starred: record ? !!record.starred : false
     })
     this._startAt = Date.now()
+    // 记录当前进度，便于 app 重启后恢复未完成会话
+    if (store.getPracticeSession()) {
+      store.updatePracticeSession({ currentIndex: idx })
+    }
   },
 
   /* ---------------- 交互 ---------------- */
@@ -245,6 +358,7 @@ Page({
   },
 
   onStar() {
+    if (!user.requireLogin()) return
     const q = this.data.question
     if (!q) return
     store.ensureRecord(q)
@@ -254,6 +368,7 @@ Page({
   },
 
   onSubmit() {
+    if (!user.requireLogin()) return
     const q = this.data.question
     if (!q || this.data.submitted) return
     const selected = this.data.selected.slice()
@@ -267,20 +382,25 @@ Page({
     const correct = bank.judge(q.type, selected, q.answer)
     const cost = Date.now() - (this._startAt || Date.now())
 
-    store.recordAnswer(q, correct, cost)
+    // 幂等提交：同一次会话内同一题用同一 clientOpId，重复点击只落库一次（不重复计数）
+    const session = store.getPracticeSession()
+    const clientOpId = session ? `${session.id}:${q.id}` : undefined
+    const res = store.submitAttempt(q, selected, correct, cost, clientOpId)
 
-    const errorIds = this.data.errorIds.slice()
-    if (!correct && errorIds.indexOf(q.id) === -1) errorIds.push(q.id)
+    // 统计以持久化会话为准（store 已在提交时同步 sessionCorrect/sessionTotal/errorIds），
+    // 保证「重进页面恢复会话」时进度与实时一致（评审 P2）
+    const sess = store.getPracticeSession() || {}
+    const errorIds = (sess.errorIds || []).slice()
 
     this.setData({
       submitted: true,
       showExplain: true,
-      sessionTotal: this.data.sessionTotal + 1,
-      sessionCorrect: this.data.sessionCorrect + (correct ? 1 : 0),
+      sessionTotal: sess.sessionTotal || 0,
+      sessionCorrect: sess.sessionCorrect || 0,
       errorIds
     })
 
-    if (store.getSettings().autoNext && correct) {
+    if (store.getSettings().autoNext && correct && !res.dup) {
       if (this._timer) clearTimeout(this._timer)
       const self = this
       this._timer = setTimeout(() => {
@@ -316,7 +436,13 @@ Page({
     this.setData({ showAi: false })
   },
 
-  onStop() {},
+  /* 进入后台/暂停：持久化当前进度到会话，便于恢复（Issue 2） */
+  onStop() {
+    if (store.getPracticeSession()) {
+      store.updatePracticeSession({ currentIndex: this.data.idx, status: 'in_progress' })
+    }
+    store.flush()
+  },
 
   /** 相似题加入队列 */
   onAddSimilar(e) {
@@ -334,15 +460,22 @@ Page({
   },
 
   onSubjectChange(e) {
+    if (!user.requireLogin()) return
     const subject = e.currentTarget.dataset.subject || ''
-    const mode = this.data.mode === 'single' ? 'all' : this.data.mode
-    const params = { mode, subject, chapter: '', ids: null }
+    if (!subject) return // 已去掉「全部」，dataset 里只会是具体科目
+    // 切换全应用当前科目；换科目后原章节约束失效，chapter 降级为整科顺序练习
+    store.setCurrentSubject(subject)
+    const mode = this.data.mode === 'single' || this.data.mode === 'chapter' ? 'all' : this.data.mode
     this._params = null
-    this._init(params)
+    this._init({ mode, chapter: '', ids: null, fresh: true })
   },
 
   _finish() {
-    const { sessionTotal, sessionCorrect, errorIds } = this.data
+    // 统计以持久化会话为准，避免与实时页内计数偏差（评审 P2）
+    const sess = store.getPracticeSession()
+    const sessionTotal = (sess && sess.sessionTotal) || this.data.sessionTotal
+    const sessionCorrect = (sess && sess.sessionCorrect) || this.data.sessionCorrect
+    const errorIds = (sess && sess.errorIds) || this.data.errorIds
     const rate = sessionTotal ? Math.round((sessionCorrect / sessionTotal) * 100) : 0
     const wrongList = errorIds
       .map((id) => bank.findQuestion(id))
@@ -356,15 +489,19 @@ Page({
       finished: true,
       summary: { total: sessionTotal, correct: sessionCorrect, rate, comment, wrongList }
     })
+    // 标记本轮已完成，使「重建页面恢复会话」的守卫排除已完成轮次（评审 P2）
+    if (store.getPracticeSession()) store.completePracticeSession()
   },
 
   restart() {
+    if (!user.requireLogin()) return
     this._params = null
     const params = {
       mode: this.data.mode,
       subject: this.data.subject,
       chapter: this.data.chapter,
-      ids: null
+      ids: null,
+      fresh: true
     }
     if (this.data.mode === 'single') params.mode = 'all'
     this._init(params)

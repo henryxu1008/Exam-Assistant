@@ -6,6 +6,7 @@
     "pages/ai/ai",
     "pages/profile/profile",
     "pages/analysis/analysis",
+    "pages/agreement/agreement",
     "pages/login/login"
   ],
   "window": {

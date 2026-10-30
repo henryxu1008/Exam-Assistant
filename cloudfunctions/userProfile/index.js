@@ -19,12 +19,60 @@ const USERS = db.collection('users')
 
 const EDITABLE = ['nickName', 'avatarUrl', 'exam']
 
+/** 字段最长字数，超长截断 */
+const FIELD_MAX = { nickName: 32, exam: 40 }
+
+/** 令牌有效期，与小程序端 utils/user.js 的 TOKEN_TTL 保持一致 */
+const TOKEN_TTL = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * 只放行白名单字段并清洗：昵称/目标考试截断到上限，头像只接受云存储 fileID。
+ * 云函数之间不共享本地模块，此实现需与 userLogin 保持一致。
+ */
+function sanitize(event) {
+  const patch = {}
+  EDITABLE.forEach((k) => {
+    if (event[k] === undefined) return
+    const v = String(event[k] || '').trim()
+    if (k === 'avatarUrl') {
+      // 只接受云存储 fileID，外部 URL 或任意长串一律丢弃
+      if (v && v.indexOf('cloud://') !== 0) return
+      patch[k] = v
+      return
+    }
+    patch[k] = v.slice(0, FIELD_MAX[k])
+  })
+  return patch
+}
+
+/** 只回传可编辑字段，openid / unionid / token / _id 不下发到端上 */
+function publicProfile(doc) {
+  const out = {}
+  EDITABLE.forEach((k) => {
+    out[k] = doc[k] || ''
+  })
+  return out
+}
+
+/** 只撤销读取时的令牌；并发新登录写入的新令牌不属于本次操作。 */
+function clearTokenIfCurrent(doc) {
+  return USERS.where({ _id: doc._id, token: doc.token })
+    .update({ data: { token: '', tokenAt: 0 } })
+}
+
 async function findByToken(token) {
   if (!token) return null
   const res = await USERS.where({ token: token })
     .limit(1)
     .get()
-  return res.data && res.data.length ? res.data[0] : null
+  const doc = res.data && res.data.length ? res.data[0] : null
+  if (!doc) return null
+  // 过期令牌直接作废，小程序端会静默重新登录换取新令牌
+  if (!doc.tokenAt || Date.now() - doc.tokenAt > TOKEN_TTL) {
+    await clearTokenIfCurrent(doc).catch(() => {})
+    return null
+  }
+  return doc
 }
 
 exports.main = async (event) => {
@@ -37,18 +85,16 @@ exports.main = async (event) => {
   const action = event.action || 'get'
 
   if (action === 'logout') {
-    await USERS.doc(user._id).update({ data: { token: '', tokenAt: 0 } })
+    await clearTokenIfCurrent(user)
     return { ok: true }
   }
 
   if (action === 'update') {
-    const patch = { updatedAt: Date.now() }
-    EDITABLE.forEach((k) => {
-      if (event[k] !== undefined) patch[k] = event[k]
-    })
+    const saved = sanitize(event)
+    const patch = Object.assign({ updatedAt: Date.now() }, saved)
     await USERS.doc(user._id).update({ data: patch })
-    return { ok: true, profile: Object.assign({}, user, patch) }
+    return { ok: true, profile: publicProfile(Object.assign({}, user, saved)) }
   }
 
-  return { ok: true, profile: user }
+  return { ok: true, profile: publicProfile(user) }
 }

@@ -2,6 +2,7 @@
 const app = getApp()
 const ai = require('../../utils/ai.js')
 const store = require('../../utils/store.js')
+const user = require('../../utils/user.js')
 
 const QUICK = [
   '我哪里最薄弱',
@@ -10,6 +11,9 @@ const QUICK = [
   '我的正确率多少',
   '有什么记忆口诀'
 ]
+
+/** 本地规则引擎模拟「思考中」的等待耗时（毫秒） */
+const REPLY_DELAY = 420
 
 Page({
   data: {
@@ -21,6 +25,13 @@ Page({
   },
 
   onLoad() {
+    this._conversationVersion = null
+  },
+
+  /** 认证完成后载入历史消息（无历史时用欢迎语兜底）。 */
+  _resetMessages() {
+    this._invalidateReply()
+    this._conversationVersion = store.getAiConversationVersion()
     const list = store.getAiMessages().map((m) => this._decorate(m))
     if (!list.length) {
       list.push(
@@ -36,10 +47,24 @@ Page({
         })
       )
     }
-    this.setData({ messages: list }, () => this._scrollToLast(list.length))
+    this.setData({ messages: list, input: '', loading: false, scrollTo: '' }, () => this._scrollToLast(list.length))
+  },
+
+  /** 页面缓存只可用于所属账号及尚未被清空的那轮对话。 */
+  _syncConversation() {
+    if (this._conversationVersion !== store.getAiConversationVersion()) this._resetMessages()
   },
 
   onShow() {
+    if (user.requireLogin(() => this._showConversation())) return
+    // 待校验或未登录时不展示缓存历史；全局预填输入继续保留，认证后再消费。
+    this._invalidateReply()
+    this._conversationVersion = null
+    this.setData({ messages: [], input: '', loading: false, scrollTo: '' })
+  },
+
+  _showConversation() {
+    this._syncConversation()
     // 其他页面（错题本 / 学情报告 / 练习页）携带问题跳转过来
     const pre = app.globalData.aiPreInput
     if (!pre) return
@@ -48,6 +73,11 @@ Page({
     app.globalData.aiContext = null
     this.setData({ input: pre })
     this.send(pre, context)
+  },
+
+  onUnload() {
+    this._invalidateReply()
+    this._conversationVersion = null
   },
 
   /* ---------------- 收发 ---------------- */
@@ -65,8 +95,14 @@ Page({
   },
 
   send(text, context) {
+    if (!user.requireLogin()) return
+    this._syncConversation()
     const content = String(text || '').trim()
     if (!content || this.data.loading) return
+
+    // 请求令牌：每次发送递增；在途响应若令牌已变化（被清空/新消息）则视为过期，丢弃，避免窜改状态/存储
+    this._reqToken = (this._reqToken || 0) + 1
+    const token = this._reqToken
 
     const messages = this.data.messages.concat([
       this._decorate({ role: 'user', text: content, bullets: [], cards: [], time: Date.now() })
@@ -75,22 +111,62 @@ Page({
     store.pushAiMessage({ role: 'user', text: content, bullets: [], cards: [] })
 
     const self = this
-    setTimeout(() => {
-      const result = ai.chat(content, context || {})
-      const extra = result.extra || null
-      const reply = {
-        role: 'ai',
-        text: result.reply,
-        bullets: result.bullets || [],
-        cards: result.cards || [],
-        mnemonic: extra ? extra.mnemonic : '',
-        similar: extra ? extra.similar : [],
-        time: Date.now()
-      }
-      const next = self.data.messages.concat([self._decorate(reply)])
-      self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
-      store.pushAiMessage(reply)
-    }, 420)
+    // 个性化查询（正确率/薄弱/计划/错题/记忆方法）依赖真实答题数据，必须走本地引擎，
+    // 否则远程大模型无数据只能泛泛而谈；其余走真实大模型，未开启/失败回落本地规则引擎
+    // （评审 P2：Include learning statistics in personalized remote AI requests）
+    if (ai.isPersonalizedQuery(content)) {
+      self._localReply(token, content, context || {})
+      return
+    }
+    ai
+      .requestLLM(
+        messages.slice(-6).map((m) => ({ role: m.role, content: m.text })),
+        store.getCurrentSubject(),
+        context || {} // 含 questionId/userAnswer，供远端大模型看到题目（评审 P2）
+      )
+      .then((remote) => {
+        if (!self._isCurrentReply(token)) return
+        if (remote) {
+          self._applyReply(token, { reply: remote, bullets: [], cards: [] })
+          return
+        }
+        self._localReply(token, content, context || {}) // 本地引擎回落
+      })
+      .catch(() => {
+        if (!self._isCurrentReply(token)) return
+        self._localReply(token, content, context || {}) // 远程异常时回落本地
+      })
+  },
+
+  /** 走本地规则引擎生成回复（带「打字中」等待感），并写入状态/持久化 */
+  _localReply(token, content, context) {
+    const self = this
+    if (!self._isCurrentReply(token)) return
+    self._replyTimer = setTimeout(() => {
+      self._replyTimer = null
+      if (!self._isCurrentReply(token)) return
+      self._applyReply(token, ai.chat(content, context || {}))
+    }, REPLY_DELAY)
+  },
+
+  /** 把本地/远端回复写入页面状态与持久化 */
+  _applyReply(token, result) {
+    const self = this
+    if (!self._isCurrentReply(token)) return
+    if (!result) return
+    const extra = result.extra || null
+    const reply = {
+      role: 'ai',
+      text: result.reply,
+      bullets: result.bullets || [],
+      cards: result.cards || [],
+      mnemonic: extra ? extra.mnemonic : '',
+      similar: extra ? extra.similar : [],
+      time: Date.now()
+    }
+    const next = self.data.messages.concat([self._decorate(reply)])
+    self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
+    store.pushAiMessage(reply)
   },
 
   /* ---------------- 卡片动作 ---------------- */
@@ -115,6 +191,9 @@ Page({
   },
 
   onClear() {
+    if (!user.requireLogin()) return
+    this._syncConversation()
+    const version = this._conversationVersion
     const self = this
     wx.showModal({
       title: '清空对话',
@@ -123,13 +202,32 @@ Page({
       confirmColor: '#e5484d',
       success(res) {
         if (!res.confirm) return
+        // 确认框也属于打开时的账号/对话，不能删除切换后的另一个用户的数据。
+        if (version !== self._conversationVersion || version !== store.getAiConversationVersion()) return
         store.clearAiMessages()
-        self.setData({ messages: [], loading: false }, () => self.onLoad())
+        self._resetMessages()
       }
     })
   },
 
   /* ---------------- 工具 ---------------- */
+
+  _invalidateReply() {
+    this._reqToken = (this._reqToken || 0) + 1
+    this._clearReplyTimer()
+  },
+
+  /** onShow 尚未执行时也要检查仓储代次，防止旧回复写入新用户作用域。 */
+  _isCurrentReply(token) {
+    return token === this._reqToken && this._conversationVersion === store.getAiConversationVersion()
+  },
+
+  /** 取消尚未触发的本地回复定时器，避免离页后仍执行 setData */
+  _clearReplyTimer() {
+    if (!this._replyTimer) return
+    clearTimeout(this._replyTimer)
+    this._replyTimer = null
+  },
 
   _decorate(msg) {
     this._seq = (this._seq || 0) + 1

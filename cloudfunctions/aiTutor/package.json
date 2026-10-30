@@ -1,0 +1,10 @@
+{
+  "name": "aiTutor",
+  "version": "1.0.0",
+  "description": "AI 学习助教：大模型接入骨架（默认关闭，配置后启用）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  },
+  "license": "MIT"
+}

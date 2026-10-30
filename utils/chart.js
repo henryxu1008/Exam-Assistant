@@ -12,7 +12,8 @@ function getPixelRatio() {
   } catch (e) {
     // ignore
   }
-  return wx.getSystemInfoSync().pixelRatio || 2
+  // 基础库不支持 getWindowInfo 时退回固定倍率（避免继续使用已废弃的 getSystemInfoSync）
+  return 2
 }
 
 /** 获取画布上下文 */

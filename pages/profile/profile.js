@@ -45,11 +45,11 @@ Page({
   },
 
   onShow() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
   },
 
   onPullDownRefresh() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 
@@ -68,12 +68,8 @@ Page({
       if (r.mastered) mastered += 1
     })
 
-    const days = store.getDailyRange(365)
-    let timeMs = 0
-    days.forEach((d) => {
-      timeMs += d.timeMs || 0
-    })
-    const minutes = Math.round(timeMs / 60000)
+    const study = store.getStudySummary()
+    const minutes = Math.round(study.timeMs / 60000)
 
     const all = bank.getAllQuestions()
     const goal = settings.dailyGoal || 30
@@ -90,7 +86,7 @@ Page({
       },
       initial: user.initial(profile.nickName),
       levelText: Math.min(9, Math.floor(overview.total / 100) + 1),
-      studyDays: days.filter((d) => d.total > 0).length,
+      studyDays: study.days,
       studyTimeText: minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${minutes} 分钟`,
       goal,
       goalPercent: Math.min(100, Math.round((overview.todayTotal / goal) * 100)),
@@ -151,6 +147,13 @@ Page({
     })
   },
 
+  /* 法律与协议 */
+
+  goAgreement(e) {
+    const type = e.currentTarget.dataset.type || 'user'
+    wx.navigateTo({ url: `/pages/agreement/agreement?type=${type}` })
+  },
+
   /* ---------------- 账号 ---------------- */
 
   goLogin() {
@@ -170,7 +173,7 @@ Page({
       success(res) {
         if (!res.confirm) return
         user.logout().then(() => {
-          getApp().setLogged(false)
+          app.setLogged(false)
           wx.reLaunch({ url: '/pages/login/login' })
         })
       }

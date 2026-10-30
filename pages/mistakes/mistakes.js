@@ -2,6 +2,7 @@
 const app = getApp()
 const bank = require('../../utils/questions.js')
 const store = require('../../utils/store.js')
+const user = require('../../utils/user.js')
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -36,11 +37,11 @@ Page({
   },
 
   onShow() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
   },
 
   onPullDownRefresh() {
-    this.refresh()
+    user.requireLogin(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 
@@ -48,6 +49,7 @@ Page({
 
   refresh() {
     const now = Date.now()
+    const subject = store.getCurrentSubject()
     const records = store.getRecords()
     const pool = []
     Object.keys(records).forEach((id) => {
@@ -56,31 +58,36 @@ Page({
       if (r.wrong > 0 || r.starred) pool.push(r)
     })
 
+    const inSubject = (r) => r.subject === subject
+    // 待复习口径统一走 store.getDueRecords()，保证与刷题「到期复习」模式筛选一致
+    const dueSet = new Set(store.getDueRecords().map((r) => r.id))
     const counts = {
-      all: pool.filter((r) => r.wrong > 0).length,
-      stubborn: pool.filter((r) => r.wrong >= 2).length,
-      due: pool.filter((r) => (r.nextReviewAt || 0) <= now).length,
-      starred: pool.filter((r) => r.starred).length
+      all: pool.filter((r) => r.wrong > 0 && inSubject(r)).length,
+      stubborn: pool.filter((r) => r.wrong >= 2 && inSubject(r)).length,
+      due: pool.filter((r) => dueSet.has(r.id) && inSubject(r)).length,
+      starred: pool.filter((r) => r.starred && inSubject(r)).length
     }
 
-    this._render(pool)
+    this._render(pool, dueSet)
     this.setData({
+      subject,
       counts,
       tabs: TABS.map((t) => ({ key: t.key, label: t.label, count: counts[t.key] }))
     })
   },
 
-  _render(pool) {
+  _render(pool, dueSet) {
     const now = Date.now()
-    const { tab, subject } = this.data
+    const { tab } = this.data
+    const subject = store.getCurrentSubject()
 
     let list = pool.filter((r) => {
       if (tab === 'stubborn') return r.wrong >= 2
-      if (tab === 'due') return (r.nextReviewAt || 0) <= now
+      if (tab === 'due') return dueSet.has(r.id)
       if (tab === 'starred') return !!r.starred
       return r.wrong > 0
     })
-    if (subject) list = list.filter((r) => r.subject === subject)
+    list = list.filter((r) => r.subject === subject)
 
     const items = []
     list.forEach((r) => {
@@ -134,7 +141,9 @@ Page({
 
   onSubjectChange(e) {
     const subject = e.currentTarget.dataset.subject || ''
-    this.setData({ subject }, () => this.refresh())
+    if (!subject) return // 已去掉「全部」
+    store.setCurrentSubject(subject)
+    this.refresh()
   },
 
   onStar(e) {
@@ -195,9 +204,13 @@ Page({
     app.startPractice({ mode: 'single', ids })
   },
 
-  /** 只练到期复习 */
+  /** 只练到期复习——与「待复习」列表共用同一选择器 getDueRecords()，避免列表有题却提示无题 */
   redoDue() {
-    const ids = this._ids((r) => (r.nextReviewAt || 0) <= Date.now())
+    const subject = store.getCurrentSubject()
+    const ids = store
+      .getDueRecords()
+      .filter((r) => r.subject === subject)
+      .map((r) => r.id)
     if (!ids.length) {
       wx.showToast({ title: '暂无待复习题目', icon: 'none' })
       return
@@ -208,10 +221,11 @@ Page({
   _ids(predicate) {
     const records = store.getRecords()
     const now = Date.now()
+    const subject = store.getCurrentSubject()
     return Object.keys(records)
       .filter((id) => {
         const r = records[id]
-        return r && !r.mastered && r.wrong > 0 && predicate(r, now)
+        return r && !r.mastered && r.subject === subject && r.wrong > 0 && predicate(r, now)
       })
       .sort((a, b) => records[b].wrong - records[a].wrong)
       .slice(0, 60)

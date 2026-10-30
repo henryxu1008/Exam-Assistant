@@ -156,6 +156,16 @@
       <text class="grow">关于应用</text>
       <text class="small muted">v{{version}} ›</text>
     </view>
+    <view class="menu-item" bindtap="goAgreement" data-type="user">
+      <text class="menu-icon mi-gray">协</text>
+      <text class="grow">用户协议</text>
+      <text class="small muted">阅读 ›</text>
+    </view>
+    <view class="menu-item" bindtap="goAgreement" data-type="privacy">
+      <text class="menu-icon mi-gray">隐</text>
+      <text class="grow">隐私政策</text>
+      <text class="small muted">阅读 ›</text>
+    </view>
     <view class="menu-item" wx:if="{{logged}}" bindtap="onLogout">
       <text class="menu-icon mi-gray">退</text>
       <text class="grow">退出登录</text>

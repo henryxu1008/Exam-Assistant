@@ -9,6 +9,10 @@ const bank = require('./questions.js')
 const WEAK_RATE = 0.6 // 正确率低于该值视为薄弱
 const WEAK_MIN_ATTEMPTS = 2 // 至少答过 2 题才纳入统计
 
+const STRONG_RATE = 85 // 正确率不低于该值视为优势
+const STRONG_MIN_ATTEMPTS = 3 // 至少答过 3 题才认定为优势
+const CHART_LABEL_MAX = 4 // 雷达图标签最长字数
+
 function chapterKey(subject, chapter) {
   return `${subject}||${chapter}`
 }
@@ -19,11 +23,13 @@ function chapterKey(subject, chapter) {
  */
 function chapterStats() {
   const records = store.getRecords()
+  const subject = store.getCurrentSubject()
   const map = {}
 
   Object.keys(records).forEach((id) => {
     const r = records[id]
     if (!r || !r.chapter) return
+    if (r.subject !== subject) return // 只统计当前科目
     const key = chapterKey(r.subject, r.chapter)
     const item = map[key] || {
       subject: r.subject,
@@ -56,13 +62,24 @@ function chapterStats() {
     .sort((a, b) => b.attempts - a.attempts)
 }
 
-/** 总体概览 */
-function overview() {
-  const stats = chapterStats()
+/**
+ * 建立一次统计快照：同一份全量扫描结果供各指标复用，避免逐指标重复遍历
+ * @returns {{stats: Array, wrongs: Array}}
+ */
+function snapshot() {
+  return { stats: chapterStats(), wrongs: store.getWrongRecords() }
+}
+
+/**
+ * 总体概览
+ * @param {Object} [snap] 由 snapshot() 建立的快照，省略时自行扫描
+ */
+function overview(snap) {
+  const stats = (snap && snap.stats) || chapterStats()
   const total = stats.reduce((s, i) => s + i.attempts, 0)
   const correct = stats.reduce((s, i) => s + i.correct, 0)
   const today = store.getToday()
-  const wrongRecords = store.getWrongRecords()
+  const wrongRecords = (snap && snap.wrongs) || store.getWrongRecords()
   const dueIds = store.getDueIds()
   return {
     total: total,
@@ -83,8 +100,10 @@ function overview() {
  * 薄弱知识点（正确率低 + 近期错过的优先）
  * @param {Number} limit
  */
-function weakPoints(limit) {
-  const list = chapterStats().filter((i) => i.attempts >= WEAK_MIN_ATTEMPTS && i.rate < WEAK_RATE * 100)
+function weakPoints(limit, snap) {
+  const list = ((snap && snap.stats) || chapterStats()).filter(
+    (i) => i.attempts >= WEAK_MIN_ATTEMPTS && i.rate < WEAK_RATE * 100
+  )
   list.sort((a, b) => {
     const sa = (100 - a.rate) * 100 + a.wrong * 10 + (a.lastWrongAt ? 5 : 0)
     const sb = (100 - b.rate) * 100 + b.wrong * 10 + (b.lastWrongAt ? 5 : 0)
@@ -94,21 +113,20 @@ function weakPoints(limit) {
 }
 
 /** 已掌握较好的知识点 */
-function strongPoints(limit) {
-  const list = chapterStats().filter((i) => i.attempts >= 3 && i.rate >= 85)
+function strongPoints(limit, snap) {
+  const list = ((snap && snap.stats) || chapterStats()).filter(
+    (i) => i.attempts >= STRONG_MIN_ATTEMPTS && i.rate >= STRONG_RATE
+  )
   list.sort((a, b) => b.rate - a.rate)
   return typeof limit === 'number' ? list.slice(0, limit) : list
 }
 
 /** 雷达图数据：取练习量最多的 N 个知识点 */
-function radarData(topN) {
+function radarData(topN, snap) {
   const n = topN || 6
-  const list = chapterStats()
-    .slice()
-    .sort((a, b) => b.attempts - a.attempts)
-    .slice(0, n)
+  const list = ((snap && snap.stats) || chapterStats()).slice(0, n)
   return list.map((i) => ({
-    name: i.chapter.length > 4 ? i.chapter.slice(0, 4) : i.chapter,
+    name: i.chapter.length > CHART_LABEL_MAX ? i.chapter.slice(0, CHART_LABEL_MAX) : i.chapter,
     fullName: i.chapter,
     /** 掌握度按正确率与等级各占一半 */
     value: Math.round((i.rate * 0.5 + i.mastery * 0.5) * 10) / 10
@@ -127,9 +145,8 @@ function trendData(days) {
 }
 
 /** 顽固错题列表（错误次数 >= 2） */
-function stubbornQuestions(limit) {
-  const list = store
-    .getWrongRecords()
+function stubbornQuestions(limit, snap) {
+  const list = ((snap && snap.wrongs) || store.getWrongRecords())
     .filter((r) => r.wrong >= 2)
     .sort((a, b) => b.wrong - a.wrong || (b.lastWrongAt || 0) - (a.lastWrongAt || 0))
   const items = list.map((r) => {
@@ -149,18 +166,15 @@ function weakQuestionIds(limit) {
   const idSet = {}
   const ids = []
   const records = store.getRecords()
-  const all = bank.getAllQuestions()
+  const all = bank.filterQuestions({ subject: store.getCurrentSubject() })
 
   all.forEach((q) => {
     const hit = points.some((p) => p.subject === q.subject && p.chapter === q.chapter)
     if (!hit) return
     const r = records[q.id]
-    const wrongCount = r ? r.wrong : 0
-    if (wrongCount > 0 || hit) {
-      if (!idSet[q.id]) {
-        idSet[q.id] = true
-        ids.push({ id: q.id, wrong: wrongCount, level: r ? r.level : 0 })
-      }
+    if (!idSet[q.id]) {
+      idSet[q.id] = true
+      ids.push({ id: q.id, wrong: r ? r.wrong : 0, level: r ? r.level : 0 })
     }
   })
   ids.sort((a, b) => b.wrong - a.wrong || a.level - b.level)
@@ -174,6 +188,7 @@ module.exports = {
   WEAK_MIN_ATTEMPTS,
   chapterKey,
   chapterStats,
+  snapshot,
   overview,
   weakPoints,
   strongPoints,

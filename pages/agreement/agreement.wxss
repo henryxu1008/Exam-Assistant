@@ -1,0 +1,18 @@
+/* pages/agreement/agreement.wxss */
+.agree-h {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #1f2733;
+  margin-top: 32rpx;
+}
+
+.agree-h:first-child {
+  margin-top: 0;
+}
+
+.agree-p {
+  font-size: 26rpx;
+  line-height: 44rpx;
+  color: #5a6478;
+  margin-top: 12rpx;
+}
