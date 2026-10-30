@@ -243,10 +243,60 @@ test('getDueRecords 包含错>=2 的题（即便 nextReviewAt 在未来），保
   mockDate(BASE)
   store.recordAnswer(q('t1', 'ch1'), false, 100)
   store.recordAnswer(q('t1', 'ch1'), false, 100) // 错 2 次 -> 顽固
-  mockDate(BASE + 100 * DAY) // 推进到未来，nextReviewAt 远超 now
+  store.recordAnswer(q('t1', 'ch1'), true, 100) // 答对后下次复习在未来，但历史已错 2 次
+  assert.ok(store.getRecord('t1').nextReviewAt > BASE)
   const due = store.getDueRecords()
   assert.ok(due.some((x) => x.id === 't1'), '错>=2 的题应出现在待复习（mistakes.redoDue 依赖同一选择器）')
+  assert.deepStrictEqual(store.getDueIds(), due.map((record) => record.id))
   restoreDate()
+})
+
+test('对话代次在切账号和清空历史时失效，普通消息或重复绑定账号不变', () => {
+  const store = freshStore()
+  const initial = store.getAiConversationVersion()
+  store.pushAiMessage({ role: 'user', text: '你好' })
+  store.setUserScope('anon')
+  assert.strictEqual(store.getAiConversationVersion(), initial)
+  store.setUserScope('A')
+  const userVersion = store.getAiConversationVersion()
+  assert.notStrictEqual(userVersion, initial)
+  store.setUserScope('anon')
+  assert.notStrictEqual(store.getAiConversationVersion(), initial, '回到同一账号也不能复用旧请求')
+  store.clearAiMessages()
+  const cleared = store.getAiConversationVersion()
+  store.clearAll()
+  assert.notStrictEqual(store.getAiConversationVersion(), cleared)
+})
+
+test('clearScope 删除其他账号时保留当前账号的待写数据和对话代次', () => {
+  const store = freshStore()
+  store.setUserScope('B')
+  store.pushAiMessage({ role: 'user', text: 'B 的历史' })
+  store.setUserScope('A')
+  store.recordAnswer(q('a1'), true, 100)
+  store.pushAiMessage({ role: 'user', text: 'A 的待写消息' })
+  const version = store.getAiConversationVersion()
+  store.clearScope('B')
+  assert.strictEqual(store.getUserScope(), 'A')
+  assert.strictEqual(store.getAiConversationVersion(), version)
+  assert.strictEqual(store.getRecord('a1').right, 1)
+  assert.strictEqual(store.getAiMessages()[0].text, 'A 的待写消息')
+  store.setUserScope('B')
+  assert.deepStrictEqual(store.getAiMessages(), [])
+  store.setUserScope('A')
+  assert.strictEqual(store.getRecord('a1').right, 1)
+})
+
+test('clearScope 删除当前账号后取消待写，不重建已删除存储', () => {
+  const store = freshStore()
+  store.setUserScope('A')
+  store.pushAiMessage({ role: 'user', text: '待删除' })
+  const version = store.getAiConversationVersion()
+  store.clearScope()
+  store.flush()
+  assert.strictEqual(wx.getStorageSync('exam_quiz_data_v1__A'), '')
+  assert.notStrictEqual(store.getAiConversationVersion(), version)
+  assert.deepStrictEqual(store.getAiMessages(), [])
 })
 
 test('submitAttempt 同步更新会话聚合统计（恢复会话用，评审 P2）', () => {

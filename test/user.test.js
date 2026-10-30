@@ -204,3 +204,31 @@ test('登出：清除会话并切回匿名作用域', () => {
       assert.strictEqual(store.getUserScope(), 'anon')
     })
 })
+
+test('令牌已被明确拒绝，自动重登网络失败也不能恢复旧令牌', async () => {
+  const user = freshUser()
+  cloudHandler = () => ({ ok: true, openid: 'OPENID_X', token: 'TOK_OLD', profile: {} })
+  await user.login()
+  global.wx.cloud.callFunction = ({ name }) => name === 'userProfile'
+    ? Promise.resolve({ result: { ok: false, error: 'INVALID_TOKEN' } })
+    : Promise.reject(new Error('network down'))
+  assert.strictEqual(await user.ensureSession(), null)
+  assert.strictEqual(user.isLogged(), false)
+  assert.strictEqual(user.getProfile().token, '')
+  assert.strictEqual(require('../utils/store.js').getUserScope(), 'anon')
+})
+
+test('服务端业务故障不等于令牌被拒绝，保留离线会话', async () => {
+  const user = freshUser()
+  cloudHandler = () => ({ ok: true, openid: 'OPENID_X', token: 'TOK_X', profile: {} })
+  await user.login()
+  let loginCalls = 0
+  cloudHandler = (name) => {
+    if (name === 'userLogin') loginCalls += 1
+    return { ok: false, error: 'SERVICE_UNAVAILABLE' }
+  }
+  const profile = await user.ensureSession()
+  assert.strictEqual(profile.token, 'TOK_X')
+  assert.strictEqual(loginCalls, 0)
+  assert.strictEqual(user.isLogged(), true)
+})

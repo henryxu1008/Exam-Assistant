@@ -156,46 +156,52 @@ function todayKey() {
 }
 
 /**
- * 预算护栏（原子预约）：先确保当日用量文档存在，再以「条件自增」原子地预约一次调用名额。
- * 仅当 count < cap 时自增成功（updated===1），并发请求无法同时越界；越界返回 false，端上回落本地引擎。
- * 计数异常（如集合未建）时放行，不阻断正常答疑。
+ * 每日固定 _id + 条件自增：唯一计数器与原子预约缺一不可。
+ * 旧版随机 ID 计数在首次创建时汇总；失败不放行付费上游，端上仍可本地答疑。
  */
 async function reserveDailyQuota() {
-  const cap = Number(CONFIG.dailyCallCap) || 0
-  if (!cap || cap <= 0) return true
+  const cap = CONFIG.dailyCallCap
+  if (!Number.isSafeInteger(cap) || cap < 0) return false
+  if (cap === 0) return true // 仅显式配置 0 时不限制调用
   const key = todayKey()
   try {
-    let res = await USAGE.where({ date: key }).limit(1).get()
-    let doc = res.data && res.data[0]
-    if (!doc) {
-      // 并发首次写入可能冲突，忽略重复创建错误后重新读取
+    const existing = await USAGE.where({ _id: key }).limit(1).get()
+    if (!existing.data || !existing.data.length) {
+      // 兼容旧版同一天的多份随机 ID 文档，分页汇总，升级不能重置当天用量。
+      let count = 0
+      let offset = 0
+      let page
+      do {
+        const legacy = await USAGE.where({ date: key }).orderBy('_id', 'asc').skip(offset).limit(100).get()
+        page = legacy.data || []
+        page.forEach((row) => {
+          if (row._id !== key) count += Math.max(0, Number(row.count) || 0)
+        })
+        offset += page.length
+      } while (page.length === 100)
       try {
-        await USAGE.add({ data: { date: key, count: 0, createdAt: Date.now(), updatedAt: Date.now() } })
+        await USAGE.add({ data: { _id: key, date: key, count, createdAt: Date.now(), updatedAt: Date.now() } })
       } catch (e) {
-        /* 并发创建冲突忽略 */
+        // 并发创建时 _id 唯一约束只允许一个成功，后续仍须条件更新成功才能放行。
       }
-      res = await USAGE.where({ date: key }).limit(1).get()
-      doc = res.data && res.data[0]
     }
-    if (!doc) return true
     // 条件自增：仅当 count < cap 时 +1；updated===1 视为预约成功（并发安全）
-    const upd = await USAGE.where({ _id: doc._id, count: db.command.lt(cap) }).update({
+    const upd = await USAGE.where({ _id: key, count: db.command.lt(cap) }).update({
       data: { count: db.command.inc(1), updatedAt: Date.now() }
     })
     const updated = (upd && upd.updated) || (upd && upd.stats && upd.stats.updated) || 0
     return updated === 1
   } catch (e) {
-    return true
+    return false
   }
 }
 
 exports.main = async (event) => {
   if (!CONFIG.enabled) return { content: null, disabled: true }
-  // 原子预约配额：成功才调用上游，避免并发绕过每日上限（评审 P2：Reserve daily AI quota atomically before calling upstream）
-  if (!(await reserveDailyQuota())) return { content: null, disabled: true, reason: 'BUDGET' }
-
   const { clean, subj } = sanitize(event.messages, event.subject)
   if (!clean.length) return { content: null, disabled: true }
+  // 原子预约配额：成功才调用上游，避免并发绕过每日上限（评审 P2：Reserve daily AI quota atomically before calling upstream）
+  if (!(await reserveDailyQuota())) return { content: null, disabled: true, reason: 'BUDGET' }
 
   const content = await callLLM(clean, subj)
   // 只回传 content，其余内部字段一律不下发到端上

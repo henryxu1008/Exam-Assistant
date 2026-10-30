@@ -16,6 +16,9 @@ const SESSION_KEY = 'exam_quiz_session_v1'
 /** 令牌有效期，略小于云函数 userProfile 的 TOKEN_TTL，留出边界余量 */
 const TOKEN_TTL = 29 * 24 * 60 * 60 * 1000
 
+// 只有明确的身份拒绝才撤销本地会话；业务故障与传输失败保留 unknown 状态。
+const SESSION_REJECTIONS = ['INVALID_TOKEN', 'NO_TOKEN']
+
 function defaults() {
   return {
     logged: false,
@@ -89,9 +92,8 @@ function call(name, data) {
       const r = res && res.result
       if (!r) return Promise.reject(new Error('云函数返回为空'))
       if (r.ok === false) {
-        // 服务端显式拒绝（令牌失效/撤销/跨设备），与传输层失败区分（评审 P2）
         const e = new Error(r.error || '云函数调用失败')
-        e.code = 'SERVER_REJECTED'
+        e.code = r.error || 'SERVER_ERROR'
         return Promise.reject(e)
       }
       return r
@@ -169,7 +171,7 @@ function verifySessionOnServer(token) {
   return call(config.functions.profile, { token: token, action: 'get' })
     .then(() => 'ok')
     // 仅当服务端显式拒绝才算 invalid；传输层（断网）失败视为 unknown，保留本地会话
-    .catch((e) => (e && e.code === 'SERVER_REJECTED') ? 'invalid' : 'unknown')
+    .catch((e) => e && SESSION_REJECTIONS.indexOf(e.code) !== -1 ? 'invalid' : 'unknown')
 }
 
 /**
@@ -189,19 +191,12 @@ function ensureSession() {
     .then((state) => {
       if (state === 'ok') return ensureFreshToken(cur)
       if (state === 'invalid') {
-        // 服务明确拒绝（撤销/过期/跨设备失效）：必须撤销本地会话、要求重新登录；
-        // 若自动重登也失败，则区分：服务端仍拒绝 -> 清除会话返回 null；
-        // 仅传输层不可达 -> 保留本地会话，避免误踢出已登录用户（评审 P2）
+        // 已知失效与未知状态不可混淆：先撤销旧会话，自动重登只有拿到新令牌才可恢复。
+        store.setUserScope('anon')
+        persist(defaults())
         return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
           .then((p) => ((p && p.token) ? p : null))
-          .catch((e) => {
-            if (e && e.code === 'SERVER_REJECTED') {
-              store.setUserScope('anon')
-              persist(defaults())
-              return null
-            }
-            return cur // 网络等不可达：保留本地会话
-          })
+          .catch(() => null)
       }
       return cur // unknown（联网不可用）：保留本地会话，避免误踢出
     })

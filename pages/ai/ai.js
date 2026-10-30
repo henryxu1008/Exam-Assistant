@@ -30,6 +30,8 @@ Page({
 
   /** 载入历史消息（无历史时用欢迎语兜底），供 onLoad 与清空对话后复用 */
   _resetMessages() {
+    this._invalidateReply()
+    this._conversationVersion = store.getAiConversationVersion()
     const list = store.getAiMessages().map((m) => this._decorate(m))
     if (!list.length) {
       list.push(
@@ -45,10 +47,17 @@ Page({
         })
       )
     }
-    this.setData({ messages: list, loading: false }, () => this._scrollToLast(list.length))
+    this.setData({ messages: list, input: '', loading: false, scrollTo: '' }, () => this._scrollToLast(list.length))
+  },
+
+  /** 页面缓存只可用于所属账号及尚未被清空的那轮对话。 */
+  _syncConversation() {
+    if (this._conversationVersion !== store.getAiConversationVersion()) this._resetMessages()
   },
 
   onShow() {
+    // 登录拦截前移除旧账号内容；预填请求必须在新账号历史载入后消费。
+    this._syncConversation()
     // 未登录时先去登录页，回来后再消费其他页面带来的预填内容
     if (!user.requireLogin()) return
     // 其他页面（错题本 / 学情报告 / 练习页）携带问题跳转过来
@@ -62,8 +71,8 @@ Page({
   },
 
   onUnload() {
-    this._reqToken = (this._reqToken || 0) + 1 // 作废在途请求，避免回页面后窜改状态
-    this._clearReplyTimer()
+    this._invalidateReply()
+    this._conversationVersion = null
   },
 
   /* ---------------- 收发 ---------------- */
@@ -81,6 +90,7 @@ Page({
   },
 
   send(text, context) {
+    this._syncConversation()
     const content = String(text || '').trim()
     if (!content || this.data.loading) return
 
@@ -109,7 +119,7 @@ Page({
         context || {} // 含 questionId/userAnswer，供远端大模型看到题目（评审 P2）
       )
       .then((remote) => {
-        if (token !== self._reqToken) return // 已过期，丢弃
+        if (!self._isCurrentReply(token)) return
         if (remote) {
           self._applyReply(token, { reply: remote, bullets: [], cards: [] })
           return
@@ -117,7 +127,7 @@ Page({
         self._localReply(token, content, context || {}) // 本地引擎回落
       })
       .catch(() => {
-        if (token !== self._reqToken) return
+        if (!self._isCurrentReply(token)) return
         self._localReply(token, content, context || {}) // 远程异常时回落本地
       })
   },
@@ -125,10 +135,10 @@ Page({
   /** 走本地规则引擎生成回复（带「打字中」等待感），并写入状态/持久化 */
   _localReply(token, content, context) {
     const self = this
-    if (token !== self._reqToken) return
+    if (!self._isCurrentReply(token)) return
     self._replyTimer = setTimeout(() => {
       self._replyTimer = null
-      if (token !== self._reqToken) return
+      if (!self._isCurrentReply(token)) return
       self._applyReply(token, ai.chat(content, context || {}))
     }, REPLY_DELAY)
   },
@@ -136,7 +146,7 @@ Page({
   /** 把本地/远端回复写入页面状态与持久化 */
   _applyReply(token, result) {
     const self = this
-    if (token !== self._reqToken) return // 已过期（被清空/新消息），不更新状态
+    if (!self._isCurrentReply(token)) return
     if (!result) return
     const extra = result.extra || null
     const reply = {
@@ -175,6 +185,8 @@ Page({
   },
 
   onClear() {
+    this._syncConversation()
+    const version = this._conversationVersion
     const self = this
     wx.showModal({
       title: '清空对话',
@@ -183,15 +195,25 @@ Page({
       confirmColor: '#e5484d',
       success(res) {
         if (!res.confirm) return
+        // 确认框也属于打开时的账号/对话，不能删除切换后的另一个用户的数据。
+        if (version !== self._conversationVersion || version !== store.getAiConversationVersion()) return
         store.clearAiMessages()
-        self._reqToken = (self._reqToken || 0) + 1 // 作废在途请求，避免陈旧响应写回已清空对话
-        self._clearReplyTimer()
         self._resetMessages()
       }
     })
   },
 
   /* ---------------- 工具 ---------------- */
+
+  _invalidateReply() {
+    this._reqToken = (this._reqToken || 0) + 1
+    this._clearReplyTimer()
+  },
+
+  /** onShow 尚未执行时也要检查仓储代次，防止旧回复写入新用户作用域。 */
+  _isCurrentReply(token) {
+    return token === this._reqToken && this._conversationVersion === store.getAiConversationVersion()
+  },
 
   /** 取消尚未触发的本地回复定时器，避免离页后仍执行 setData */
   _clearReplyTimer() {

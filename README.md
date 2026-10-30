@@ -77,7 +77,7 @@ miniprogram-4/
 
 > 需要 `unionid` 时，在云函数 `userLogin` 的环境变量中配置 `APP_SECRET`，函数会用 `code` 调 `jscode2session` 换取；不配置则用云开发原生 `OPENID`，不影响登录。
 
-> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）、`AI_TUTOR_DAILY_CAP`（可选，每日上游调用次数上限，默认 200）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏已落地：每次成功调用上游大模型后，在云数据库集合 `aiTutorUsage`（按日期 `date` 累计 `count`）计数，超过上限即回落本地引擎，避免产生不可控费用。
+> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）、`AI_TUTOR_DAILY_CAP`（可选，每日上游调用次数上限，默认 200；必须为非负安全整数，显式配置 0 表示不限制）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏在调用上游之前原子预约一次额度：`aiTutorUsage` 以日期作为唯一 `_id`，条件自增 `count`；并发创建也共用一个计数器。超过上限、配置无效或数据库不可用时回落本地引擎。预约后上游失败仍计入次数，不退还额度，以保证调用次数上限。
 
 ## 题库
 
@@ -120,7 +120,9 @@ miniprogram-4/
 | `exam_quiz_data_v1__<openid>` | 答题记录、错题、复习计划、每日统计、设置、AI 对话；**按用户命名空间隔离**，切换账号互不可见（见 Issue 1） |
 | `exam_quiz_session_v1` | 登录会话缓存（openid / token / 资料），仅缓存，不是身份来源；token 仅存本地、不下发到公开 profile |
 
-**本地数据隔离（Issue 1）**：`store.js` 按可信 `openid` 命名空间存储，账号 A 登出、账号 B 登录后无法读取 A 的数据；首启动会把旧版全局 key 一次性迁移到对应用户命名空间。会话校验以**服务端令牌验证为主**（`userProfile` 校验 token 是否仍有效，覆盖撤销/过期/跨设备失效），不再仅依赖 `wx.checkSession`；断网无云环境时保留本地会话，避免误踢出。
+**本地数据隔离（Issue 1）**：`store.js` 按可信 `openid` 命名空间存储，账号 A 登出、账号 B 登录后无法读取 A 的数据；首启动会把旧版全局 key 一次性迁移到对应用户命名空间。会话校验以**服务端令牌验证为主**（`userProfile` 校验 token 是否仍有效，覆盖撤销/过期/跨设备失效），不再仅依赖 `wx.checkSession`。传输失败或业务服务不可用时保留未被拒绝的离线会话；明确返回 `INVALID_TOKEN` / `NO_TOKEN` 时先撤销旧会话，自动重登失败也不恢复失效令牌。
+
+**AI 对话生命周期**：页面历史与异步回复绑定到仓储中的对话代次。切换账号（包括 A→B→A）、清空学习数据或清空对话都会使旧代次失效；页面先重载当前账号历史，再消费预填问题。远程成功、异常回落、本地延迟回复和清空确认框均校验所属代次，避免旧操作写入新用户或复活已删除的对话。
 
 **练习状态机与不可变作答（Issue 2 / Issue 3）**：每轮练习创建 `practiceSession`（状态 `created → in_progress → completed`），每题绑定 `attemptId`，以 `clientOpId` 实现**幂等提交**（重复点击只落库一次、不重复计数）；已提交题在会话内回看为只读，主动重练生成新 Session。单次作答作为不可变事实追加到 `attempts[]`（AnswerAttempt），聚合统计由事件派生。详见 `docs/adr/0003-answer-attempt-domain.md`。
 
@@ -143,7 +145,7 @@ miniprogram-4/
 ## 上线前核对
 
 - **`users` 集合建索引**：控制台给 `openid`、`token` 各建一个索引，否则用户量增长后按 token 查询会全表扫描。
-- **`aiTutorUsage` 集合（启用真实大模型时才需要）**：首次调用 `aiTutor` 会由云函数自动创建；如想避免首次写入延迟，可提前在控制台新建集合 `aiTutorUsage` 并给 `date` 建索引。预算护栏按 `date` 累计每日次数，超出 `AI_TUTOR_DAILY_CAP` 即回落本地引擎。
+- **`aiTutorUsage` 集合（启用真实大模型时才需要）**：部署前在控制台创建集合 `aiTutorUsage` 并给 `date` 建索引。每日计数文档 `_id` 固定为日期（如 `2026-10-30`），依靠 `_id` 唯一约束防止重复计数器；首次升级会分页汇总当天旧版随机 ID 文档的 `count`，保留旧文档。切换时应停止旧版云函数接收新调用，待在途调用结束后启用新版，避免旧版继续写入随机计数器。集合缺失、计数服务故障或达到上限时回落本地答疑，不调用付费上游。
 - **协议文本**：`utils/agreement.js` 中的主体名称与联系方式是占位内容，需替换；并与微信后台「用户隐私保护指引」保持一致，两者不一致会被驳回。
 - **隐私接口**：本小程序未调用位置、相册等隐私接口，暂无需在指引中声明。
 - 学情报告的 Canvas 图表在部分低版本基础库上可能需要适配。

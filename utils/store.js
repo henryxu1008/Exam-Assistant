@@ -77,6 +77,14 @@ let state = null
  */
 let userScope = 'anon'
 
+// 当前进程内的对话代次：账号切换或删除历史即递增，阻止缓存页面和旧异步回复复用。
+// 不随普通消息追加变化；A→B→A 也必须产生新代次，不能只比较 openid。
+let aiConversationVersion = 0
+
+function getAiConversationVersion() {
+  return aiConversationVersion
+}
+
 function scopeKey() {
   return `${STORAGE_KEY}__${userScope}`
 }
@@ -104,6 +112,7 @@ function setUserScope(openid) {
   }
   userScope = next
   state = null
+  aiConversationVersion += 1
   // 一次性迁移：旧版用全局单一 key，升级后首次进入该作用域时把全局数据搬过来，
   // 再删除旧 key；多账号同设备时首个登录用户承接历史数据（与升级前单租户行为一致）。
   const legacy = STORAGE_KEY
@@ -520,27 +529,33 @@ function pushAiMessage(msg) {
 
 function clearAiMessages() {
   load().aiMessages = []
+  aiConversationVersion += 1
   persist()
   flush() // 清空是不可逆操作，立即落盘
 }
 
 function clearAll() {
   state = getDefaultState()
+  aiConversationVersion += 1
   persist()
   flush() // 清空当前作用域（不可逆）
 }
 
 /** 清空指定（或当前）作用域的全部本地数据；用于「安全删除/切换账号」场景 */
 function clearScope(openid) {
-  const prev = userScope
-  if (openid) userScope = String(openid)
-  state = null
+  const target = openid ? String(openid) : userScope
+  if (target === userScope) {
+    if (flushTimer) clearTimeout(flushTimer)
+    flushTimer = null
+    dirty = false
+    state = null
+    aiConversationVersion += 1
+  }
   try {
-    wx.removeStorageSync(scopeKey())
+    wx.removeStorageSync(`${STORAGE_KEY}__${target}`)
   } catch (e) {
     /* ignore */
   }
-  if (openid) userScope = prev
 }
 
 /* ============================================================
@@ -705,6 +720,7 @@ module.exports = {
   getDueIds,
   getWrongRecords,
   getAiMessages,
+  getAiConversationVersion,
   pushAiMessage,
   clearAiMessages,
   clearAll,
