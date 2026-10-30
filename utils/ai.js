@@ -21,6 +21,40 @@ const REMOTE_LLM = {
 }
 
 /**
+ * 生成学习者当前数据快照（文本），供远端大模型回答个性化查询时使用。
+ * 注入后，远程调用也能基于真实答题数据作答；同时本地引擎对这些查询走专属路径（见 ai.chat）。
+ * （评审 P2：Include learning statistics in personalized remote AI requests）
+ */
+function learningSnapshot() {
+  const ov = analytics.overview()
+  const weak = analytics.weakPoints(3)
+  const lines = [
+    `累计答题 ${ov.total} 题，总正确率 ${ov.rate}%`,
+    `今日已完成 ${ov.todayTotal} 题（目标 ${store.getSettings().dailyGoal} 题），今日正确率 ${ov.todayRate}%`,
+    `连续打卡 ${ov.streakDays} 天，待复习 ${ov.dueCount} 题，覆盖 ${ov.chapterCount} 个知识点模块`,
+    `顽固错题 ${ov.stubbornCount} 道`
+  ]
+  if (weak.length) {
+    lines.push('最薄弱知识点：' + weak.map((w) => `${w.chapter}(${w.rate}%, 错${w.wrong})`).join('，'))
+  } else {
+    lines.push('暂无明显薄弱知识点')
+  }
+  return lines.join('\n')
+}
+
+/** 判断查询是否依赖真实答题数据（正确率/薄弱/计划/错题/记忆方法），这类必须走本地引擎以保证数据准确（评审 P2） */
+function isPersonalizedQuery(text) {
+  const words = [
+    '薄弱', '哪方面', '不足', '弱项', '需要加强', '缺点', '短板',
+    '计划', '安排', '今天学', '怎么学', '备考',
+    '成绩', '正确率', '统计', '进度', '打卡', '数据',
+    '错题', '复习', '错得多', '再练',
+    '口诀', '记忆', '记不住', '背诵', '背'
+  ]
+  return hasAny(String(text || ''), words)
+}
+
+/**
  * 预留：调用真实大模型。未开启时返回 null，页面会自动回落到本地引擎。
  * @param {Array} messages 对话历史（已裁剪为最近若干轮）
  * @param {String} [subject] 当前科目，透传给大模型以约束回答口径；缺省取全局当前科目
@@ -55,6 +89,15 @@ function requestLLM(messages, subject, context) {
           content: `【当前正在讲解的题目】科目：${q.subject}｜章节：${q.chapter}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
         })
       }
+    }
+    // 注入学习者数据快照：让远端大模型也能基于真实答题数据回答正确率/薄弱/计划等个性化查询
+    // （评审 P2：Include learning statistics in personalized remote AI requests）
+    const snap = learningSnapshot()
+    if (snap) {
+      payload.unshift({
+        role: 'system',
+        content: `【学习者当前数据快照】\n${snap}\n若用户询问正确率、薄弱点、学习计划、错题或记忆方法，请严格基于以上真实数据作答。`
+      })
     }
     wx.cloud
       .callFunction({
@@ -419,6 +462,8 @@ function chat(text, context) {
 module.exports = {
   REMOTE_LLM,
   requestLLM,
+  learningSnapshot,
+  isPersonalizedQuery,
   explainQuestion,
   findSimilar,
   buildMnemonic,

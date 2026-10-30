@@ -95,46 +95,62 @@ Page({
     store.pushAiMessage({ role: 'user', text: content, bullets: [], cards: [] })
 
     const self = this
-    // 接入真实大模型后由 requestLLM 返回结果，未开启时回落本地规则引擎
+    // 个性化查询（正确率/薄弱/计划/错题/记忆方法）依赖真实答题数据，必须走本地引擎，
+    // 否则远程大模型无数据只能泛泛而谈；其余走真实大模型，未开启/失败回落本地规则引擎
+    // （评审 P2：Include learning statistics in personalized remote AI requests）
+    if (ai.isPersonalizedQuery(content)) {
+      self._localReply(token, content, context || {})
+      return
+    }
     ai
       .requestLLM(
         messages.slice(-6).map((m) => ({ role: m.role, content: m.text })),
         store.getCurrentSubject(),
-        context // 含 questionId/userAnswer，供远端大模型看到题目（评审 P2）
+        context || {} // 含 questionId/userAnswer，供远端大模型看到题目（评审 P2）
       )
       .then((remote) => {
-        if (token !== self._reqToken) return undefined // 已过期，丢弃
-        if (remote) return { reply: remote, bullets: [], cards: [] }
-        // 本地引擎没有网络往返，保留「打字中」的等待感
-        return new Promise((resolve) => {
-          self._replyTimer = setTimeout(() => {
-            self._replyTimer = null
-            resolve(ai.chat(content, context || {}))
-          }, REPLY_DELAY)
-        })
-      })
-      .then((result) => {
-        if (token !== self._reqToken) return // 已过期（被清空/新消息），不更新状态
-        if (!result) return
-        const extra = result.extra || null
-        const reply = {
-          role: 'ai',
-          text: result.reply,
-          bullets: result.bullets || [],
-          cards: result.cards || [],
-          mnemonic: extra ? extra.mnemonic : '',
-          similar: extra ? extra.similar : [],
-          time: Date.now()
+        if (token !== self._reqToken) return // 已过期，丢弃
+        if (remote) {
+          self._applyReply(token, { reply: remote, bullets: [], cards: [] })
+          return
         }
-        const next = self.data.messages.concat([self._decorate(reply)])
-        self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
-        store.pushAiMessage(reply)
+        self._localReply(token, content, context || {}) // 本地引擎回落
       })
       .catch(() => {
         if (token !== self._reqToken) return
-        self.setData({ loading: false })
-        wx.showToast({ title: '回复失败，请重试', icon: 'none' })
+        self._localReply(token, content, context || {}) // 远程异常时回落本地
       })
+  },
+
+  /** 走本地规则引擎生成回复（带「打字中」等待感），并写入状态/持久化 */
+  _localReply(token, content, context) {
+    const self = this
+    if (token !== self._reqToken) return
+    self._replyTimer = setTimeout(() => {
+      self._replyTimer = null
+      if (token !== self._reqToken) return
+      self._applyReply(token, ai.chat(content, context || {}))
+    }, REPLY_DELAY)
+  },
+
+  /** 把本地/远端回复写入页面状态与持久化 */
+  _applyReply(token, result) {
+    const self = this
+    if (token !== self._reqToken) return // 已过期（被清空/新消息），不更新状态
+    if (!result) return
+    const extra = result.extra || null
+    const reply = {
+      role: 'ai',
+      text: result.reply,
+      bullets: result.bullets || [],
+      cards: result.cards || [],
+      mnemonic: extra ? extra.mnemonic : '',
+      similar: extra ? extra.similar : [],
+      time: Date.now()
+    }
+    const next = self.data.messages.concat([self._decorate(reply)])
+    self.setData({ messages: next, loading: false }, () => self._scrollToLast(next.length))
+    store.pushAiMessage(reply)
   },
 
   /* ---------------- 卡片动作 ---------------- */
