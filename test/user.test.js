@@ -171,6 +171,19 @@ test('服务端明确拒绝令牌且自动重登失败时清除会话（评审 P
     })
 })
 
+test('评审 P2：网络不可达（callFunction 拒绝）时保留本地会话，不误踢出已登录用户', () => {
+  const user = freshUser()
+  cloudHandler = () => ({ ok: true, openid: 'OPENID_X', token: 'TOK_X', profile: {} })
+  return user.login().then(() => {
+    // 模拟传输层失败：callFunction 直接 reject（非服务端显式拒绝）
+    global.wx.cloud.callFunction = () => Promise.reject(new Error('network down'))
+    return user.ensureSession().then((p) => {
+      assert.ok(p, '网络不可达应保留本地会话')
+      assert.strictEqual(user.isLogged(), true)
+    })
+  })
+})
+
 test('登出：清除会话并切回匿名作用域', () => {
   const user = freshUser()
   cloudHandler = (name) => {

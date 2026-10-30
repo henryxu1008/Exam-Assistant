@@ -76,3 +76,24 @@ test('评审 P2：重建页面时恢复未完成的会话（进度/已提交只�
   assert.strictEqual(page._sessionId, store.getPracticeSession().id, '复用同一会话 id')
   assert.strictEqual(page.data.submitted, false, '当前题 qB 未提交 -> 可作答')
 })
+
+test('评审 P2：_finish 标记会话完成，重建页面不再恢复已完成轮次', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: [real[0].id, real[1].id], params: { mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null } })
+  store.submitAttempt({ id: real[0].id, type: real[0].type, answer: real[0].answer, subject: helpers.SUBJECT, chapter: real[0].chapter }, real[0].answer, true, 100, 'op-a')
+  store.submitAttempt({ id: real[1].id, type: real[1].type, answer: real[1].answer, subject: helpers.SUBJECT, chapter: real[1].chapter }, real[1].answer, true, 100, 'op-b')
+  const page = makePage([], null)
+  page._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
+  const firstId = page._sessionId
+  page._load(1)
+  page.onNext() // 末题再下一题 -> _finish
+  assert.strictEqual(page.data.finished, true)
+  assert.strictEqual(store.getPracticeSession().status, 'completed')
+  // 重建页面：已完成轮次被恢复守卫排除，应开启新一轮（新的 in_progress 会话）
+  const page2 = makePage([], null)
+  page2._init({ mode: 'all', subject: helpers.SUBJECT, chapter: '', ids: null, fresh: false })
+  assert.ok(page2._sessionId && page2._sessionId !== firstId, '已完成轮次不应被恢复')
+})

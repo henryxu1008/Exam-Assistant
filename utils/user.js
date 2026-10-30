@@ -88,7 +88,12 @@ function call(name, data) {
     .then((res) => {
       const r = res && res.result
       if (!r) return Promise.reject(new Error('云函数返回为空'))
-      if (r.ok === false) return Promise.reject(new Error(r.error || '云函数调用失败'))
+      if (r.ok === false) {
+        // 服务端显式拒绝（令牌失效/撤销/跨设备），与传输层失败区分（评审 P2）
+        const e = new Error(r.error || '云函数调用失败')
+        e.code = 'SERVER_REJECTED'
+        return Promise.reject(e)
+      }
       return r
     })
 }
@@ -163,7 +168,8 @@ function verifySessionOnServer(token) {
   if (!hasCloud()) return Promise.resolve('unknown')
   return call(config.functions.profile, { token: token, action: 'get' })
     .then(() => 'ok')
-    .catch(() => 'invalid')
+    // 仅当服务端显式拒绝才算 invalid；传输层（断网）失败视为 unknown，保留本地会话
+    .catch((e) => (e && e.code === 'SERVER_REJECTED') ? 'invalid' : 'unknown')
 }
 
 /**
@@ -184,13 +190,17 @@ function ensureSession() {
       if (state === 'ok') return ensureFreshToken(cur)
       if (state === 'invalid') {
         // 服务明确拒绝（撤销/过期/跨设备失效）：必须撤销本地会话、要求重新登录；
-        // 若自动重登也失败，则显式清除缓存会话（返回 null），不允许带着失效令牌继续
+        // 若自动重登也失败，则区分：服务端仍拒绝 -> 清除会话返回 null；
+        // 仅传输层不可达 -> 保留本地会话，避免误踢出已登录用户（评审 P2）
         return login({ nickName: cur.nickName, avatarUrl: cur.avatarUrl, exam: cur.exam })
           .then((p) => ((p && p.token) ? p : null))
-          .catch(() => {
-            store.setUserScope('anon')
-            persist(defaults())
-            return null
+          .catch((e) => {
+            if (e && e.code === 'SERVER_REJECTED') {
+              store.setUserScope('anon')
+              persist(defaults())
+              return null
+            }
+            return cur // 网络等不可达：保留本地会话
           })
       }
       return cur // unknown（联网不可用）：保留本地会话，避免误踢出

@@ -605,6 +605,23 @@ function getAttempts() {
 }
 
 /**
+ * 根据不可变作答流水，按「每题最近一次作答」派生会话聚合统计。
+ * 用于 submitAttempt 后同步 sessionCorrect/sessionTotal/errorIds，
+ * 使得会话被持久化、重进页面恢复时进度与实时一致（评审 P2）。
+ */
+function recomputeSessionStats(session, attempts) {
+  const byQ = {}
+  ;(attempts || []).forEach((a) => {
+    if (session && a.sessionId !== session.id) return
+    byQ[a.questionId] = a // 顺序追加 -> 后写覆盖，保留最后一次作答
+  })
+  const ids = Object.keys(byQ)
+  const errorIds = ids.filter((id) => byQ[id].score === 0)
+  const correct = ids.filter((id) => byQ[id].score === 1).length
+  return { sessionTotal: ids.length, sessionCorrect: correct, errorIds: errorIds }
+}
+
+/**
  * 幂等提交一次作答。
  * @param {Object} question 题目对象
  * @param {Array} selected 用户作答
@@ -651,6 +668,11 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
   if (s.practiceSession) {
     if (!s.practiceSession.submitted) s.practiceSession.submitted = {}
     s.practiceSession.submitted[question.id] = { attemptId: attemptId, clientOpId: opId }
+    // 同步派生聚合统计，保证「重进页面恢复会话」时进度/正确率/错题与实时一致（评审 P2）
+    const stats = recomputeSessionStats(s.practiceSession, s.attempts)
+    s.practiceSession.sessionTotal = stats.sessionTotal
+    s.practiceSession.sessionCorrect = stats.sessionCorrect
+    s.practiceSession.errorIds = stats.errorIds
   }
   persist()
   return { record: agg.record, attempt: attempt, dup: false }

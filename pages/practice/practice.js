@@ -348,14 +348,16 @@ Page({
     const clientOpId = session ? `${session.id}:${q.id}` : undefined
     const res = store.submitAttempt(q, selected, correct, cost, clientOpId)
 
-    const errorIds = this.data.errorIds.slice()
-    if (!correct && errorIds.indexOf(q.id) === -1) errorIds.push(q.id)
+    // 统计以持久化会话为准（store 已在提交时同步 sessionCorrect/sessionTotal/errorIds），
+    // 保证「重进页面恢复会话」时进度与实时一致（评审 P2）
+    const sess = store.getPracticeSession() || {}
+    const errorIds = (sess.errorIds || []).slice()
 
     this.setData({
       submitted: true,
       showExplain: true,
-      sessionTotal: this.data.sessionTotal + (res.dup ? 0 : 1),
-      sessionCorrect: this.data.sessionCorrect + (correct && !res.dup ? 1 : 0),
+      sessionTotal: sess.sessionTotal || 0,
+      sessionCorrect: sess.sessionCorrect || 0,
       errorIds
     })
 
@@ -429,7 +431,11 @@ Page({
   },
 
   _finish() {
-    const { sessionTotal, sessionCorrect, errorIds } = this.data
+    // 统计以持久化会话为准，避免与实时页内计数偏差（评审 P2）
+    const sess = store.getPracticeSession()
+    const sessionTotal = (sess && sess.sessionTotal) || this.data.sessionTotal
+    const sessionCorrect = (sess && sess.sessionCorrect) || this.data.sessionCorrect
+    const errorIds = (sess && sess.errorIds) || this.data.errorIds
     const rate = sessionTotal ? Math.round((sessionCorrect / sessionTotal) * 100) : 0
     const wrongList = errorIds
       .map((id) => bank.findQuestion(id))
@@ -443,6 +449,8 @@ Page({
       finished: true,
       summary: { total: sessionTotal, correct: sessionCorrect, rate, comment, wrongList }
     })
+    // 标记本轮已完成，使「重建页面恢复会话」的守卫排除已完成轮次（评审 P2）
+    if (store.getPracticeSession()) store.completePracticeSession()
   },
 
   restart() {

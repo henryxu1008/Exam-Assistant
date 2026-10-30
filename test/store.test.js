@@ -248,3 +248,20 @@ test('getDueRecords 包含错>=2 的题（即便 nextReviewAt 在未来），保
   assert.ok(due.some((x) => x.id === 't1'), '错>=2 的题应出现在待复习（mistakes.redoDue 依赖同一选择器）')
   restoreDate()
 })
+
+test('submitAttempt 同步更新会话聚合统计（恢复会话用，评审 P2）', () => {
+  const store = freshStore()
+  store.createPracticeSession({ mode: 'weak', subject: helpers.SUBJECT, questionIds: ['q1', 'q2'] })
+  store.submitAttempt(q('q1', 'ch1'), ['A'], true, 100, 'op-1')
+  store.submitAttempt(q('q2', 'ch1'), ['A'], false, 100, 'op-2')
+  let sess = store.getPracticeSession()
+  assert.strictEqual(sess.sessionTotal, 2)
+  assert.strictEqual(sess.sessionCorrect, 1)
+  assert.ok(sess.errorIds.indexOf('q2') !== -1, '错题应进入 errorIds')
+  // 重做 q2 且答对：错误移出、正确数 +1，但总题数不变
+  store.submitAttempt(q('q2', 'ch1'), ['A'], true, 100, 'op-3')
+  sess = store.getPracticeSession()
+  assert.strictEqual(sess.sessionTotal, 2)
+  assert.strictEqual(sess.sessionCorrect, 2)
+  assert.strictEqual(sess.errorIds.length, 0, '改对后不应再计入错题')
+})
