@@ -149,6 +149,8 @@ test('评审 P2：登录切换作用域时保留此前已建立的 pending 单�
   assert.strictEqual(page.data.total, 1, '作用域切换后不应丢弃 pending 单题请求')
   assert.strictEqual(page.data.queue[0].id, targetIds[0])
   assert.ok(page._sessionId, '应在新作用域重建会话')
+  // 清理注入的 pending，避免污染后续用例（app.startPractice 实际每次都会用新 __stamp 覆盖）
+  global.getApp().globalData.practiceParams = null
 })
 
 test('评审 P2：清空学习数据后返回练习页应重建会话（不沿用已删除会话）', () => {
@@ -175,4 +177,28 @@ test('评审 P2：清空学习数据后返回练习页应重建会话（不沿�
   store.submitAttempt({ id: real[1].id, type: real[1].type, answer: real[1].answer, subject: helpers.SUBJECT, chapter: real[1].chapter }, real[1].answer, true, 100, 'op-x')
   const sess = store.getPracticeSession()
   assert.strictEqual(sess.sessionTotal, 1)
+})
+
+test('评审 P2：单题练习后从其它页面切换科目，返回练习应降级为整科练习（非空队列）', () => {
+  const store = require('../utils/store.js')
+  const helpers = require('./helpers.js')
+  const bank = require('../utils/bank/index.js')
+  const user = require('../utils/user.js')
+  user.requireLogin = () => true
+  const real = bank.filterQuestions({ subject: helpers.SUBJECT })
+  store.setCurrentSubject(helpers.SUBJECT)
+  // 从错题本进入单题练习（ids 指向当前科目某题）
+  const page = makePage([], null)
+  page._init({ mode: 'single', subject: helpers.SUBJECT, chapter: '', ids: [real[0].id], fresh: true })
+  assert.strictEqual(page.data.mode, 'single')
+  assert.strictEqual(page.data.total, 1)
+  // 从其它页面切换全局科目到另一个有题的科目
+  const other = bank.getSubjects().map((s) => s.name).find((s) => s !== helpers.SUBJECT)
+  assert.ok(other, '测试数据应存在第二科目')
+  assert.ok(bank.filterQuestions({ subject: other }).length > 0, '新科目应有题目')
+  store.setCurrentSubject(other)
+  // 返回练习页 onShow：_params.subject !== 全局科目 -> 降级 single 为 all（评审 P2）
+  page.onShow()
+  assert.strictEqual(page.data.mode, 'all', '跨科后应降级为整科练习')
+  assert.ok(page.data.total > 0, '新科目下应有题目，队列非空')
 })

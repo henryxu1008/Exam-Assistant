@@ -106,9 +106,10 @@ Page({
 
     this._scope = curScope
     // 其它页面（错题本 / 首页）切换了全局科目、且本页无显式待消费参数时，按新科目重出；
-    // 章节可能跨科失效故降级为整科顺序练习
+    // single/chapter 模式依赖具体题集（ids/章节），跨科后失效，降级为整科顺序练习（与 onSubjectChange 一致），
+    // 否则保留 single 且 ids:null 会让 _buildQueue 产出空队列（评审 P2）
     if (this._params && this._params.subject !== store.getCurrentSubject()) {
-      const mode = this._params.mode === 'chapter' ? 'all' : this._params.mode
+      const mode = this._params.mode === 'single' || this._params.mode === 'chapter' ? 'all' : this._params.mode
       this._init({ mode, chapter: '', ids: null, fresh: true })
     }
   },
