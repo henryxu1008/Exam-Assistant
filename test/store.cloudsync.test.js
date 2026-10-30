@@ -629,6 +629,68 @@ test('同账号内换令牌导致拉取回包被丢弃后，仍能再次恢复�
 })
 
 /* ------------------------------------------------------------------ *
+ * 3f) 删除的账号上下文必须在「入队时」捕获（评审 P1 4425820628）
+ * ------------------------------------------------------------------ */
+
+test('清空入队后切换账号，删除仍绑定发起时的账号', async () => {
+  const store = freshStore()
+  const calls = []
+  const pending = []
+
+  global.wx.__cloudReady = true
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      calls.push(opts)
+      const action = opts.data && opts.data.action
+      // 让上传停留在在途状态，制造「删除排在它之后」的窗口
+      if (action === 'update') {
+        pending.push(opts)
+        return new Promise(() => {})
+      }
+      if (opts && opts.success) opts.success({ result: { ok: true, attempts: [], hasMore: false } })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+
+  login('oA', 'tokA')
+  store.setUserScope('oA')
+  store.load()
+  await tick()
+
+  // 1) A 发起一次上传并让它停留在在途状态
+  store.recordAnswer(q('a1'), true, 100)
+  store.flush()
+  await tick()
+  assert.equal(pending.length, 1, '应有一次上传在途')
+
+  // 2) 上传在途期间 A 清空：删除入队，排在该上传之后
+  store.clearAll()
+  await tick()
+  assert.equal(
+    calls.filter((c) => c.data && c.data.action === 'delete').length,
+    0,
+    '删除不得趁上传在途抢先发出'
+  )
+
+  // 3) 删除尚未排到，此时切到 B 账号
+  store.setUserScope('oB')
+  login('oB', 'tokB')
+
+  // 4) 上传回包到达，删除随后执行：
+  //    必须拿着发起时的 A 令牌，否则会删掉 B 的云端数据
+  pending.forEach((opts) => opts.success({ result: { ok: true } }))
+  await tick()
+
+  const deletes = calls.filter((c) => c.data && c.data.action === 'delete')
+  assert.equal(deletes.length, 1, '应发出一次删除')
+  assert.strictEqual(
+    deletes[0].data.token,
+    'tokA',
+    '删除必须绑定发起时的 A 令牌，否则会删掉 B 的云端数据'
+  )
+})
+
+/* ------------------------------------------------------------------ *
  * 4) 题库种子上传需要登录身份
  * ------------------------------------------------------------------ */
 

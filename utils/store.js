@@ -462,9 +462,11 @@ function setPendingDelete(scope, on) {
  * 用户看到被删除的数据复活，比没清空更糟（评审 P2 4425593448）。
  *
  * 因此：标记存在期间不发起上传，每次 flush 重试，直到删除被确认。
+ *
+ * ctx 必须是**入队时**捕获的那一个，不能在这里重新捕获：
+ * 删除请求可能要在队列里等前面的上传，这期间用户完全可能切号（评审 P1 4425820628）。
  */
-function deleteCloudRequest(scope) {
-  const ctx = captureSyncContext()
+function deleteCloudRequest(ctx) {
   return new Promise((resolve) => {
     callCloud({
       name: config.functions.studySync,
@@ -474,7 +476,7 @@ function deleteCloudRequest(scope) {
         const r = res && res.result
         // 只有应用层确认删除成功、且上下文仍然有效，才清除标记
         if (r && r.ok && !isStaleContext(ctx)) {
-          setPendingDelete(scope, false)
+          setPendingDelete(ctx.scope, false)
           // 补上被这次删除拦下的上传，否则本地新数据要等到下次变更才同步
           dirty = true
           flush()
@@ -560,15 +562,21 @@ let pendingDeleteQueued = false
 
 function deleteCloud() {
   if (!hasCloud() || !isLogged()) return
-  const scope = userScope
+  // 上下文必须在**入队时**捕获，而不是等队列排到它才捕获：
+  // 删除要排在前面的在途上传之后才执行，这期间用户可能已经切到 B 账号。
+  // 若在执行时才捕获，这次删除就会拿着 B 的令牌发出，删掉 B 的云端数据；
+  // 其成功回包还会因为通过了 B 的过期校验，反过来清掉 A 的待删除标记
+  // ——即「删错账号 + 标记误清」双重后果（评审 P1 4425820628）。
+  // 执行与确认都必须绑定发起时的账号。
+  const ctx = captureSyncContext()
   // 先落标记：删除失败（例如离线）时保留意图，后续 flush 重试
-  setPendingDelete(scope, true)
+  setPendingDelete(ctx.scope, true)
   if (pendingDeleteQueued) return
   pendingDeleteQueued = true
   // 与 push 共用一个队列：保证「清空」排在它之前发起的在途上传之后落地，
   // 否则那个上传会把刚删掉的数据重新写回服务端。
   enqueueCloudWrite(() =>
-    deleteCloudRequest(scope).then(() => {
+    deleteCloudRequest(ctx).then(() => {
       pendingDeleteQueued = false
     })
   )
