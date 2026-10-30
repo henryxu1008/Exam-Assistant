@@ -175,6 +175,12 @@ Page({
   _load(idx) {
     const queue = this.data.queue
     if (!queue[idx]) return
+    // 切换题目时清除挂起的「自动下一题」定时器，避免回看上一题时残留定时器
+    // 命中 `submitted` 后又自动前进，打断复习（评审 P2 发现）
+    if (this._timer) {
+      clearTimeout(this._timer)
+      this._timer = null
+    }
     const question = queue[idx]
     const record = store.getRecord(question.id)
     // 本会话内已提交的题：回看为只读，从不可变流水恢复作答，不允许再次提交
