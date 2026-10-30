@@ -515,6 +515,120 @@ test('清空时若已有上传在途，删除请求仍排在其后发出', async
 })
 
 /* ------------------------------------------------------------------ *
+ * 3d) 待重试的云端删除：失败保留意图，恢复后先补发再放行上传
+ *     （评审 P2 4425593448）
+ * ------------------------------------------------------------------ */
+
+test('清空时删除失败会保留意图，恢复后先补发删除再上传', async () => {
+  const store = freshStore()
+  let failDelete = true
+  const calls = []
+
+  global.wx.__cloudReady = true
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      calls.push(opts)
+      const action = opts.data && opts.data.action
+      if (action === 'delete' && failDelete) {
+        if (opts.fail) opts.fail(new Error('offline'))
+        return Promise.reject(new Error('offline'))
+      }
+      if (opts.success) opts.success({ result: { ok: true, attempts: [], hasMore: false } })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  await tick()
+
+  // 离线清空：删除请求失败，但意图必须保留，不得静默丢弃
+  store.clearAll()
+  await tick()
+
+  assert.equal(
+    calls.filter((c) => c.data && c.data.action === 'delete').length,
+    1,
+    '离线清空应发起删除'
+  )
+  // 删除未确认前不得上传：update 是合并而非整doc覆盖，
+  // 空快照删不掉服务端已有数据，此时上传等于把刚清空的内容又并回去
+  assert.equal(
+    calls.filter((c) => c.data && c.data.action === 'update').length,
+    0,
+    '删除未确认前不得上传'
+  )
+
+  // 恢复网络后再落盘：补发的删除成功后放行上传
+  failDelete = false
+  store.recordAnswer(q('z1'), true, 100)
+  store.flush()
+  await tick()
+  await tick()
+
+  const actions = calls.map((c) => c.data && c.data.action)
+  assert.equal(
+    actions.filter((a) => a === 'delete').length,
+    2,
+    '恢复后应重试删除'
+  )
+  assert.ok(
+    actions.lastIndexOf('delete') < actions.indexOf('update'),
+    '上传必须排在删除确认之后'
+  )
+})
+
+/* ------------------------------------------------------------------ *
+ * 3e) 过期回包被丢弃后要重新武装启动拉取（评审 P2 4425593460）
+ * ------------------------------------------------------------------ */
+
+test('同账号内换令牌导致拉取回包被丢弃后，仍能再次恢复云端数据', async () => {
+  const store = freshStore()
+  const deferred = mockDeferred()
+
+  login('o1', 'tokA')
+  store.setUserScope('o1')
+  store.load() // 冷启动：拉取已发起，回包在途
+  assert.equal(deferred.calls.length, 1, '冷启动应发起一次拉取')
+
+  // 同账号内刷新令牌（ensureFreshToken 的典型情形）：作用域没变，但令牌变了
+  login('o1', 'tokB')
+
+  // 在途回包此刻到达：上下文已变，必须丢弃
+  deferred.resolve(0, {
+    ok: true,
+    stats: { records: { q1: { id: 'q1', lastAt: 1 } } },
+    attempts: [],
+    hasMore: false
+  })
+  await tick()
+
+  assert.equal(store.getRecords().q1, undefined, '过期回包不得写入本地')
+
+  // 关键：重新武装之后，显式拉取必须还能把该账号的云端数据恢复回来。
+  // 若 bootPulled 停在 true，本次启动剩下的时间里就再也拉不回来了。
+  store.pullFromCloud()
+  await tick()
+  assert.equal(
+    deferred.calls.filter((c) => c.data && c.data.action === 'get').length,
+    2,
+    '过期丢弃后必须能再次发起拉取'
+  )
+
+  deferred.resolve(1, {
+    ok: true,
+    stats: { records: { q1: { id: 'q1', lastAt: 1 } } },
+    attempts: [],
+    hasMore: false
+  })
+  await tick()
+  await tick()
+
+  assert.ok(store.getRecords().q1, '重新武装后必须能再次恢复云端数据')
+})
+
+/* ------------------------------------------------------------------ *
  * 4) 题库种子上传需要登录身份
  * ------------------------------------------------------------------ */
 

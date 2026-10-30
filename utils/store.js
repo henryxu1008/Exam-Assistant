@@ -222,6 +222,9 @@ function flush() {
     clearTimeout(flushTimer)
     flushTimer = null
   }
+  // 待重试的云端删除：先补发，成功后再放行上传。
+  // 离线清空后恢复网络时，靠这里把删除意图真正推到服务端（评审 P2 4425593448）。
+  if (state && hasCloud() && isLogged() && getPendingDelete(userScope)) deleteCloud()
   if (!dirty || !state) return
   dirty = false
   lastFlushAt = Date.now()
@@ -349,6 +352,11 @@ function pullFromCloud(onDone) {
   let stats = null
   const allAttempts = []
   const abort = () => {
+    // 回包被判为过期时必须重新武装启动拉取：冷启动时 load() 会在 _checkSession()
+    // 之前就开始拉取，而 ensureFreshToken() 可能在同一个账号内换掉一个仍然有效的令牌。
+    // 丢弃回包是对的，但 bootPulled 若就此停在 true，本次启动剩下的时间里
+    // 任何 load / pullFromCloud 都无法再恢复该账号的云端数据（评审 P2 4425593460）。
+    bootPulled = false
     if (typeof onDone === 'function') onDone(false)
   }
   const finish = (ok) => {
@@ -392,6 +400,14 @@ function pullFromCloud(onDone) {
       fail: () => { finish(false) }
     })
   }
+  // 存在未完成的云端删除时先让它落地，此刻拉取会把「已清空」的数据并回本地：
+  // update 是合并而非整doc覆盖，空快照删不掉服务端已有内容（评审 P2 4425593448）。
+  // 标记不清空则下次 flush / 重启继续重试，因此这里不必再排一次删除。
+  if (getPendingDelete(ctx.scope)) {
+    if (typeof onDone === 'function') onDone(false)
+    return
+  }
+  bootPulled = true
   fetchPage()
 }
 
@@ -413,6 +429,61 @@ function setAttemptCursor(n, scope) {
   try {
     wx.setStorageSync(`${ATTEMPT_CURSOR_KEY}__${scope || userScope}`, n)
   } catch (e) {}
+}
+
+/** 待重试的云端删除标记（按作用域隔离） */
+const PENDING_DELETE_KEY = 'exam_quiz_pending_delete_v1'
+
+function getPendingDelete(scope) {
+  try {
+    return wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope || userScope}`) === true
+  } catch (e) {
+    return false
+  }
+}
+
+function setPendingDelete(scope, on) {
+  try {
+    const key = `${PENDING_DELETE_KEY}__${scope || userScope}`
+    if (on) wx.setStorageSync(key, true)
+    else wx.removeStorageSync(key)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/**
+ * 发起一次云端删除；仅当应用层确认成功后才清除待重试标记。
+ *
+ * 为什么需要这个标记：update 改成「合并」而非整doc覆盖之后，
+ * 本地清空之后上传的空快照删不掉服务端已有的 records / attempts
+ * （并集会保留它们）。此时若删除请求失败（例如离线）就把这次意图丢掉，
+ * 下次启动拉取会把「已清空」的数据又并回本地——
+ * 用户看到被删除的数据复活，比没清空更糟（评审 P2 4425593448）。
+ *
+ * 因此：标记存在期间不发起上传，每次 flush 重试，直到删除被确认。
+ */
+function deleteCloudRequest(scope) {
+  const ctx = captureSyncContext()
+  return new Promise((resolve) => {
+    callCloud({
+      name: config.functions.studySync,
+      // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
+      data: { token: ctx.token, action: 'delete' },
+      success: (res) => {
+        const r = res && res.result
+        // 只有应用层确认删除成功、且上下文仍然有效，才清除标记
+        if (r && r.ok && !isStaleContext(ctx)) {
+          setPendingDelete(scope, false)
+          // 补上被这次删除拦下的上传，否则本地新数据要等到下次变更才同步
+          dirty = true
+          flush()
+        }
+        resolve()
+      },
+      fail: () => { resolve() } // 保留标记，下次 flush 继续重试
+    })
+  })
 }
 
 /**
@@ -443,6 +514,9 @@ function pushToCloud() {
   // 而 studySync 按 openid 整doc覆盖，等于用空数据毁掉该账号的云端备份。
   const openid = getSessionOpenid()
   if (!openid || userScope !== openid) return
+  // 待重试的云端删除未落地前不上传：update 是合并而非整doc覆盖，
+  // 空快照删不掉服务端已有数据，上传只会把刚清空的内容又并回去（评审 P2 4425593448）
+  if (getPendingDelete(openid)) return
   const ctx = captureSyncContext()
   const payload = {
     records: state.records,
@@ -481,20 +555,23 @@ function pushToCloud() {
 }
 
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
+/** 是否已有删除请求排在云端写队列中（避免每次 flush 重复入队） */
+let pendingDeleteQueued = false
+
 function deleteCloud() {
   if (!hasCloud() || !isLogged()) return
-  const ctx = captureSyncContext()
+  const scope = userScope
+  // 先落标记：删除失败（例如离线）时保留意图，后续 flush 重试
+  setPendingDelete(scope, true)
+  if (pendingDeleteQueued) return
+  pendingDeleteQueued = true
   // 与 push 共用一个队列：保证「清空」排在它之前发起的在途上传之后落地，
   // 否则那个上传会把刚删掉的数据重新写回服务端。
-  enqueueCloudWrite(() => new Promise((resolve) => {
-    callCloud({
-      name: config.functions.studySync,
-      // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
-      data: { token: ctx.token, action: 'delete' },
-      success: () => { resolve() },
-      fail: () => { resolve() } // 删除失败静默：下次清空时再试
+  enqueueCloudWrite(() =>
+    deleteCloudRequest(scope).then(() => {
+      pendingDeleteQueued = false
     })
-  }))
+  )
 }
 
 /**
