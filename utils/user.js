@@ -318,6 +318,41 @@ function setPrivacyAcceptedVersion(v) {
   }
 }
 
+/** 版本阻断标记：云端 forceUpdate=true 且当前版本低于 minVersion 时置位 */
+const UNSUPPORTED_KEY = 'exam_quiz_unsupported_v1'
+
+/**
+ * 阻断态必须持久化。
+ *
+ * 只在启动时弹一次提示拦不住任何操作：showCancel 只决定有没有取消按钮，
+ * 用户点「知道了」之后照样登录、导航、练习——等于没有强制更新（评审 P2 4422339103）。
+ * 因此置位后所有入口一律阻断，直到拉到不再要求更新的配置。
+ */
+function markUnsupportedVersion() {
+  try {
+    wx.setStorageSync(UNSUPPORTED_KEY, true)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function clearUnsupportedVersion() {
+  try {
+    wx.removeStorageSync(UNSUPPORTED_KEY)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/** 当前版本是否被运营判定为过低、需要强制更新 */
+function isVersionBlocked() {
+  try {
+    return wx.getStorageSync(UNSUPPORTED_KEY) === true
+  } catch (e) {
+    return false
+  }
+}
+
 /** 读取云端运营配置中的功能开关（灰度用），未配置时返回空对象 */
 function getFeatures() {
   const cfg = (typeof getApp === 'function' && getApp() && getApp().globalData && getApp().globalData.config) || {}
@@ -340,7 +375,9 @@ let loginRedirecting = false
  * 依赖登录的初始化应放在 onLogged 回调中，以覆盖同步放行与异步恢复两条路径。
  */
 function requireLogin(onLogged) {
-  const app = typeof getApp === 'function' ? getApp() : null
+    const app = typeof getApp === 'function' ? getApp() : null
+    // 版本过低时连登录入口一并阻断，否则用户可以先登录再继续练习
+    if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return false
   const currentPage = () => {
     const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
     return pages[pages.length - 1]
@@ -388,5 +425,8 @@ module.exports = {
   getPrivacyAcceptedVersion,
   setPrivacyAcceptedVersion,
   getFeatures,
+  markUnsupportedVersion,
+  clearUnsupportedVersion,
+  isVersionBlocked,
   isFeatureOn
 }

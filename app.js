@@ -52,16 +52,16 @@ App({
   /** 应用云端运营配置：强制更新校验 + 隐私政策版本变更重新提示 */
   _applyRuntimeConfig(cfg) {
     if (!cfg) return
-    // 1) 强制更新：版本过低且运营要求时弹窗（不可取消，阻断使用）
+    // 1) 强制更新：版本过低且运营要求时，置位持久化阻断态。
+    //    提示框本身不阻断任何流程（showCancel 只影响取消按钮的显示），
+    //    真正的拦截由 guardEntry() 在各入口完成（评审 P2 4422339109）。
     if (cfg.forceUpdate && this._versionCompare(config.version, cfg.minVersion) < 0) {
-      wx.showModal({
-        title: '请更新版本',
-        content: '当前版本过低，部分功能已不可用，请更新到最新版本后继续使用。',
-        showCancel: false,
-        confirmText: '知道了'
-      })
+      user.markUnsupportedVersion()
+      this._showUpdateBlocker()
       return
     }
+    // 版本已达标（或运营已解除强制更新）：清除阻断态
+    user.clearUnsupportedVersion()
     // 2) 隐私政策更新：云端 privacyVersion 高于本地已同意版本时，提示重新查看（不阻断）
     const accepted = user.getPrivacyAcceptedVersion()
     if (typeof cfg.privacyVersion === 'number' && cfg.privacyVersion > accepted) {
@@ -78,6 +78,26 @@ App({
         }
       })
     }
+  },
+
+  /**
+   * 入口守卫：版本被判定为过低时阻断操作并提示更新。
+   * @returns {Boolean} true 表示已阻断，调用方应立即返回
+   */
+  guardEntry() {
+    if (!user.isVersionBlocked()) return false
+    this._showUpdateBlocker()
+    return true
+  },
+
+  /** 版本过低时的阻断提示（不可取消；更新后重启即可正常进入） */
+  _showUpdateBlocker() {
+    wx.showModal({
+      title: '请更新版本',
+      content: '当前版本过低，部分功能已不可用，请更新到最新版本后继续使用。',
+      showCancel: false,
+      confirmText: '知道了'
+    })
   },
 
   /** 语义化版本比较：a<b 返回 -1，a==b 返回 0，a>b 返回 1 */
@@ -102,6 +122,7 @@ App({
   /** 启动时恢复/校验会话：未登录时 resolve，由首页拦截跳转登录页 */
   _checkSession() {
     const self = this
+    if (this.guardEntry()) return
     user
       .ensureSession()
       .then((profile) => {
@@ -142,6 +163,7 @@ App({
    * mode: all 顺序 / random 随机 / weak 薄弱 / review 待复习 / wrong 错题 / chapter 章节 / single 指定题目
    */
   startPractice(options) {
+    if (this.guardEntry()) return
     const params = Object.assign({ mode: 'all' }, options || {})
     // 携带科目时（首页科目卡 / 学情章节专练）同步为全应用当前科目
     if (params.subject) store.setCurrentSubject(params.subject)

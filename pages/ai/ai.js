@@ -95,6 +95,8 @@ Page({
   },
 
   send(text, context) {
+    // 版本被判定为过低时阻断发送（守卫为可选方法，缺失时不影响原有流程）
+    if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return
     if (!user.requireLogin()) return
     this._syncConversation()
     const content = String(text || '').trim()

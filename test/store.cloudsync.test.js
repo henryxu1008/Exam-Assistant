@@ -80,7 +80,7 @@ function freshUser() {
  * 1) attempts 顶层字段 + 光标推进条件
  * ------------------------------------------------------------------ */
 
-test('上传时 attempts 作为顶层字段发送，而非塞进 stats', () => {
+test('上传时 attempts 作为顶层字段发送，而非塞进 stats', async () => {
   freshStore()
   const calls = mockCloud(() => ({ ok: true }))
   login('o1', 'tok')
@@ -91,6 +91,7 @@ test('上传时 attempts 作为顶层字段发送，而非塞进 stats', () => {
   store.submitAttempt(q('x1'), ['A'], true, 100, 'op-1')
 
   store.flush()
+  await tick() // 云端写操作在队列中执行
 
   const update = calls.filter((c) => c.data && c.data.action === 'update').pop()
   assert.ok(update, '应发起一次 update')
@@ -101,7 +102,7 @@ test('上传时 attempts 作为顶层字段发送，而非塞进 stats', () => {
   assert.strictEqual(update.data.stats.attempts, undefined)
 })
 
-test('云函数返回 ok:false 时不推进上传光标', () => {
+test('云函数返回 ok:false 时不推进上传光标', async () => {
   freshStore()
   let failNext = true
   const calls = mockCloud(() => (failNext ? { ok: false, error: 'BOOM' } : { ok: true }))
@@ -114,10 +115,12 @@ test('云函数返回 ok:false 时不推进上传光标', () => {
 
   // 第一次上传应用层失败 -> 光标不动
   store.flush()
+  await tick()
   // 第二次成功 -> 应把之前那条一起补传
   failNext = false
   store.saveSettings({}) // 重新标记脏，触发下一次 flush
   store.flush()
+  await tick()
 
   const updates = calls.filter((c) => c.data && c.data.action === 'update')
   assert.strictEqual(updates.length, 2)
@@ -130,7 +133,7 @@ test('云函数返回 ok:false 时不推进上传光标', () => {
   assert.strictEqual(updates[1].data.attempts[0].questionId, 'x1')
 })
 
-test('上传成功后光标推进，后续只增量上传新增作答', () => {
+test('上传成功后光标推进，后续只增量上传新增作答', async () => {
   freshStore()
   const calls = mockCloud(() => ({ ok: true }))
   login('o1', 'tok')
@@ -140,9 +143,11 @@ test('上传成功后光标推进，后续只增量上传新增作答', () => {
   store.load()
   store.submitAttempt(q('x1'), ['A'], true, 100, 'op-1')
   store.flush()
+  await tick()
 
   store.submitAttempt(q('x2'), ['A'], false, 100, 'op-2')
   store.flush()
+  await tick()
 
   const updates = calls.filter((c) => c.data && c.data.action === 'update')
   assert.strictEqual(updates.length, 2)
@@ -170,7 +175,7 @@ test('anon 作用域下不上传学习档案（防止空档案覆盖账号备份
   assert.strictEqual(updates.length, 0, '作用域与会话身份不一致时必须拒绝上传')
 })
 
-test('绑定到账号作用域后可正常上传', () => {
+test('绑定到账号作用域后可正常上传', async () => {
   freshStore()
   const calls = mockCloud(() => ({ ok: true }))
   login('o1', 'tok')
@@ -180,6 +185,7 @@ test('绑定到账号作用域后可正常上传', () => {
   store.load()
   store.recordAnswer(q('x1'), true, 100)
   store.flush()
+  await tick()
 
   const updates = calls.filter((c) => c.data && c.data.action === 'update')
   assert.strictEqual(updates.length, 1, '作用域匹配后应允许上传')
@@ -265,7 +271,7 @@ test('bindStoredScope：重复绑定同一账号不重置内存态（不丢数�
   assert.ok(store.getRecord('x1'), '重复绑定同一作用域不应重置内存态')
 })
 
-test('冷启动先绑定作用域再 load：数据落在账号命名空间且可上传', () => {
+test('冷启动先绑定作用域再 load：数据落在账号命名空间且可上传', async () => {
   const store = freshStore()
   const user = freshUser()
   const calls = mockCloud(() => ({ ok: true }))
@@ -275,6 +281,7 @@ test('冷启动先绑定作用域再 load：数据落在账号命名空间且可
   store.load()
   store.recordAnswer(q('x1'), true, 100)
   store.flush()
+  await tick()
 
   const updates = calls.filter((c) => c.data && c.data.action === 'update')
   assert.strictEqual(updates.length, 1, '绑定后应允许上传')
@@ -420,11 +427,14 @@ test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永
   store.load()
   store.submitAttempt(q('x1'), ['A'], true, 100, 'op-1')
   store.flush() // 发起 A 的上传，尚未确认
+  await tick() // 让排队的写请求真正发出（此时才捕获到 pendingUpdate）
 
   // 上传在途时切到账号 B
   login('o2', 'tokB')
   store.setUserScope('o2')
   store.load()
+
+  assert.ok(pendingUpdate, '应捕获到 A 的在途上传')
 
   // A 的上传此刻才确认：手动触发它发起时绑定的 success 回调
   pendingUpdate.success({ result: { ok: true } })
@@ -441,12 +451,66 @@ test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永
   }
   store.submitAttempt(q('y1'), ['A'], false, 100, 'op-2')
   store.flush()
+  await tick()
 
   const update = calls.filter((c) => c.data && c.data.action === 'update').pop()
   assert.ok(update, '应发起一次上传')
   assert.ok(
     (update.data.attempts || []).some((a) => a.questionId === 'y1'),
     'B 的首条作答不得被 A 的过期确认跳过'
+  )
+})
+
+/* ------------------------------------------------------------------ *
+ * 3c) 云端写操作串行：删除必须排在在途上传之后（评审 P1 4422339092）
+ * ------------------------------------------------------------------ */
+
+test('清空时若已有上传在途，删除请求仍排在其后发出', async () => {
+  const store = freshStore()
+  const actions = [] // 记录「请求发出」顺序
+  const pending = []
+
+  global.wx.__cloudReady = true
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      const action = opts.data && opts.data.action
+      if (action === 'update') {
+        actions.push('update') // 发出上传，回包挂起
+        pending.push(opts)
+        return new Promise(() => {})
+      }
+      actions.push(action)
+      if (opts && opts.success) opts.success({ result: { ok: true } })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+
+  // 1) 发起一次上传并让其停留在在途状态（未回包）
+  store.recordAnswer(q('x1'), true, 100)
+  store.flush()
+  await tick()
+  assert.deepEqual(actions, ['get', 'update'], '上传应已发出但尚未回包')
+
+  // 2) 在途期间清空：删除请求必须排在上传之后
+  store.clearAll()
+  await tick()
+  assert.deepEqual(actions, ['get', 'update'], '删除不得趁上传在途抢先发出')
+
+  // 3) 上传回包到达后，删除才发出（其后是清空后那次空档案上传）
+  pending.forEach((opts) => opts.success({ result: { ok: true } }))
+  await tick()
+
+  const firstUpdate = actions.indexOf('update')
+  const del = actions.indexOf('delete')
+  assert.ok(del > firstUpdate, '删除必须排在在途上传之后，否则刚清空的数据会被写回')
+  assert.strictEqual(
+    actions[actions.length - 1],
+    'update',
+    '清空后的空档案上传应排在删除之后'
   )
 })
 

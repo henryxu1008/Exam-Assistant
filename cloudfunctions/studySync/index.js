@@ -40,7 +40,7 @@ const { mergeStats } = require('./stats-merge.js')
 const { findByToken } = require('./auth.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
-const ALLOWED = ['records', 'daily', 'settings', 'practiceSession', 'aiMessages', 'version']
+const ALLOWED = ['records', 'daily', 'settings', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
 
 /** 作答流水允许写入的字段（防止把大对象/无关字段塞进库） */
 const ATTEMPT_FIELDS = [
@@ -60,10 +60,17 @@ function sanitizeStats(payload) {
   return out
 }
 
-/** 清洗单条作答；无 id 的丢弃。openid 由调用处填充。 */
-function sanitizeAttempt(a) {
+/**
+ * 清洗单条作答；无 id 的丢弃。
+ *
+ * 文档 _id 必须按账号隔离（openid 前缀）：attempts 的 get / delete 都按 openid
+ * 过滤，但写入若是「谁的 id 都能写」，调用方只要知道别人的 attempt id
+ * 就能整doc覆盖那条流水、并把 openid 改成自己的——账号隔离被绕过
+ * （评审 P1 4422339084）。加上前缀后，任何写入都只能落进自己的命名空间。
+ */
+function sanitizeAttempt(a, openid) {
   if (!a || !a.id) return null
-  const out = { _id: String(a.id) }
+  const out = { _id: `${openid}__${String(a.id)}`, openid: openid }
   ATTEMPT_FIELDS.forEach((k) => {
     if (a[k] !== undefined) out[k] = a[k]
   })
@@ -158,9 +165,8 @@ exports.main = async (event) => {
     const list = Array.isArray(event.attempts) ? event.attempts : []
     const tasks = []
     for (const a of list) {
-      const cleanA = sanitizeAttempt(a)
+      const cleanA = sanitizeAttempt(a, openid)
       if (!cleanA) continue
-      cleanA.openid = openid
       tasks.push(ATTEMPTS.doc(cleanA._id).set({ data: cleanA }))
     }
     if (tasks.length) await Promise.all(tasks)

@@ -11,7 +11,7 @@ const config = require('./config.js')
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
  * 避免端上与云端的合并语义漂移。
  */
-const { CURRENT_VERSION, getDefaultState, mergeStats } = require('../shared/stats-merge.js')
+const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion } = require('../shared/stats-merge.js')
 
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
@@ -233,6 +233,18 @@ function flush() {
   })
 }
 
+/**
+ * 取消待落盘的节流定时器。
+ * 仅供测试使用：清 require 缓存会让上一个 store 实例的定时器成为孤儿，
+ * 它随后触发时会用当前用例的 wx mock 发请求，从而污染断言。
+ */
+function __clearFlushTimer() {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+}
+
 /* ============================================================
  * 云端同步（MVP）：本地为主、云端备份，换设备可延续学习进度。
  * - 同步派生/聚合数据（records/daily/settings/practiceSession/aiMessages）到 studyStats 单文档。
@@ -403,6 +415,26 @@ function setAttemptCursor(n, scope) {
   } catch (e) {}
 }
 
+/**
+ * 云端写操作串行队列。
+ *
+ * 为什么需要：push / delete 都是 fire-and-forget 的异步请求。若「清空」时
+ * 还有上传在途，那个上传可能在删除之后才落到服务端，把用户刚删掉的数据又写回去。
+ * 递增 cloudSyncGeneration 只能作废本地的拉取回调，既拦不住已经发出去的写请求，
+ * 也没有把「删除代次」告知服务端（评审 P1 4422339092）。
+ *
+ * 做法：所有云端写操作排队，后发起的写一定在前一个写完成之后才发出。
+ * 于是「在途上传 → 清空删除 → 新上传」的到达顺序与发起顺序一致。
+ */
+let cloudWriteChain = Promise.resolve()
+
+function enqueueCloudWrite(task) {
+  const run = cloudWriteChain.then(task)
+  // 前一个写无论成功或失败都不能卡住队列
+  cloudWriteChain = run.then(() => {}, () => {})
+  return run
+}
+
 /** 把当前学习档案增量上传到云端（白名单字段由云函数再次校验） */
 function pushToCloud() {
   if (!hasCloud() || !isLogged() || !state) return
@@ -418,6 +450,7 @@ function pushToCloud() {
     settings: state.settings,
     practiceSession: state.practiceSession,
     aiMessages: state.aiMessages,
+    aiEpoch: state.aiEpoch,
     version: state.version
   }
   // 增量上传作答流水：只传本地尚未同步的新增部分（按光标切片），云端按 _id 幂等 upsert
@@ -427,35 +460,41 @@ function pushToCloud() {
   // 本次上传覆盖到的流水终点：请求在途期间 attempts 可能继续追加，
   // 必须按发起时的长度推进光标，否则会跳过这段新增作答。
   const syncedUpTo = attemptsAll.length
-  callCloud({
-    name: config.functions.studySync,
-    // attempts 必须作为顶层字段：云函数只从 event.attempts 读取，
-    // 而 stats 会过白名单过滤掉 attempts——放进 payload 会导致
-    // 「流水一条都没上传，光标却已推进」（评审 P1）。
-    data: { token: ctx.token, action: 'update', stats: payload, attempts: newAttempts },
-    // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标。
-    // 且确认必须落回它发起时的作用域：账号 A 的上传在切到 B 之后才确认，
-    // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
-    success: (res) => {
-      const r = res && res.result
-      if (!r || !r.ok) return
-      if (isStaleContext(ctx)) return
-      setAttemptCursor(syncedUpTo, ctx.scope)
-    },
-    fail: () => {} // 上传失败静默：下次 flush 会再次尝试
-  })
+  enqueueCloudWrite(() => new Promise((resolve) => {
+    callCloud({
+      name: config.functions.studySync,
+      // attempts 必须作为顶层字段：云函数只从 event.attempts 读取，
+      // 而 stats 会过白名单过滤掉 attempts——放进 payload 会导致
+      // 「流水一条都没上传，光标却已推进」（评审 P1）。
+      data: { token: ctx.token, action: 'update', stats: payload, attempts: newAttempts },
+      // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标。
+      // 且确认必须落回它发起时的作用域：账号 A 的上传在切到 B 之后才确认，
+      // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
+      success: (res) => {
+        const r = res && res.result
+        if (r && r.ok && !isStaleContext(ctx)) setAttemptCursor(syncedUpTo, ctx.scope)
+        resolve()
+      },
+      fail: () => { resolve() } // 上传失败静默：下次 flush 会再次尝试
+    })
+  }))
 }
 
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
 function deleteCloud() {
   if (!hasCloud() || !isLogged()) return
   const ctx = captureSyncContext()
-  callCloud({
-    name: config.functions.studySync,
-    // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
-    data: { token: ctx.token, action: 'delete' },
-    fail: () => {} // 删除失败静默：下次清空时再试
-  })
+  // 与 push 共用一个队列：保证「清空」排在它之前发起的在途上传之后落地，
+  // 否则那个上传会把刚删掉的数据重新写回服务端。
+  enqueueCloudWrite(() => new Promise((resolve) => {
+    callCloud({
+      name: config.functions.studySync,
+      // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
+      data: { token: ctx.token, action: 'delete' },
+      success: () => { resolve() },
+      fail: () => { resolve() } // 删除失败静默：下次清空时再试
+    })
+  }))
 }
 
 /**
@@ -564,6 +603,7 @@ function recordAnswer(question, isCorrect, costMs) {
     r.wrongLogs = (r.wrongLogs || []).concat([now]).slice(-20)
   }
   r.nextReviewAt = now + REVIEW_INTERVALS[r.level] * DAY
+  r.updatedAt = bumpVersion(r, ['lastAt'])
   s.records[question.id] = r
 
   const d = s.daily[key] || {
@@ -630,6 +670,8 @@ function toggleStar(id) {
   const r = s.records[id]
   if (!r) return false
   r.starred = !r.starred
+  // 收藏不改变 lastAt，必须推进 updatedAt，否则合并时被判为旧数据而丢失
+  r.updatedAt = bumpVersion(r, ['lastAt'])
   persist()
   return r.starred
 }
@@ -643,6 +685,8 @@ function resetWrong(id) {
   r.streak = Math.max(r.streak || 0, 1)
   r.mastered = true
   r.nextReviewAt = Date.now() + REVIEW_INTERVALS[5] * DAY
+  // 与 toggleStar 同理：不改变 lastAt 的修改也必须推进 updatedAt
+  r.updatedAt = bumpVersion(r, ['lastAt'])
   persist()
   return r
 }
@@ -761,14 +805,20 @@ function pushAiMessage(msg) {
 }
 
 function clearAiMessages() {
-  load().aiMessages = []
-  aiConversationVersion += 1
+  const s = load()
+  s.aiMessages = []
+  // 纪元 +1：让「清空」这个删除操作能在合并中生效。
+  // 否则上传的空列表会被并集运算忽略，下次启动旧对话又被拉回本地，
+  // 与「云端历史将被删除」的确认文案相矛盾（评审 P1 4423125072）。
+  s.aiEpoch = Number(s.aiEpoch || 0) + 1
+  aiConversationVersion += 1 // 进程内：作废缓存页面与在途异步回复
   persist()
   flush() // 清空是不可逆操作，立即落盘
 }
 
 function clearAll() {
   state = getDefaultState()
+  state.aiEpoch = Number(state.aiEpoch || 0) + 1
   aiConversationVersion += 1
   // 在途的云端拉取若回来，会把刚清空的档案再并回来
   cloudSyncGeneration += 1
@@ -977,5 +1027,7 @@ module.exports = {
   restartPracticeSession,
   getAttempts,
   submitAttempt,
-  pullFromCloud
-}
+  pullFromCloud,
+  // 仅供测试：取消待落盘的节流定时器，避免跨用例泄漏
+  __clearFlushTimer
+  }
