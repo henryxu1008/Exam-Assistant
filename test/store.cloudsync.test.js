@@ -65,6 +65,17 @@ function login(openid, token) {
   global.wx.setStorageSync(SESSION_KEY, { logged: true, token: token, openid: openid })
 }
 
+/**
+ * 取一个全新的 user 模块实例。
+ * 必须在 freshStore() 之后调用：freshStore 已清空 store 的 require 缓存，
+ * 这里再清掉 user 的缓存后重新 require，user 内部 require('./store.js')
+ * 会拿到与 freshStore() 返回的同一个实例，两者作用域状态才是联动的。
+ */
+function freshUser() {
+  delete require.cache[require.resolve('../utils/user.js')]
+  return require('../utils/user.js')
+}
+
 /* ------------------------------------------------------------------ *
  * 1) attempts 顶层字段 + 光标推进条件
  * ------------------------------------------------------------------ */
@@ -210,6 +221,71 @@ test('登出后（会话清空）不再上传', () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * 2b) 启动期作用域绑定（user.bindStoredScope）
+ * ------------------------------------------------------------------ */
+
+test('bindStoredScope：有登录缓存时绑定到该账号作用域', () => {
+  const store = freshStore()
+  const user = freshUser()
+  login('o1', 'tok')
+
+  assert.strictEqual(user.bindStoredScope(), 'o1')
+  assert.strictEqual(store.getUserScope(), 'o1')
+})
+
+test('bindStoredScope：无登录缓存时保持匿名作用域', () => {
+  const store = freshStore()
+  const user = freshUser()
+  global.wx.setStorageSync(SESSION_KEY, { logged: false, token: '', openid: '' })
+
+  assert.strictEqual(user.bindStoredScope(), 'anon')
+  assert.strictEqual(store.getUserScope(), 'anon')
+})
+
+test('bindStoredScope：登录标记存在但无 openid 时回落匿名', () => {
+  const store = freshStore()
+  const user = freshUser()
+  global.wx.setStorageSync(SESSION_KEY, { logged: true, token: 'tok', openid: '' })
+
+  assert.strictEqual(user.bindStoredScope(), 'anon')
+  assert.strictEqual(store.getUserScope(), 'anon')
+})
+
+test('bindStoredScope：重复绑定同一账号不重置内存态（不丢数据）', () => {
+  const store = freshStore()
+  const user = freshUser()
+  login('o1', 'tok')
+
+  user.bindStoredScope()
+  store.load()
+  store.recordAnswer(q('x1'), true, 100)
+
+  user.bindStoredScope() // 再次绑定：不应清空
+  assert.strictEqual(store.getUserScope(), 'o1')
+  assert.ok(store.getRecord('x1'), '重复绑定同一作用域不应重置内存态')
+})
+
+test('冷启动先绑定作用域再 load：数据落在账号命名空间且可上传', () => {
+  const store = freshStore()
+  const user = freshUser()
+  const calls = mockCloud(() => ({ ok: true }))
+  login('o1', 'tok')
+
+  user.bindStoredScope()
+  store.load()
+  store.recordAnswer(q('x1'), true, 100)
+  store.flush()
+
+  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  assert.strictEqual(updates.length, 1, '绑定后应允许上传')
+  assert.strictEqual(updates[0].data.token, 'tok')
+  assert.ok(
+    global.wx.getStorageSync(`${DATA_KEY}__o1`),
+    '数据应落在账号作用域 key，而非 anon'
+  )
+})
+
+/* ------------------------------------------------------------------ *
  * 3) 在途拉取的回包丢弃
  * ------------------------------------------------------------------ */
 
@@ -265,6 +341,28 @@ test('在途拉取回包到达时已登出则丢弃', async () => {
   await tick()
 
   assert.deepStrictEqual(store.getAttempts().map((a) => a.id), [], '登出后旧回包必须丢弃')
+})
+
+test('clearAll 后，在途拉取的回包不会把已清空的数据并回来', async () => {
+  const store = freshStore()
+  const cloud = mockDeferred()
+  login('o1', 'tok')
+
+  store.setUserScope('o1')
+  store.load() // 发起在途拉取（第 0 次调用）
+
+  store.clearAll() // 递增同步代次，作废在途请求
+  cloud.resolve(0, {
+    ok: true,
+    stats: { version: 3, records: { ghost: { id: 'ghost', lastAt: 1 } } },
+    attempts: [{ id: 'a-ghost' }],
+    hasMore: false,
+    nextSkip: null
+  })
+  await tick()
+
+  assert.deepStrictEqual(store.getRecords(), {}, '清空后到达的回包必须丢弃')
+  assert.deepStrictEqual(store.getAttempts(), [])
 })
 
 test('分页拉取全程复用发起时的令牌快照', async () => {
