@@ -16,6 +16,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
 const USERS = db.collection('users')
+const CONFIG = db.collection('appConfig')
 
 const EDITABLE = ['nickName', 'avatarUrl', 'exam']
 
@@ -76,6 +77,31 @@ async function findByToken(token) {
 }
 
 exports.main = async (event) => {
+  // 目标考试可选项：无需登录即可获取，完全由云开发后台在 appConfig 集合中维护，
+  // 不提供默认兜底——集合/文档不存在或字段缺失时返回空列表。
+  // 文档约定：_id = 'examOptions'，字段 options = string[]。
+  if ((event.action || 'get') === 'examOptions') {
+    try {
+      const res = await CONFIG.doc('examOptions').get()
+      const doc = res.data || {}
+      const options = Array.isArray(doc.options) ? doc.options : []
+      return { ok: true, examOptions: options }
+    } catch (e) {
+      return { ok: true, examOptions: [] }
+    }
+  }
+
+  // 运营配置（公告/功能开关/强制更新等）：无需登录，完全由云开发后台在 appConfig 集合中维护。
+  // 文档约定：_id = 'runtime'，字段见 initConfig 的 DEFAULT_RUNTIME。
+  if ((event.action || 'get') === 'config') {
+    try {
+      const res = await CONFIG.doc('runtime').get()
+      return { ok: true, config: res.data || {} }
+    } catch (e) {
+      return { ok: true, config: {} }
+    }
+  }
+
   const token = event.token
   if (!token) return { ok: false, error: 'NO_TOKEN' }
 

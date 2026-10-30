@@ -1,0 +1,9 @@
+{
+  "name": "bankSync",
+  "version": "1.0.0",
+  "description": "题库云端读取/种子写入",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

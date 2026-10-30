@@ -1,6 +1,8 @@
 // app.js
+const config = require('./utils/config.js')
 const store = require('./utils/store.js')
 const user = require('./utils/user.js')
+const bank = require('./utils/questions.js')
 
 App({
   globalData: {
@@ -13,17 +15,79 @@ App({
     /** 是否已登录 */
     logged: false,
     /** 启动时的会话校验是否已完成 */
-    sessionReady: false
+    sessionReady: false,
+    /** 云端运营配置（公告/功能开关/强制更新等） */
+    config: null
   },
 
   onLaunch() {
+    // 先初始化云开发（wx.cloud.init），再加载本地仓储——
+    // store.load 会触发云端拉取，必须在 cloud 就绪之后调用，否则报 "Cloud API isn't enabled"
+    user.initCloud()
+
     // 初始化本地数据仓储（答题记录 / 错题 / 学情）
     store.load()
 
-    // 初始化云开发并校验登录会话
-    user.initCloud()
     this._sessionWaiters = []
     this._checkSession()
+
+    // 以下均为云就绪后的异步操作，不阻塞启动：
+    // 1) 拉取运营配置（公告/功能开关/强制更新）
+    user.getRuntimeConfig()
+      .then((cfg) => {
+        this.globalData.config = cfg || null
+        this._applyRuntimeConfig(cfg)
+      })
+      .catch(() => {})
+    // 2) 题库云端覆盖（拉取最新题目，无云时保持内置兜底）
+    bank.loadCloudBank().catch(() => {})
+    // 3) 首次运行把内置题库种入云端（仅一次）
+    bank.pushStaticBankToCloud().catch(() => {})
+  },
+
+  /** 应用云端运营配置：强制更新校验 + 隐私政策版本变更重新提示 */
+  _applyRuntimeConfig(cfg) {
+    if (!cfg) return
+    // 1) 强制更新：版本过低且运营要求时弹窗（不可取消，阻断使用）
+    if (cfg.forceUpdate && this._versionCompare(config.version, cfg.minVersion) < 0) {
+      wx.showModal({
+        title: '请更新版本',
+        content: '当前版本过低，部分功能已不可用，请更新到最新版本后继续使用。',
+        showCancel: false,
+        confirmText: '知道了'
+      })
+      return
+    }
+    // 2) 隐私政策更新：云端 privacyVersion 高于本地已同意版本时，提示重新查看（不阻断）
+    const accepted = user.getPrivacyAcceptedVersion()
+    if (typeof cfg.privacyVersion === 'number' && cfg.privacyVersion > accepted) {
+      wx.showModal({
+        title: '隐私政策更新',
+        content: '我们的隐私政策已更新，点击查看最新版本以了解我们如何保护你的数据。',
+        confirmText: '查看',
+        cancelText: '稍后',
+        success: (res) => {
+          if (res.confirm) {
+            user.setPrivacyAcceptedVersion(cfg.privacyVersion)
+            wx.navigateTo({ url: '/pages/agreement/agreement?type=privacy' })
+          }
+        }
+      })
+    }
+  },
+
+  /** 语义化版本比较：a<b 返回 -1，a==b 返回 0，a>b 返回 1 */
+  _versionCompare(a, b) {
+    const pa = String(a || '').split('.').map((n) => parseInt(n, 10) || 0)
+    const pb = String(b || '').split('.').map((n) => parseInt(n, 10) || 0)
+    const len = Math.max(pa.length, pb.length)
+    for (let i = 0; i < len; i++) {
+      const x = pa[i] || 0
+      const y = pb[i] || 0
+      if (x < y) return -1
+      if (x > y) return 1
+    }
+    return 0
   },
 
   onHide() {

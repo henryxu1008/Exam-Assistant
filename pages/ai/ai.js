@@ -197,7 +197,7 @@ Page({
     const self = this
     wx.showModal({
       title: '清空对话',
-      content: '将删除本机保存的全部对话记录',
+      content: '将删除云端保存的全部对话记录',
       confirmText: '清空',
       confirmColor: '#e5484d',
       success(res) {

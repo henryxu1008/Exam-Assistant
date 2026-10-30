@@ -5,8 +5,15 @@
  */
 
 const bank = require('./questions.js')
+const config = require('./config.js')
 
 const STORAGE_KEY = 'exam_quiz_data_v1'
+
+/** 登录会话存储键，与 utils/user.js 保持一致（避免 require user 造成循环依赖） */
+const SESSION_KEY = 'exam_quiz_session_v1'
+
+/** attempts 流水已上传到云端的光标（按作用域隔离），值 = 已同步的本地 attempts 下标 */
+const ATTEMPT_CURSOR_KEY = 'exam_quiz_attempt_cursor_v1'
 
 /** 当前数据结构版本 */
 const CURRENT_VERSION = 3
@@ -109,10 +116,13 @@ function setUserScope(openid) {
     } catch (e) {
       /* 忽略写入失败 */
     }
+    pushToCloud() // 切换账号前把旧账号的学习档案上传云端
   }
   userScope = next
   state = null
   aiConversationVersion += 1
+  // 切换到真实账号后，允许下次 load 再次从云端拉取该账号的档案
+  if (next !== 'anon') bootPulled = false
   // 一次性迁移：旧版用全局单一 key，升级后首次进入该作用域时把全局数据搬过来，
   // 再删除旧 key；多账号同设备时首个登录用户承接历史数据（与升级前单租户行为一致）。
   const legacy = STORAGE_KEY
@@ -199,6 +209,9 @@ function load() {
   if (!state.daily) state.daily = {}
   if (!state.settings) state.settings = getDefaultState().settings
   if (!Array.isArray(state.aiMessages)) state.aiMessages = []
+  if (!Array.isArray(state.attempts)) state.attempts = []
+  // 启动后首次（且已登录）尝试从云端拉取一次学习档案
+  if (!bootPulled && isLogged()) pullFromCloud()
   return state
 }
 
@@ -221,7 +234,255 @@ function flush() {
   wx.setStorage({
     key: scopeKey(),
     data: state,
+    success: () => pushToCloud(), // 本地落盘成功后增量同步到云端
     fail: (e) => console.error('[store] 持久化失败', e)
+  })
+}
+
+/* ============================================================
+ * 云端同步（MVP）：本地为主、云端备份，换设备可延续学习进度。
+ * - 同步派生/聚合数据（records/daily/settings/practiceSession/aiMessages）到 studyStats 单文档。
+ * - 同步原始作答流水 attempts 到独立集合 attempts（每条一个文档，_id = attempt.id），
+ *   增量 upsert（按本地光标只传新增），避免单文档过大与并发覆盖。
+ * - 双向合并：pull 时与云端按时间戳 / 日期 / id 并集合并（见 mergeStats），多端作答不互丢；
+ *   合并结果回写本地并上传云端，最终两端收敛一致。
+ * - 测试沙箱无 wx.cloud，hasCloud() 为 false，以下逻辑全部安全跳过。
+ * ============================================================ */
+
+function hasCloud() {
+  // 仅在 wx.cloud 存在、callFunction 可用且已完成 wx.cloud.init() 时才视为可调用，
+  // 避免在小程序端 init 之前误触发云端调用而报 "Cloud API isn't enabled"。
+  return !!wx.__cloudReady && !!wx.cloud && typeof wx.cloud.callFunction === 'function'
+}
+
+function getToken() {
+  try {
+    const s = wx.getStorageSync(SESSION_KEY)
+    return (s && s.token) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+function isLogged() {
+  try {
+    const s = wx.getStorageSync(SESSION_KEY)
+    return !!(s && s.logged && s.token)
+  } catch (e) {
+    return false
+  }
+}
+
+/** 启动后只尝试一次云端拉取 */
+let bootPulled = false
+
+/**
+ * 双向合并本地与云端学习档案（纯函数，便于单测）。
+ * 策略：
+ *  - records：按 qid 取 lastAt 较新的一方（无 lastAt 的一方被另一方覆盖）；
+ *  - daily：按日期 key 取并集，同日各指标取较大值（total/correct/timeMs），
+ *           chapters/subjects 取键并集、同键指标取较大；
+ *  - practiceSession：取 createdAt 较新的一方，均无则保留非 null 的；
+ *  - aiMessages：按 time 去重取并集（云端在前、本地在后）；
+ *  - settings：云端优先（多端冲突极少，且保证换设备后设置一致）；
+ *  - version：取较大值。
+ * @returns {Object} 合并后的完整 state（缺失字段用默认值补齐）
+ */
+function mergeStats(local, remote) {
+  const def = getDefaultState()
+  const L = local || {}
+  const R = remote || {}
+  const out = Object.assign({}, def, L)
+
+  // records：按 qid 取 lastAt 较新方
+  const records = Object.assign({}, R.records || {})
+  Object.keys(L.records || {}).forEach((id) => {
+    const lr = L.records[id]
+    const rr = records[id]
+    if (!rr) { records[id] = lr; return }
+    if ((lr.lastAt || 0) >= (rr.lastAt || 0)) records[id] = lr
+  })
+  out.records = records
+
+  // daily：按日期并集，同日指标取较大
+  const daily = Object.assign({}, R.daily || {})
+  Object.keys(L.daily || {}).forEach((key) => {
+    const ld = L.daily[key]
+    const rd = daily[key]
+    if (!rd) { daily[key] = ld; return }
+    daily[key] = mergeDaily(ld, rd)
+  })
+  out.daily = daily
+
+  // practiceSession：取较新方
+  const ls = L.practiceSession
+  const rs = R.practiceSession
+  if (ls && rs) out.practiceSession = (ls.createdAt || 0) >= (rs.createdAt || 0) ? ls : rs
+  else out.practiceSession = ls || rs || null
+
+  // aiMessages：按 time 去重取并集
+  const seen = {}
+  const ai = []
+  ;(R.aiMessages || []).concat(L.aiMessages || []).forEach((m) => {
+    const t = m && m.time
+    if (t == null) { ai.push(m); return }
+    if (seen[t]) return
+    seen[t] = true
+    ai.push(m)
+  })
+  out.aiMessages = ai
+
+  // attempts：按 id 去重取并集（云端在前、本地在后）；不可变流水，按 id 并集即可
+  const seenA = {}
+  const attempts = []
+  ;(R.attempts || []).concat(L.attempts || []).forEach((a) => {
+    const id = a && a.id
+    if (id == null) { attempts.push(a); return }
+    if (seenA[id]) return
+    seenA[id] = true
+    attempts.push(a)
+  })
+  out.attempts = attempts
+
+  // settings：云端优先
+  out.settings = Object.assign({}, def.settings, L.settings || {}, R.settings || {})
+
+  // version：取较大
+  out.version = Math.max(L.version || 0, R.version || 0, def.version)
+  return out
+}
+
+/** 合并单日统计：同日各指标取较大值，chapters/subjects 取键并集、同键指标取较大 */
+function mergeDaily(ld, rd) {
+  const chapters = Object.assign({}, rd.chapters || {})
+  Object.keys(ld.chapters || {}).forEach((c) => {
+    const lc = ld.chapters[c]
+    const rc = chapters[c]
+    if (!rc) { chapters[c] = lc; return }
+    chapters[c] = {
+      total: Math.max(lc.total || 0, rc.total || 0),
+      correct: Math.max(lc.correct || 0, rc.correct || 0)
+    }
+  })
+  const subjects = Object.assign({}, rd.subjects || {})
+  Object.keys(ld.subjects || {}).forEach((s) => {
+    const ls = ld.subjects[s]
+    const rs = subjects[s]
+    if (!rs) { subjects[s] = ls; return }
+    subjects[s] = {
+      total: Math.max(ls.total || 0, rs.total || 0),
+      correct: Math.max(ls.correct || 0, rs.correct || 0),
+      timeMs: Math.max(ls.timeMs || 0, rs.timeMs || 0)
+    }
+  })
+  return {
+    date: ld.date || rd.date,
+    total: Math.max(ld.total || 0, rd.total || 0),
+    correct: Math.max(ld.correct || 0, rd.correct || 0),
+    timeMs: Math.max(ld.timeMs || 0, rd.timeMs || 0),
+    chapters: chapters,
+    subjects: subjects
+  }
+}
+
+/** 从云端拉取学习档案，与本地双向合并后写回本地并上传云端，实现多端最终一致 */
+/**
+ * 从云端拉取学习档案，与本地双向合并后写回本地并上传云端，实现多端最终一致。
+ * 作答流水可能很多（单查上限 100 条），采用顺序分页拉取：每页带 skip，
+ * 服务端返回 hasMore / nextSkip，直到取完所有页再一次性合并。
+ * @param {Function} [onDone] 拉取（含所有分页）结束后回调，便于测试；生产调用通常省略
+ */
+function pullFromCloud(onDone) {
+  if (!hasCloud() || !isLogged()) return
+  if (bootPulled) return
+  bootPulled = true
+  let skip = 0
+  let stats = null
+  const allAttempts = []
+  const finish = (ok) => {
+    if (!ok) {
+      // 拉取失败：允许下次（重新登录/重启）再试
+      bootPulled = false
+      if (typeof onDone === 'function') onDone(false)
+      return
+    }
+    if (stats || allAttempts.length) {
+      state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
+      flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
+    }
+    if (typeof onDone === 'function') onDone(true)
+  }
+  const fetchPage = () => {
+    wx.cloud.callFunction({
+      name: config.functions.studySync,
+      data: { token: getToken(), action: 'get', skip: skip },
+      success: (res) => {
+        const r = res && res.result
+        if (!r || !r.ok) { finish(false); return }
+        if (r.stats) stats = r.stats
+        if (Array.isArray(r.attempts)) {
+          for (let i = 0; i < r.attempts.length; i++) allAttempts.push(r.attempts[i])
+        }
+        if (r.hasMore) {
+          skip = (typeof r.nextSkip === 'number') ? r.nextSkip : skip + r.attempts.length
+          fetchPage()
+          return
+        }
+        finish(true)
+      },
+      fail: () => { finish(false) }
+    })
+  }
+  fetchPage()
+}
+
+/** attempts 上传光标：返回已同步到云端的本地 attempts 下标（按当前作用域隔离） */
+function getAttemptCursor() {
+  try {
+    const v = wx.getStorageSync(`${ATTEMPT_CURSOR_KEY}__${userScope}`)
+    return typeof v === 'number' && v >= 0 ? v : 0
+  } catch (e) {
+    return 0
+  }
+}
+
+function setAttemptCursor(n) {
+  try {
+    wx.setStorageSync(`${ATTEMPT_CURSOR_KEY}__${userScope}`, n)
+  } catch (e) {}
+}
+
+/** 把当前学习档案增量上传到云端（白名单字段由云函数再次校验） */
+function pushToCloud() {
+  if (!hasCloud() || !isLogged() || !state) return
+  const payload = {
+    records: state.records,
+    daily: state.daily,
+    settings: state.settings,
+    practiceSession: state.practiceSession,
+    aiMessages: state.aiMessages,
+    version: state.version
+  }
+  // 增量上传作答流水：只传本地尚未同步的新增部分（按光标切片），云端按 _id 幂等 upsert
+  const attemptsAll = state.attempts || []
+  const cursor = getAttemptCursor()
+  const newAttempts = attemptsAll.slice(cursor)
+  if (newAttempts.length) payload.attempts = newAttempts
+  wx.cloud.callFunction({
+    name: config.functions.studySync,
+    data: { token: getToken(), action: 'update', stats: payload },
+    success: () => { setAttemptCursor(attemptsAll.length) },
+    fail: () => {} // 上传失败静默：下次 flush 会再次尝试
+  })
+}
+
+/** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
+function deleteCloud() {
+  if (!hasCloud() || !isLogged()) return
+  wx.cloud.callFunction({
+    name: config.functions.studySync,
+    data: { token: getToken(), action: 'delete' },
+    fail: () => {} // 删除失败静默：下次清空时再试
   })
 }
 
@@ -537,6 +798,8 @@ function clearAiMessages() {
 function clearAll() {
   state = getDefaultState()
   aiConversationVersion += 1
+  setAttemptCursor(0) // 重置作答上传光标，避免清空后新作答因光标错位而不上传
+  deleteCloud() // 同步删除云端学习档案与作答流水，保证本地与云端一并清空
   persist()
   flush() // 清空当前作用域（不可逆）
 }
@@ -553,6 +816,7 @@ function clearScope(openid) {
   }
   try {
     wx.removeStorageSync(`${STORAGE_KEY}__${target}`)
+    wx.removeStorageSync(`${ATTEMPT_CURSOR_KEY}__${target}`)
   } catch (e) {
     /* ignore */
   }
@@ -707,6 +971,7 @@ module.exports = {
   clearScope,
   load,
   flush,
+  mergeStats,
   getSettings,
   saveSettings,
   getCurrentSubject,
@@ -736,5 +1001,6 @@ module.exports = {
   completePracticeSession,
   restartPracticeSession,
   getAttempts,
-  submitAttempt
+  submitAttempt,
+  pullFromCloud
 }

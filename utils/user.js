@@ -71,6 +71,7 @@ function initCloud() {
     const opts = { traceUser: true }
     if (config.cloudEnv) opts.env = config.cloudEnv
     wx.cloud.init(opts)
+    wx.__cloudReady = true // 标记云已初始化，供 store 等模块判断是否可安全调用云 API
     return true
   } catch (e) {
     return false // 已初始化
@@ -257,6 +258,61 @@ function displayName() {
   return p.logged ? p.nickName || '' : ''
 }
 
+/**
+ * 拉取目标考试可选项：优先取云端 appConfig 配置，失败（无云环境 / 配置缺失）时返回空数组，
+ * 由调用方退回 utils/config.js 的本地兜底列表。
+ * @returns {Promise<string[]>}
+ */
+function getExamOptions() {
+  if (!hasCloud()) return Promise.resolve([])
+  return call(config.functions.profile, { action: 'examOptions' })
+    .then((r) => (r && Array.isArray(r.examOptions) ? r.examOptions : []))
+    .catch(() => [])
+}
+
+/**
+ * 拉取运营配置（公告 / 功能开关 / 强制更新等）：取自云端 appConfig.runtime，
+ * 失败（无云环境 / 配置缺失）时返回空对象，由调用方决定默认行为。
+ * @returns {Promise<Object>}
+ */
+function getRuntimeConfig() {
+  if (!hasCloud()) return Promise.resolve({})
+  return call(config.functions.profile, { action: 'config' })
+    .then((r) => (r && r.config && typeof r.config === 'object' ? r.config : {}))
+    .catch(() => ({}))
+}
+
+/** 本地已同意的隐私政策版本号（云端 privacyVersion 变更时据此提示重新查看） */
+const PRIVACY_ACCEPTED_KEY = 'exam_quiz_privacy_accepted_v1'
+
+function getPrivacyAcceptedVersion() {
+  try {
+    const v = wx.getStorageSync(PRIVACY_ACCEPTED_KEY)
+    return typeof v === 'number' ? v : 0
+  } catch (e) {
+    return 0
+  }
+}
+
+function setPrivacyAcceptedVersion(v) {
+  try {
+    wx.setStorageSync(PRIVACY_ACCEPTED_KEY, typeof v === 'number' ? v : 0)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/** 读取云端运营配置中的功能开关（灰度用），未配置时返回空对象 */
+function getFeatures() {
+  const cfg = (typeof getApp === 'function' && getApp() && getApp().globalData && getApp().globalData.config) || {}
+  return (cfg.features && typeof cfg.features === 'object') ? cfg.features : {}
+}
+
+/** 判断某功能开关是否开启；缺省视为关闭（需运营在 appConfig.runtime.features 显式开启） */
+function isFeatureOn(name) {
+  return !!getFeatures()[name]
+}
+
 /** 登录页跳转的去重标记，避免多个页面同时触发重复跳转 */
 let loginRedirecting = false
 
@@ -309,5 +365,11 @@ module.exports = {
   uploadAvatar,
   logout,
   initial,
-  displayName
+  displayName,
+  getExamOptions,
+  getRuntimeConfig,
+  getPrivacyAcceptedVersion,
+  setPrivacyAcceptedVersion,
+  getFeatures,
+  isFeatureOn
 }
