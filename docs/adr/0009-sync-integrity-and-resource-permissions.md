@@ -48,6 +48,23 @@
 
 墓碑是防复活的必要元数据，不应被普通清理任务删除。这里的操作是清空学习档案，不是删除 users 账号。
 
+## AI 对话独立清空（评审 r4432365981）
+
+两台设备从本地 aiEpoch=0 分别清空都会得到 1，后一次空列表会和前一次清空后的消息合并。版本不能由各设备独立加一，或由设备时钟推断全局先后。
+
+- 新增 `studySync action=clearAI`，携带当前 dataEpoch 和持久 clearId。服务端事务递增账号 aiEpoch，清空 aiMessages 并推进 syncRevision；不同清空按事务提交顺序排序，不依赖客户端时钟或已缓存的 aiEpoch。
+- 同一事务在现有 studyStats 集合写 `aiClear_<SHA-256(openid, dataEpoch, clearId)>` 回执文档（kind=aiClearReceipt），只含归属/代次/时间元数据，不含消息。一个清空最多 4 次文档操作。回执读写失败整个事务回滚；缺失与数据库访问失败仍严格区分。
+- 回执用于区分独立清空和重试。A 的回包丢失、B 再清空并发送新消息后，A 重试只返回当前代次及 superseded，不再次递增或清空。回执不能单独过期删除；整体 dataEpoch 清空会一并清理旧代次回执，此后旧操作会被 dataEpoch 拒绝。日常按用户读取仍只读 studyStats/<openid>。
+- 客户端本地立即清空并失效旧页面/模型回复；按账号把每次操作写入本地档案的 aiClearQueue，确认操作 ID 已落盘才发送。连续清空分别排队，重启/失败复用原 ID，不将每次重试当作独立清空。写盘失败保留待写状态，不发送不可恢复的清空操作。
+- AI 清空待确认时保留后续消息与学习数据在本地，暂缓快照上传和恢复，直到队列确认；离线仍可练习。被其他清空取代的未确认对话不跨代次上传。切账号、整体清空和清空前发出的旧恢复回包不得污染当前档案。
+- 普通 update 不得生成 aiEpoch。旧/自造 AI 代次只丢弃 AI 片段，仍原子提交本次学习档案与作答，并返回 aiStale/当前 aiEpoch；客户端随后恢复当前对话。get 始终单独返回服务端 aiEpoch，包括学习档案墓碑场景。相同服务端代次内继续合并正常消息。
+
+```json
+{"action":"clearAI","token":"<session>","dataEpoch":0,"clearId":"ai_clear_<persistent-id>"}
+```
+
+此协议需客户端与服务端协调升级。旧客户端通过本地 aiEpoch+1 上传空列表不再是有效清空操作，不能作为兼容路径保留；上线前通过版本更新机制要求升级。未对真实数据库、索引或权限执行变更。
+
 ## 共享资源权限
 
 - 题库初次导入和强制覆盖都必须是服务端管理员（ADMIN_OPENIDS / appConfig.admins 或管理员密钥）；覆盖仍要求 force=true。普通启动不再自动播种题库。读取失败不能触发导入；管理员密钥不得放入小程序。
@@ -60,7 +77,7 @@
 - 先在独立测试环境验证 SDK 事务回滚/冲突重试及所需索引；现有自动测试使用替身，不能替代云端验收。
 - studySync 的客户端和服务端必须协调发布。旧客户端单批超过 48 条会收到 BATCH_TOO_LARGE；没有 deleteId 的旧清空会收到 RESET_PROTOCOL_REQUIRED；清空后无代次的旧上传会收到 STALE_EPOCH。通过已存在的强制更新机制要求升级，不能为了兼容旧端放松代次校验。
 - 旧数据无需批量改写，按代次 0 读取。保留 `studyStats` 墓碑与现有旧集合；任何回滚都必须保留新服务端的代次、原子提交和权限校验，不可直接退回无代次后端。
-- 云端集合至少包括 users、studyStats、attempts、questions、appConfig；启用 AI 时另需 aiTutorUsage。检查 users.token / openid 查询索引，以及 attempts 的 openid、dataEpoch、createdAt、_id 分页/清理查询索引。限制数据库客户端直写，身份和共享配置只经服务端校验。该权限配置尚未访问或变更。
+- 云端集合至少包括 users、studyStats、attempts、questions、appConfig；启用 AI 时另需 aiTutorUsage。检查 users.token / openid 查询索引，以及 attempts 的 openid、dataEpoch、createdAt、_id 分页/清理查询索引；studyStats 的 kind、openid、dataEpoch 用于旧清空回执的清理索引。限制数据库客户端直写，身份和共享配置只经服务端校验。该权限配置尚未访问或变更。
 - 检查固定 `_id` 写入与运行时安全配置，包括 aiTutorUsage 的每日和用户计数器；不要向客户端暴露运营或上游密钥。
 - 大量历史的物理清理可能跨请求超时，客户端必须保持同一 deleteId 重试；未清理完不能宣称已物理删除。后续可将清理任务持久化为后台作业，但代次边界必须同步生效。
 

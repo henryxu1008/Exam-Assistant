@@ -56,7 +56,7 @@ function getDefaultState() {
     },
     settingsVersions: {}, // 每个设置项独立的修改版本，默认值不代表一次编辑
     aiMessages: [],
-    aiEpoch: 0, // 对话纪元：每次清空 +1，用于让删除在合并中生效
+    aiEpoch: 0, // 对话代次由服务端 clearAI 事务递增；客户端不能独立生成
     createdAt: Date.now()
   }
 }

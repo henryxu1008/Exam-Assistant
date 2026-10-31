@@ -26,12 +26,14 @@ function makeHarness() {
         return {
           async get() {
             if (fail.get) throw fail.get
+            if (name === 'studyStats' && String(id).startsWith('aiClear_') && fail.receiptRead) throw fail.receiptRead
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
           },
           async set({ data }) {
             if (name === 'attempts' && fail.attemptWrite) throw fail.attemptWrite
             if (name === 'studyStats' && fail.statsWrite) throw fail.statsWrite
+            if (name === 'studyStats' && data.kind === 'aiClearReceipt' && fail.receiptWrite) throw fail.receiptWrite
             if (name === 'attempts' && fail.pauseAttempt) await fail.pauseAttempt()
             store.set(id, clone(data))
             return { stats: { updated: 1 } }

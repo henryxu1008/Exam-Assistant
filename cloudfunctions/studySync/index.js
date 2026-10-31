@@ -74,21 +74,27 @@ async function readExisting(getDoc) {
 // 两次档案读写 + 最多 48 条流水各读写一次，低于 CloudBase 每事务 100 次操作限制。
 const MAX_ATTEMPTS = 48
 const epochOf = (doc) => Number(doc && doc.dataEpoch || 0)
+const aiEpochOf = (doc) => Number(doc && doc.aiEpoch || 0)
 const revisionOf = (doc) => Number(doc && doc.syncRevision || 0)
 const sameRevision = (a, b) => epochOf(a) === epochOf(b) && revisionOf(a) === revisionOf(b)
 
 // 清理只匹配旧代次；新代次使用不同文档 ID，清理与新作答并发也不会误删。
-async function purgeBefore(openid, dataEpoch) {
-  for (const condition of [db.command.lt(dataEpoch), db.command.exists(false)]) {
-    for (;;) {
-      const res = await ATTEMPTS.where({ openid, dataEpoch: condition }).limit(100).get()
-      if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
-      if (!res.data.length) break
-      for (const row of res.data) {
-        try { await ATTEMPTS.doc(row._id).remove() } catch (e) { if (!isNotFound(e)) throw e }
-      }
+async function purgeRows(collection, filter) {
+  for (;;) {
+    const res = await collection.where(filter).limit(100).get()
+    if (!res || !Array.isArray(res.data)) throw new Error('INVALID_CLEANUP_RESPONSE')
+    if (!res.data.length) break
+    for (const row of res.data) {
+      try { await collection.doc(row._id).remove() } catch (e) { if (!isNotFound(e)) throw e }
     }
   }
+}
+
+async function purgeBefore(openid, dataEpoch) {
+  for (const condition of [db.command.lt(dataEpoch), db.command.exists(false)]) {
+    await purgeRows(ATTEMPTS, { openid, dataEpoch: condition })
+  }
+  await purgeRows(STATS, { kind: 'aiClearReceipt', openid, dataEpoch: db.command.lt(dataEpoch) })
 }
 
 exports.main = async (event = {}) => {
@@ -127,7 +133,44 @@ exports.main = async (event = {}) => {
     const attempts = list.map(({ _id, openid: _owner, dataEpoch: _epoch, ...rest }) => rest)
     const hasMore = list.length >= limit
     return { ok: true, stats: stats && !stats.deleted ? sanitizeStats(stats) : null,
-      attempts, hasMore, nextSkip: hasMore ? skip + list.length : null, dataEpoch, syncRevision }
+      attempts, hasMore, nextSkip: hasMore ? skip + list.length : null, dataEpoch, syncRevision, aiEpoch: aiEpochOf(stats) }
+  }
+
+  if (action === 'clearAI') {
+    if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+    if (!Number.isSafeInteger(event.dataEpoch) || event.dataEpoch < 0 ||
+      typeof event.clearId !== 'string' || !event.clearId || event.clearId.length > 120) {
+      return { ok: false, error: 'BAD_CLEAR_OPERATION' }
+    }
+    try {
+      return await db.runTransaction(async (tx) => {
+        const stats = tx.collection('studyStats')
+        const ref = stats.doc(openid)
+        const existing = await readExisting(() => ref.get())
+        if (epochOf(existing) !== event.dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
+        // 每个清空保留回执。A 的 ACK 丢失、B 又清空后，A 重试不能再次删除 B 的新消息。
+        const id = 'aiClear_' + crypto.createHash('sha256')
+          .update(JSON.stringify([openid, event.dataEpoch, event.clearId])).digest('hex')
+        const receiptRef = stats.doc(id)
+        const receipt = await readExisting(() => receiptRef.get())
+        const current = aiEpochOf(existing)
+        if (!Number.isSafeInteger(current) || current < 0 || current >= Number.MAX_SAFE_INTEGER) throw new Error('INVALID_AI_EPOCH')
+        if (receipt) {
+          if (receipt.kind !== 'aiClearReceipt' || receipt.openid !== openid || receipt.dataEpoch !== event.dataEpoch ||
+            !Number.isSafeInteger(receipt.aiEpoch) || receipt.aiEpoch < 1 || receipt.aiEpoch > current) throw new Error('INVALID_CLEAR_RECEIPT')
+          return { ok: true, dataEpoch: event.dataEpoch, aiEpoch: current, superseded: receipt.aiEpoch < current }
+        }
+        const aiEpoch = current + 1
+        const data = Object.assign({}, existing || mergeStats(null, {}), {
+          _id: openid, openid, dataEpoch: event.dataEpoch, aiEpoch, aiMessages: [],
+          syncRevision: revisionOf(existing) + 1, updatedAt: Date.now()
+        })
+        await ref.set({ data })
+        await receiptRef.set({ data: { _id: id, kind: 'aiClearReceipt', openid,
+          dataEpoch: event.dataEpoch, aiEpoch, createdAt: Date.now() } })
+        return { ok: true, dataEpoch: event.dataEpoch, aiEpoch }
+      })
+    } catch (e) { return { ok: false, error: 'CLEAR_AI_FAILED' } }
   }
 
   if (action === 'update') {
@@ -144,6 +187,13 @@ exports.main = async (event = {}) => {
         const existing = await readExisting(() => ref.get())
         if (epochOf(existing) !== dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
         const incoming = sanitizeStats(event.stats)
+        const aiStale = (incoming.aiEpoch !== undefined || incoming.aiMessages !== undefined) &&
+          Number(incoming.aiEpoch || 0) !== aiEpochOf(existing)
+        if (aiStale) {
+          // 普通快照不能生成清空代次；只忽略旧/伪造 AI 片段，其他学习数据仍正常提交。
+          delete incoming.aiEpoch
+          delete incoming.aiMessages
+        }
         incoming.attempts = attempts
         const merged = mergeStats(existing, incoming)
         delete merged.attempts
@@ -164,7 +214,7 @@ exports.main = async (event = {}) => {
           } else await attemptRef.set({ data: attempt })
         }
         await ref.set({ data: merged })
-        return { ok: true, dataEpoch }
+        return { ok: true, dataEpoch, aiEpoch: aiEpochOf(merged), aiStale }
       })
     } catch (e) { return { ok: false, error: e.code === 'ATTEMPT_CONFLICT' ? e.code : 'TX_FAILED' } }
   }

@@ -1019,3 +1019,15 @@ test('旧布尔清空标记升级为持久操作，下一次清空生成新 ID',
   assert.equal(second.dataEpoch, 1)
   assert.equal(store.load().dataEpoch, 2)
 })
+
+test('写盘成功回调晚于本地作用域清理时，不读取已失效的 AI 清空队列', (t) => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  store.setUserScope('o1')
+  let done
+  t.mock.method(wx, 'setStorage', opts => { done = opts.success })
+  store.pushAiMessage({ time: 1, role: 'user', text: 'local' })
+  store.flush()
+  store.clearScope('o1')
+  assert.doesNotThrow(() => done())
+})

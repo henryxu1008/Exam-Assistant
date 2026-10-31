@@ -272,7 +272,8 @@ function load() {
   if (!Array.isArray(state.aiMessages)) state.aiMessages = []
   if (!Array.isArray(state.attempts)) state.attempts = []
   // 启动后首次（且已登录）尝试从云端拉取一次学习档案
-  if (!bootPulled && isLogged()) pullFromCloud()
+  if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
+  else if (!bootPulled && isLogged()) pullFromCloud()
   return state
 }
 
@@ -292,14 +293,20 @@ function flush() {
   // 待重试的云端删除：先补发，成功后再放行上传。
   // 离线清空后恢复网络时，靠这里把删除意图真正推到服务端（评审 P2 4425593448）。
   if (state && hasCloud() && isLogged() && getPendingDelete(userScope)) deleteCloud()
+  if (!dirty && state && (state.aiClearQueue || []).length) clearAiFromCloud()
   if (!dirty || !state) return
   dirty = false
   lastFlushAt = Date.now()
+  const storedScope = userScope
+  const storedState = state
   wx.setStorage({
     key: scopeKey(),
     data: state,
-    success: () => pushToCloud(), // 本地落盘成功后增量同步到云端
-    fail: (e) => console.error('[store] 持久化失败', e)
+    success: () => state && (state.aiClearQueue || []).length ? clearAiFromCloud() : pushToCloud(), // 意图先落盘再发请求
+    fail: (e) => {
+      if (storedScope === userScope && storedState === state) dirty = true
+      console.error('[store] 持久化失败', e)
+    }
   })
 }
 
@@ -394,7 +401,7 @@ function hasLocalSyncData(snapshot) {
  * @returns {{gen: Number, scope: String, token: String}}
  */
 function captureSyncContext() {
-  return { gen: cloudSyncGeneration, scope: userScope, token: getToken(), dataEpoch: Number(state && state.dataEpoch || 0) }
+  return { gen: cloudSyncGeneration, scope: userScope, token: getToken(), dataEpoch: Number(state && state.dataEpoch || 0), aiEpoch: Number(state && state.aiEpoch || 0) }
 }
 
 /**
@@ -422,13 +429,20 @@ function isStaleContext(ctx) {
  */
 function pullFromCloud(onDone) {
   if (!hasCloud() || !isLogged()) return
+  if ((state && state.aiClearQueue || []).length) {
+    clearAiFromCloud()
+    if (typeof onDone === 'function') onDone(false)
+    return
+  }
   if (bootPulled) return
   const ctx = captureSyncContext()
+  const conversationVersion = aiConversationVersion
   bootPulled = true
   let skip = 0
   let stats = null
   let dataEpoch = null
   let syncRevision
+  let aiEpoch
   const allAttempts = []
   const abort = () => {
     // 回包被判为过期时必须重新武装启动拉取：冷启动时 load() 会在 _checkSession()
@@ -439,7 +453,7 @@ function pullFromCloud(onDone) {
     if (typeof onDone === 'function') onDone(false)
   }
   const finish = (ok) => {
-    if (isStaleContext(ctx)) { abort(); return }
+    if (isStaleContext(ctx) || conversationVersion !== aiConversationVersion) { abort(); return }
     if (!ok) {
       // 拉取失败：允许下次（重新登录/重启）再试
       bootPulled = false
@@ -460,9 +474,14 @@ function pullFromCloud(onDone) {
       setPendingPush(ctx.scope, false)
       dirty = true
     }
-    if (stats || allAttempts.length) {
+    if (stats || allAttempts.length || (aiEpoch !== undefined && aiEpoch !== Number(state.aiEpoch || 0))) {
       const before = state
-      state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
+      // AI 代次只认服务端；不同代次的本地片段不能跨清空合并。
+      const local = aiEpoch !== undefined && aiEpoch !== Number(state.aiEpoch || 0)
+        ? Object.assign({}, state, { aiEpoch, aiMessages: [] }) : state
+      const remote = Object.assign({}, stats || {}, { attempts: allAttempts })
+      if (aiEpoch !== undefined) remote.aiEpoch = aiEpoch
+      state = mergeStats(local, remote)
       practiceChanged = practiceChanged || JSON.stringify(before.practiceSession) !== JSON.stringify(state.practiceSession)
       if (practiceChanged) practiceGeneration += 1
       // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
@@ -491,13 +510,15 @@ function pullFromCloud(onDone) {
       name: config.functions.studySync,
       data: { token: ctx.token, action: 'get', skip, ...(syncRevision === undefined ? {} : { syncRevision, dataEpoch }) },
       success: (res) => {
-        if (isStaleContext(ctx)) { abort(); return }
+        if (isStaleContext(ctx) || conversationVersion !== aiConversationVersion) { abort(); return }
         const r = res && res.result
         if (!r || !r.ok) { finish(false); return }
         const pageEpoch = Number(r.dataEpoch || 0)
         if (dataEpoch !== null && (dataEpoch !== pageEpoch || syncRevision !== r.syncRevision)) { finish(false); return }
         dataEpoch = pageEpoch
         syncRevision = r.syncRevision
+        if (Number.isSafeInteger(r.aiEpoch)) aiEpoch = r.aiEpoch
+        else if (r.stats && Number.isSafeInteger(r.stats.aiEpoch)) aiEpoch = r.stats.aiEpoch
         if (r.stats) stats = r.stats
         if (Array.isArray(r.attempts)) {
           for (let i = 0; i < r.attempts.length; i++) allAttempts.push(r.attempts[i])
@@ -681,7 +702,7 @@ function pushToCloud() {
   if (!openid || userScope !== openid) return
   // 待重试的云端删除未落地前不上传：update 是合并而非整doc覆盖，
   // 空快照删不掉服务端已有数据，上传只会把刚清空的内容又并回去（评审 P2 4425593448）
-  if (getPendingDelete(openid)) return
+  if (getPendingDelete(openid) || (state.aiClearQueue || []).length) return
   const ctx = captureSyncContext()
   const payload = JSON.parse(JSON.stringify({
     records: state.records,
@@ -731,6 +752,15 @@ function pushToCloud() {
         }
         return
       }
+      if (result.aiStale && Number.isSafeInteger(result.aiEpoch) && !isStaleContext(ctx) &&
+        Number(state.aiEpoch || 0) === ctx.aiEpoch && !(state.aiClearQueue || []).length) {
+        state.aiMessages = []
+        state.aiEpoch = result.aiEpoch
+        aiConversationVersion += 1
+        persist()
+        bootPulled = false
+        pullFromCloud()
+      }
     }
     if (!isStaleContext(ctx)) {
       setAttemptCursor(syncedUpTo, ctx.scope)
@@ -765,6 +795,63 @@ function deleteCloud() {
       pendingDeleteQueued = false
     })
   )
+}
+
+// 每个清空操作单独确认；不复用最后一次清空的 ID，避免交错重试重复删除。
+const queuedAiClears = new Set()
+
+function clearAiFromCloud() {
+  if (!hasCloud() || !isLogged() || !state || getPendingDelete(userScope) || getSessionOpenid() !== userScope) return
+  const operation = (state.aiClearQueue || [])[0]
+  if (!operation) return
+  // 旧写盘回调可能晚于下一次清空。只有已落盘的操作 ID 才能发送，重启才能幂等重试。
+  try {
+    const saved = wx.getStorageSync(scopeKey())
+    if (!saved || !Array.isArray(saved.aiClearQueue) || !saved.aiClearQueue.some(op =>
+      op.clearId === operation.clearId && op.dataEpoch === operation.dataEpoch)) return
+  } catch (e) { return }
+  const ctx = captureSyncContext()
+  const key = JSON.stringify([ctx.gen, ctx.scope, ctx.token, operation.clearId])
+  if (queuedAiClears.has(key)) return
+  queuedAiClears.add(key)
+  enqueueCloudWrite(async () => {
+    if (isStaleContext(ctx) || !(state.aiClearQueue || []).some(op => op.clearId === operation.clearId)) {
+      queuedAiClears.delete(key)
+      return
+    }
+    const result = await new Promise(resolve => {
+      try {
+        callCloud({
+          name: config.functions.studySync,
+          data: { token: ctx.token, action: 'clearAI', ...operation },
+          success: res => resolve(res && res.result), fail: () => resolve(null)
+        })
+      } catch (e) { resolve(null) }
+    })
+    queuedAiClears.delete(key)
+    if (isStaleContext(ctx) || !(state.aiClearQueue || []).length || state.aiClearQueue[0].clearId !== operation.clearId) return
+    if (result && result.ok && Number.isSafeInteger(result.aiEpoch) && result.dataEpoch === operation.dataEpoch) {
+      state.aiClearQueue.shift()
+      if (!state.aiClearQueue.length) {
+        state.aiEpoch = result.aiEpoch
+        if (result.superseded) {
+          state.aiMessages = []
+          aiConversationVersion += 1
+          bootPulled = false
+          pullFromCloud()
+        }
+      }
+      dirty = true
+      flush()
+    } else if (result && result.error === 'STALE_EPOCH') {
+      // 学习档案已经整体清空，此处的 AI 操作及消息不得跨 dataEpoch 重放。
+      state.aiClearQueue = []
+      persist()
+      bootPulled = false
+      pullFromCloud()
+    }
+    // 失败保留持久队列；下一次 flush / 重启重试同一 clearId。
+  })
 }
 
 /**
@@ -1094,10 +1181,10 @@ function pushAiMessage(msg) {
 function clearAiMessages() {
   const s = load()
   s.aiMessages = []
-  // 纪元 +1：让「清空」这个删除操作能在合并中生效。
-  // 否则上传的空列表会被并集运算忽略，下次启动旧对话又被拉回本地，
-  // 与「云端历史将被删除」的确认文案相矛盾（评审 P1 4423125072）。
-  s.aiEpoch = Number(s.aiEpoch || 0) + 1
+  if (userScope !== 'anon') {
+    if (!Array.isArray(s.aiClearQueue)) s.aiClearQueue = []
+    s.aiClearQueue.push({ clearId: newId('ai_clear'), dataEpoch: Number(s.dataEpoch || 0) })
+  }
   aiConversationVersion += 1 // 进程内：作废缓存页面与在途异步回复
   persist()
   flush() // 清空是不可逆操作，立即落盘
@@ -1107,7 +1194,6 @@ function clearAll() {
   const dataEpoch = Number(load().dataEpoch || 0)
   state = getDefaultState()
   state.dataEpoch = dataEpoch
-  state.aiEpoch = Number(state.aiEpoch || 0) + 1
   aiConversationVersion += 1
   // 在途的云端拉取若回来，会把刚清空的档案再并回来
   cloudSyncGeneration += 1
