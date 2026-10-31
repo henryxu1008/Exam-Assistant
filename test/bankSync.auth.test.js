@@ -328,3 +328,17 @@ test('写入只保留 manifest / questions 白名单字段', async () => {
   assert.equal(got.bank.updatedBy, 'normal-openid', 'updatedBy 应取真实调用者，不接受伪造')
   assert.equal(got.bank._id, 'bank')
 })
+
+test('运行时无事务能力时拒绝首次题库初始化，防止并发绕过一次性写入约束', async () => {
+  const h = harness()
+  delete h.db.runTransaction
+  const results = await Promise.all([
+    h.main({ action: 'set', token: USER_TOKEN, bank: BANK }),
+    h.main({ action: 'set', token: USER_TOKEN, bank: BANK })
+  ])
+  results.forEach((result) => {
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'TRANSACTION_REQUIRED')
+  })
+  assert.equal(h.bank(), null)
+})

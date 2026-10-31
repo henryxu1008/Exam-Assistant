@@ -12,7 +12,8 @@ const config = require('./config.js')
  * 避免端上与云端的合并语义漂移。
  */
 const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion, counterBy, sumCounter,
-  recordCountsBy, sumRecordCounts, recomputeSessionStats } = require('../shared/stats-merge.js')
+  recordCountsBy, sumRecordCounts, recomputeSessionStats, nextFieldVersion,
+  recordFieldVersions, advanceRecordFields, settingsFieldVersions } = require('../shared/stats-merge.js')
 
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
@@ -629,6 +630,7 @@ function pushToCloud() {
     records: state.records,
     daily: state.daily,
     settings: state.settings,
+    settingsVersions: settingsFieldVersions(state),
     practiceSession: state.practiceSession,
     aiMessages: state.aiMessages,
     aiEpoch: state.aiEpoch,
@@ -641,6 +643,13 @@ function pushToCloud() {
   // 本次上传覆盖到的流水终点：请求在途期间 attempts 可能继续追加，
   // 必须按发起时的长度推进光标，否则会跳过这段新增作答。
   const syncedUpTo = attemptsAll.length
+  // 传输失败与应用层拒绝都属于未确认写入，必须留下同一份可重试状态。
+  const keepPending = () => {
+    if (!isStaleContext(ctx)) {
+      setPendingPush(ctx.scope, true)
+      dirty = true
+    }
+  }
   enqueueCloudWrite(() => new Promise((resolve) => {
     callCloud({
       name: config.functions.studySync,
@@ -653,6 +662,7 @@ function pushToCloud() {
       // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
       success: (res) => {
         const r = res && res.result
+        if (!r || !r.ok) { keepPending(); resolve(); return }
         if (r && r.ok && !isStaleContext(ctx)) {
           setAttemptCursor(syncedUpTo, ctx.scope)
           // 只有应用层确认成功才清除待重试标记
@@ -665,10 +675,7 @@ function pushToCloud() {
         // 这里不重新置脏的话，下次 flush（例如进入后台）不会再尝试；
         // 若云端此刻还没有快照，重启后的拉取也带不出数据，
         // 于是这次作答会一直卡在本地（评审 P2 4425946077）。
-        if (!isStaleContext(ctx)) {
-          setPendingPush(ctx.scope, true)
-          dirty = true
-        }
+        keepPending()
         resolve()
       }
     })
@@ -718,7 +725,16 @@ function getSettings() {
 
 function saveSettings(patch) {
   const s = load()
-  s.settings = Object.assign({}, s.settings, patch || {})
+  const values = Object.assign({}, s.settings)
+  const versions = settingsFieldVersions(s)
+  const next = nextFieldVersion(versions)
+  Object.keys(patch || {}).forEach((field) => {
+    if (values[field] === patch[field]) return
+    values[field] = patch[field]
+    versions[field] = next
+  })
+  s.settings = values
+  s.settingsVersions = versions
   persist()
   return s.settings
 }
@@ -786,6 +802,8 @@ function recordAnswer(question, isCorrect, costMs) {
     rightDays: [],
     wrongLogs: []
   }
+  r.fieldVersions = recordFieldVersions(r)
+  const changedFields = ['lastAt', 'streak', 'level', 'rightDays', 'nextReviewAt']
 
   r.answerBy = Object.assign({}, recordCountsBy(r))
   const writer = getWriterId()
@@ -802,7 +820,11 @@ function recordAnswer(question, isCorrect, costMs) {
     r.level = Math.min(5, (r.level || 0) + 1)
     // 连续 MASTER_DAYS 天答对的错题，自动移出错题本
     r.rightDays = nextRightDays(r.rightDays || [], key)
-    if (r.wrong > 0 && r.rightDays.length >= MASTER_DAYS) r.mastered = true
+    changedFields.push('bestStreak')
+    if (r.wrong > 0 && r.rightDays.length >= MASTER_DAYS) {
+      r.mastered = true
+      changedFields.push('mastered')
+    }
   } else {
     r.streak = 0
     r.level = Math.max(0, (r.level || 0) - 2)
@@ -810,9 +832,10 @@ function recordAnswer(question, isCorrect, costMs) {
     r.mastered = false // 再次答错则重新回到错题本
     r.rightDays = []
     r.wrongLogs = (r.wrongLogs || []).concat([now]).slice(-20)
+    changedFields.push('lastWrongAt', 'mastered', 'wrongLogs')
   }
   r.nextReviewAt = now + REVIEW_INTERVALS[r.level] * DAY
-  r.updatedAt = bumpVersion(r, ['lastAt'])
+  advanceRecordFields(r, changedFields)
   s.records[question.id] = r
 
   const d = s.daily[key] || {
@@ -874,9 +897,9 @@ function toggleStar(id) {
   const s = load()
   const r = s.records[id]
   if (!r) return false
+  r.fieldVersions = recordFieldVersions(r)
   r.starred = !r.starred
-  // 收藏不改变 lastAt，必须推进 updatedAt，否则合并时被判为旧数据而丢失
-  r.updatedAt = bumpVersion(r, ['lastAt'])
+  advanceRecordFields(r, ['starred'])
   persist()
   return r.starred
 }
@@ -886,12 +909,12 @@ function resetWrong(id) {
   const s = load()
   const r = s.records[id]
   if (!r) return null
+  r.fieldVersions = recordFieldVersions(r)
   r.level = 5
   r.streak = Math.max(r.streak || 0, 1)
   r.mastered = true
   r.nextReviewAt = Date.now() + REVIEW_INTERVALS[5] * DAY
-  // 与 toggleStar 同理：不改变 lastAt 的修改也必须推进 updatedAt
-  r.updatedAt = bumpVersion(r, ['lastAt'])
+  advanceRecordFields(r, ['level', 'streak', 'mastered', 'nextReviewAt'])
   persist()
   return r
 }

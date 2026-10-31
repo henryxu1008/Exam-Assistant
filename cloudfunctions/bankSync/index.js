@@ -123,18 +123,13 @@ exports.main = async (event) => {
       return { ok: true }
     }
 
-    if (typeof db.runTransaction === 'function') {
-      try {
-        return await db.runTransaction(write)
-      } catch (e) {
-        return { ok: false, error: 'TX_FAILED' }
-      }
+    // 一次性写入的权限边界依赖原子判定；无事务时不能降级成有竞争窗口的复查。
+    if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+    try {
+      return await db.runTransaction(write)
+    } catch (e) {
+      return { ok: false, error: 'TX_FAILED' }
     }
-
-    // 旧版 SDK 无事务：退化为「写前复查」（窗口极小，仅作兜底）
-    if (await bankExists()) return { ok: false, error: 'BANK_EXISTS' }
-    await BANK.doc('bank').set({ data: data })
-    return { ok: true }
   }
 
   return { ok: false, error: 'BAD_ACTION' }

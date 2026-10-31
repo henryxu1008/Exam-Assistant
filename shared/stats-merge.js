@@ -54,6 +54,7 @@ function getDefaultState() {
       aiExplain: true,
       currentSubject: ''
     },
+    settingsVersions: {}, // 每个设置项独立的修改版本，默认值不代表一次编辑
     aiMessages: [],
     aiEpoch: 0, // 对话纪元：每次清空 +1，用于让删除在合并中生效
     createdAt: Date.now()
@@ -115,6 +116,69 @@ function pickNewer(a, b, fallbackKeys) {
   return canonical(a) >= canonical(b) ? a : b
 }
 
+/** 同一字段按修改版本决胜；不同字段独立合并，时间相同时确定性决胜。 */
+function mergeVersionedFields(left, leftVersions, right, rightVersions, defaults) {
+  const l = left || {}
+  const r = right || {}
+  const values = {}
+  const versions = {}
+  const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
+  Object.keys(Object.assign({}, defaults, l, r)).forEach((key) => {
+    const lv = Number((leftVersions || {})[key]) || 0
+    const rv = Number((rightVersions || {})[key]) || 0
+    if (!has(l, key) && !has(r, key)) values[key] = defaults[key]
+    else if (!has(l, key)) values[key] = r[key]
+    else if (!has(r, key)) values[key] = l[key]
+    else values[key] = lv === rv
+      ? (canonical(l[key]) >= canonical(r[key]) ? l[key] : r[key])
+      : (lv > rv ? l[key] : r[key])
+    versions[key] = Math.max(lv, rv)
+  })
+  return { values, versions }
+}
+
+/** 已观察到的修改之后继续递增，设备时钟回退也不会回退版本。 */
+function nextFieldVersion(versions, fallback) {
+  const observed = Object.keys(versions || {}).reduce((max, key) => Math.max(max, Number(versions[key]) || 0), Number(fallback) || 0)
+  return Math.max(Date.now(), observed + 1)
+}
+
+/** 旧快照的已有配置视为历史编辑；新默认值版本为 0，不能覆盖历史配置。 */
+function settingsFieldVersions(state) {
+  if (state.settingsVersions) return Object.assign({}, state.settingsVersions)
+  const versions = {}
+  Object.keys(state.settings || {}).forEach((field) => { versions[field] = 1 })
+  return versions
+}
+
+const RECORD_AGGREGATES = ['answerBy', 'attempts', 'right', 'wrong', 'fieldVersions', 'updatedAt']
+
+function recordMetadata(record) {
+  if (!record) return {}
+  const metadata = {}
+  Object.keys(record).forEach((key) => {
+    if (RECORD_AGGREGATES.indexOf(key) === -1) metadata[key] = record[key]
+  })
+  return metadata
+}
+
+/** 旧记录首次编辑前固定历史版本，不能让本次收藏的 updatedAt 冒充旧作答版本。 */
+function recordFieldVersions(record) {
+  if (record && record.fieldVersions) return Object.assign({}, record.fieldVersions)
+  const versions = {}
+  const legacyVersion = versionOf(record, ['lastAt'])
+  Object.keys(recordMetadata(record)).forEach((field) => { versions[field] = legacyVersion })
+  return versions
+}
+
+function advanceRecordFields(record, fields) {
+  const versions = recordFieldVersions(record)
+  const next = nextFieldVersion(versions, record.updatedAt)
+  fields.forEach((field) => { versions[field] = next })
+  record.fieldVersions = versions
+  record.updatedAt = next
+}
+
 /**
  * 按 time 升序排序；没有 time 的条目保持原有相对次序，排在末尾。
  *
@@ -142,7 +206,7 @@ function sortByTime(list) {
  *  - practiceSession：先合并同 id 会话的进度，再取较新的一方；
  *  - aiMessages     ：先按 aiEpoch 判定清空（高纪元的空列表胜出），同纪元内按 time 并集去重；
  *  - attempts       ：按 id 去重取并集（不可变流水，按 id 并集即可）；
- *  - settings       ：取 incoming（后到达的一方为准，即最后一次写入胜出）；
+ *  - settings       ：各设置项按 settingsVersions 独立合并；
  *  - version        ：取较大值。
  *
  * @param {Object} base     已有快照
@@ -212,8 +276,9 @@ function mergeStats(base, incoming) {
   // 先合并事实，再重算会话派生值；不能把单台设备缓存的成绩随元数据一起选中。
   out.practiceSession = mergeSession(L.practiceSession, R.practiceSession, attempts)
 
-  // settings：后到达的一方为准
-  out.settings = Object.assign({}, def.settings, L.settings || {}, R.settings || {})
+  const settings = mergeVersionedFields(L.settings, settingsFieldVersions(L), R.settings, settingsFieldVersions(R), def.settings)
+  out.settings = settings.values
+  out.settingsVersions = settings.versions
 
   // version：取较大值
   out.version = Math.max(L.version || 0, R.version || 0, def.version)
@@ -308,14 +373,11 @@ function sumRecordCounts(record) {
 }
 
 function mergeRecord(a, b) {
-  const metadata = (record) => {
-    if (!record) return record
-    const out = Object.assign({}, record)
-    ;['answerBy', 'attempts', 'right', 'wrong', 'lastWrongAt'].forEach((field) => { delete out[field] })
-    return out
-  }
-  // 同版本决胜也不能包含合并后的计数，否则重放/合并分组会反过来改变收藏等字段。
-  const out = Object.assign({}, pickNewer(metadata(a), metadata(b), ['lastAt']))
+  const fields = mergeVersionedFields(recordMetadata(a), recordFieldVersions(a), recordMetadata(b), recordFieldVersions(b))
+  const out = Object.assign({}, fields.values, {
+    fieldVersions: fields.versions,
+    updatedAt: Math.max(Number(a && a.updatedAt) || 0, Number(b && b.updatedAt) || 0)
+  })
   if ((a && a.lastWrongAt !== undefined) || (b && b.lastWrongAt !== undefined)) {
     out.lastWrongAt = Math.max(Number(a && a.lastWrongAt) || 0, Number(b && b.lastWrongAt) || 0)
   }
@@ -434,6 +496,11 @@ module.exports = {
   mergeStats,
   mergeSession,
   recomputeSessionStats,
+  mergeVersionedFields,
+  nextFieldVersion,
+  settingsFieldVersions,
+  recordFieldVersions,
+  advanceRecordFields,
   recordCountsBy,
   sumRecordCounts,
   sortByTime,

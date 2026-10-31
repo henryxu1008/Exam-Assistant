@@ -282,3 +282,19 @@ test('云端分两次增量上传后会话成绩立即一致，原始流水仍�
   assert.equal(restored.attempts, undefined, '完整流水不能塞回 studyStats 单文档')
   assert.equal(h.attempts().length, 2)
 })
+
+test('云端保留设置字段版本，迟到旧快照不回滚设置，不同设置项仍可独立更新', async () => {
+  const h = harness()
+  await h.main({ token: TOKEN, action: 'update', stats: statsPayload({
+    settings: { dailyGoal: 90, autoNext: false }, settingsVersions: { dailyGoal: 20, autoNext: 20 }
+  }) })
+  await h.main({ token: TOKEN, action: 'update', stats: statsPayload({
+    settings: { dailyGoal: 30, autoNext: true, aiExplain: false },
+    settingsVersions: { dailyGoal: 10, autoNext: 10, aiExplain: 30 }
+  }) })
+  assert.equal(h.stats().settings.dailyGoal, 90)
+  assert.equal(h.stats().settings.autoNext, false)
+  assert.equal(h.stats().settings.aiExplain, false)
+  assert.equal(h.stats().settingsVersions.dailyGoal, 20)
+  assert.equal(h.stats().settingsVersions.aiExplain, 30)
+})

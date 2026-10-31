@@ -111,7 +111,10 @@ test('version：取较大值', () => {
 test('空云端时保留本地完整数据', () => {
   const local = makeState({ records: { q1: { id: 'q1', lastAt: 1 } } })
   const merged = store.mergeStats(local, null)
-  assert.deepStrictEqual(merged.records, local.records)
+  Object.keys(local.records.q1).forEach((field) => {
+    assert.deepStrictEqual(merged.records.q1[field], local.records.q1[field])
+  })
+  assert.deepStrictEqual(local.records.q1, { id: 'q1', lastAt: 1 }, '补充版本信息不能修改输入')
 })
 
 test('attempts：按 id 去重取并集', () => {

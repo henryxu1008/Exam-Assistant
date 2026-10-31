@@ -42,7 +42,7 @@ const { findByToken } = require('./auth.js')
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
-const ALLOWED = ['records', 'daily', 'settings', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
+const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
 
 /** 作答流水允许写入的字段（防止把大对象/无关字段塞进库） */
 const ATTEMPT_FIELDS = [
@@ -135,6 +135,8 @@ exports.main = async (event) => {
   }
 
   if (action === 'update') {
+    // 无事务不能保证并发合并安全；明确拒绝，让端上保留待传状态。
+    if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
     const incoming = sanitizeStats(event.stats)
     // 新上传的流水仅用于本次合并派生成绩；完整流水仍单独存 attempts 集合。
     incoming.attempts = (Array.isArray(event.attempts) ? event.attempts : [])
@@ -153,15 +155,10 @@ exports.main = async (event) => {
       await ref.set({ data: merged })
     }
 
-    if (typeof db.runTransaction === 'function') {
-      try {
-        await db.runTransaction(write)
-      } catch (e) {
-        return { ok: false, error: 'TX_FAILED' }
-      }
-    } else {
-      // 旧版 SDK 无事务：退化为「读—合并—写」兜底（存在极小并发窗口）
-      await write({ collection: (name) => db.collection(name) })
+    try {
+      await db.runTransaction(write)
+    } catch (e) {
+      return { ok: false, error: 'TX_FAILED' }
     }
 
     // 增量 upsert 新增作答流水：同一 _id 重复写入是幂等的，不会重复落库

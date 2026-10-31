@@ -742,6 +742,41 @@ test('上传失败后，无需新的本地变更也会再次重试上传', async
   )
 })
 
+test('应用层拒绝上传也保留待传状态，无新编辑重试及重启后空云端恢复均会补传', async () => {
+  wx.__cloudReady = false
+  let store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  const calls = mockCloud(() => ({ ok: false, error: 'TX_FAILED' }))
+  store.submitAttempt(q('retry-q'), ['A'], true, 100, 'retry-op')
+  store.flush()
+  await tick()
+  assert.strictEqual(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), true)
+  store.flush()
+  await tick()
+  assert.strictEqual(calls.filter((c) => c.data.action === 'update').length, 2, '没有新编辑也要重试')
+
+  const data = wx.getStorageSync('exam_quiz_data_v1__o1')
+  store.__clearFlushTimer()
+  wx.__cloudReady = false
+  store = freshStore()
+  login('o1', 'tok')
+  wx.setStorageSync('exam_quiz_data_v1__o1', data)
+  wx.setStorageSync('exam_quiz_pending_push_v1__o1', true)
+  store.setUserScope('o1')
+  const resumed = mockCloud((opts) => opts.data.action === 'get'
+    ? { ok: true, stats: null, attempts: [], hasMore: false }
+    : { ok: true })
+  store.load()
+  await tick()
+  const upload = resumed.find((c) => c.data.action === 'update')
+  assert.ok(upload, '云端无快照时也必须补传本地待上传的数据')
+  assert.strictEqual(upload.data.attempts[0].questionId, 'retry-q')
+  assert.strictEqual(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), '')
+  store.__clearFlushTimer()
+})
+
 /* ------------------------------------------------------------------ *
  * 3h) 拉取恢复会话后要推进会话版本号（评审 P2 4425946095）
  * ------------------------------------------------------------------ */

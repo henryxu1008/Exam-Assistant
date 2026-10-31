@@ -83,6 +83,12 @@ function makeHarness() {
   }
 
   const db = { collection: collection }
+  let queue = Promise.resolve()
+  db.runTransaction = (fn) => {
+    const run = queue.then(() => fn({ collection }))
+    queue = run.then(() => {}, () => {})
+    return run
+  }
 
   class FixedDate extends Date {
     static now() { return NOW }
@@ -323,4 +329,17 @@ test('无令牌 / 无效令牌时删除被拒绝', async () => {
   assert.strictEqual((await h.main({ action: 'delete' })).error, 'NO_TOKEN')
   assert.strictEqual((await h.main({ action: 'delete', token: 'nope' })).error, 'INVALID_TOKEN')
   assert.strictEqual(h.studyStats.size, 1, '被拒绝的删除不得生效')
+})
+
+test('运行时不支持事务时拒绝学习档案合并，不能静默退回非原子写入', async () => {
+  const h = makeHarness()
+  const original = { _id: 'alice', records: { old: { id: 'old', right: 1 } } }
+  h.studyStats.set('alice', clone(original))
+  delete h.db.runTransaction
+  const result = await h.main({ token: 'tokA', action: 'update',
+    stats: updatePayload(2), attempts: updatePayload(2).attempts })
+  assert.strictEqual(result.ok, false)
+  assert.strictEqual(result.error, 'TRANSACTION_REQUIRED')
+  assert.deepEqual(h.studyStats.get('alice'), original)
+  assert.strictEqual(h.attempts.size, 0)
 })
