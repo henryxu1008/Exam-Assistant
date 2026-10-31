@@ -38,14 +38,42 @@ Page({
     this.setData({
       dateText: this._buildDateText()
     })
+    this._unsubscribeConfig = app.onRuntimeConfigChange(() => this._requestRefresh())
   },
 
   onShow() {
-    user.requireLogin(() => this.refresh())
+    this._visible = true
+    this._requestRefresh()
+  },
+
+  onHide() {
+    this._visible = false
+    this._refreshGeneration = (this._refreshGeneration || 0) + 1
+    this._refreshWaiting = false
+  },
+
+  onUnload() {
+    this.onHide()
+    if (this._unsubscribeConfig) this._unsubscribeConfig()
+  },
+
+  /** 配置与认证可任意顺序返回；同一轮等待只注册一次初始化回调。 */
+  _requestRefresh() {
+    if (!this._visible || this._refreshWaiting) return
+    const generation = this._refreshGeneration || 0
+    this._refreshWaiting = true
+    let completed = false
+    const allowed = user.requireLogin(() => {
+      completed = true
+      if (generation !== (this._refreshGeneration || 0)) return
+      this._refreshWaiting = false
+      if (this._visible && !user.isVersionBlocked()) this.refresh()
+    })
+    if (!allowed && !completed && (app.globalData.sessionReady !== false || user.isVersionBlocked())) this._refreshWaiting = false
   },
 
   onPullDownRefresh() {
-    user.requireLogin(() => this.refresh())
+    this._requestRefresh()
     wx.stopPullDownRefresh()
   },
 

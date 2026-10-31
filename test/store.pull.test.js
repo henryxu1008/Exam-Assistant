@@ -124,3 +124,56 @@ test('恢复任一页失败时丢弃整批档案，重试从首页拉全后才�
   store.pullFromCloud()
   assert.strictEqual(calls.filter((c) => c.data.action === 'get').length, getCount)
 })
+
+test('首次上云无待传标记时，也会备份已有本地历史、设置与删除纪元', async (t) => {
+  let store
+  t.after(() => { store.__clearFlushTimer(); wx.__cloudReady = false; wx.cloud = undefined })
+  for (const local of [
+    { records: { old: { id: 'old', attempts: 3, right: 2, wrong: 1 } } },
+    { attempts: [{ id: 'old-attempt', questionId: 'old', selected: ['A'] }] },
+    { aiMessages: [{ role: 'user', text: '历史对话', time: 1 }] },
+    { practiceSession: { id: 'old-session', questionIds: ['old'], submitted: {} } },
+    { settings: { dailyGoal: 60, autoNext: false } },
+    { aiEpoch: 2 }
+  ]) {
+    wx.__cloudReady = false
+    store = freshStore()
+    wx.setStorageSync(SESSION_KEY, { logged: true, token: 'tok', openid: 'o1' })
+    wx.setStorageSync('exam_quiz_data_v1__o1', Object.assign({ version: 3 }, local))
+    store.setUserScope('o1')
+    const calls = []
+    wx.__cloudReady = true
+    wx.cloud = { callFunction(opts) {
+      calls.push(opts)
+      const result = { ok: true, stats: null, attempts: [], hasMore: false }
+      opts.success({ result })
+      return Promise.resolve({ result })
+    } }
+    assert.equal(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), '')
+    store.load()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(calls.filter((c) => c.data.action === 'update').length, 1, JSON.stringify(local))
+    store.flush()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(calls.filter((c) => c.data.action === 'update').length, 1, '初始化后无新编辑不重复备份')
+  }
+})
+
+test('空云端遇到全新默认本地状态时不制造无意义上传', async (t) => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  t.after(() => { store.__clearFlushTimer(); wx.__cloudReady = false; wx.cloud = undefined })
+  wx.setStorageSync(SESSION_KEY, { logged: true, token: 'tok', openid: 'o1' })
+  store.setUserScope('o1')
+  const calls = []
+  wx.__cloudReady = true
+  wx.cloud = { callFunction(opts) {
+    calls.push(opts)
+    const result = { ok: true, stats: null, attempts: [], hasMore: false }
+    opts.success({ result })
+    return Promise.resolve({ result })
+  } }
+  store.load()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.filter((c) => c.data.action === 'update').length, 0)
+})

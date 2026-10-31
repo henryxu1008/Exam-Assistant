@@ -374,6 +374,16 @@ function isLogged() {
 /** 启动后只尝试一次云端拉取 */
 let bootPulled = false
 
+/** 首次上云也要备份本地有效数据；创建时间和未修改的默认设置不算历史。 */
+function hasLocalSyncData(snapshot) {
+  const s = snapshot || {}
+  if (Object.keys(s.records || {}).length || Object.keys(s.daily || {}).length ||
+    (s.attempts || []).length || (s.aiMessages || []).length || s.practiceSession || Number(s.aiEpoch || 0) > 0) return true
+  if (Object.keys(s.settingsVersions || {}).some((field) => Number(s.settingsVersions[field]) > 0)) return true
+  const defaults = getDefaultState().settings
+  return Object.keys(s.settings || {}).some((field) => s.settings[field] !== defaults[field])
+}
+
 /**
  * 捕获当前账号上下文快照。
  *
@@ -450,9 +460,8 @@ function pullFromCloud(onDone) {
       const convBefore = JSON.stringify(before.aiMessages || []) + '|' + Number(before.aiEpoch || 0)
       const convAfter = JSON.stringify(state.aiMessages || []) + '|' + Number(state.aiEpoch || 0)
       if (convBefore !== convAfter) aiConversationVersion += 1
-    } else if (getPendingPush(ctx.scope)) {
-      // 云端还没有快照，但本地有上次没成功的上传：补一次，不必再等本地变更。
-      // 否则这次作答会一直卡在本地（评审 P2 4425946077）。
+    } else if (getPendingPush(ctx.scope) || hasLocalSyncData(state)) {
+      // 空云端需要初始化备份；升级前本地历史没有 pending 标记，也不能被跳过。
       dirty = true
     }
     if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛

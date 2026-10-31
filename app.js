@@ -39,7 +39,6 @@ App({
     // 1) 拉取运营配置（公告/功能开关/强制更新）
     user.getRuntimeConfig()
       .then((cfg) => {
-        this.globalData.config = cfg || null
         this._applyRuntimeConfig(cfg)
       })
       .catch(() => {})
@@ -55,12 +54,14 @@ App({
     // 既不能置位也不能清除阻断态——把它当成「没有限制」会让上一次判定
     // 的阻断在离线重启后失效（评审 P2 4429855406）。
     if (!cfg) return
+    this.globalData.config = cfg
     // 1) 强制更新：版本过低且运营要求时，置位持久化阻断态。
     //    提示框本身不阻断任何流程（showCancel 只影响取消按钮的显示），
     //    真正的拦截由 guardEntry() 在各入口完成（评审 P2 4422339109）。
     if (cfg.forceUpdate && this._versionCompare(config.version, cfg.minVersion) < 0) {
       user.markUnsupportedVersion()
       this._showUpdateBlocker()
+      this._notifyRuntimeConfigListeners()
       return
     }
     // 版本已达标（或运营已解除强制更新）：清除阻断态
@@ -81,6 +82,21 @@ App({
         }
       })
     }
+    this._notifyRuntimeConfigListeners()
+  },
+
+  /** 配置应用后通知页面；异步返回不要求用户重新进入首页。 */
+  onRuntimeConfigChange(listener) {
+    if (!this._runtimeConfigListeners) this._runtimeConfigListeners = new Set()
+    this._runtimeConfigListeners.add(listener)
+    return () => this._runtimeConfigListeners.delete(listener)
+  },
+
+  _notifyRuntimeConfigListeners() {
+    if (!this._runtimeConfigListeners) return
+    this._runtimeConfigListeners.forEach((listener) => {
+      try { listener() } catch (e) { console.error('[app] 运营配置通知失败', e) }
+    })
   },
 
   /**
