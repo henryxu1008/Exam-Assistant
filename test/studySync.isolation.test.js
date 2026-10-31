@@ -28,7 +28,7 @@ function makeHarness() {
   const stores = { users: users, studyStats: studyStats, attempts: attempts }
 
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
-  const fail = { remove: null, get: null }
+  const fail = { remove: null, get: null, attempts: null }
 
   function collection(name) {
     const store = stores[name]
@@ -65,7 +65,11 @@ function makeHarness() {
           limit(c) { limit = c; return this },
           skip(c) { skip = c; return this },
           orderBy() { return this },
-          async get() { return { data: rows().slice(skip, skip + limit).map(clone) } },
+          async get() {
+            // 只命中 attempts：users 上的同款查询是令牌查找，不能一并打挂
+            if (fail.attempts && name === 'attempts') throw fail.attempts
+            return { data: rows().slice(skip, skip + limit).map(clone) }
+          },
           async remove() {
             if (fail.remove) throw fail.remove
             const hit = rows()
@@ -250,6 +254,33 @@ test('快照读取失败时不得当成「没有云端数据」（评审 P1 4429
     before.records.q1.lastAt,
     '服务端已有记录必须原样保留'
   )
+})
+
+test('作答流水查询失败不得报告「恢复已完成」（评审 P2 4430849971）', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+
+  // 模拟流水查询超时 / 数据库错误（非「不存在」）
+  h.fail.attempts = Object.assign(new Error('attempts query timeout'), { errCode: -502001 })
+
+  const res = await h.main({ token: 'tokA', action: 'get', skip: 0 })
+  assert.strictEqual(res.ok, false, '查询失败必须返回应用层失败')
+  assert.strictEqual(res.error, 'READ_ATTEMPTS_FAILED')
+  // 决不能返回 {ok:true, attempts: [], hasMore:false}：
+  // 端上会当作恢复已完成并停在 bootPulled=true
+  assert.notStrictEqual(res.hasMore, false, '不得给出「没有更多了」的假象')
+})
+
+test('还没有任何作答流水时仍返回空列表（幂等，评审 P2 4430849971）', async () => {
+  const h = makeHarness()
+  // 集合尚未建立也属于「确认不存在」
+  h.fail.attempts = Object.assign(new Error('collection not exists'), { errCode: -502005 })
+
+  const res = await h.main({ token: 'tokA', action: 'get', skip: 0 })
+  assert.strictEqual(res.ok, true, '确认不存在应视为尚无流水')
+  // 云函数跑在 vm 里，数组原型跨 realm，不能用 deepEqual
+  assert.strictEqual(res.attempts.length, 0, '应为空列表')
+  assert.strictEqual(res.hasMore, false)
 })
 
 test('文档不存在时删除仍算成功（幂等，评审 P2 4425946091）', async () => {

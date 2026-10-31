@@ -26,6 +26,8 @@ const SECRET = 's3cret-sauce'
 function harness({ env = {}, seeds = {} } = {}) {
   const appConfig = new Map()
   Object.keys(seeds).forEach((id) => appConfig.set(id, seeds[id]))
+  /** 置为 Error 可模拟数据库读取抛出非「不存在」的失败 */
+  const fail = { get: null }
 
   const collections = {
     users: new Map([['u1', { _id: 'u1', openid: 'o1', token: 'tok', tokenAt: NOW }]]),
@@ -37,6 +39,7 @@ function harness({ env = {}, seeds = {} } = {}) {
       doc(id) {
         return {
           async get() {
+            if (fail.get) throw fail.get
             const store = collections[name]
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
@@ -81,6 +84,7 @@ function harness({ env = {}, seeds = {} } = {}) {
 
   return {
     main: loadModule(path.join(__dirname, '../cloudfunctions/initConfig/index.js')).main,
+    fail: fail,
     doc: (id) => (collections.appConfig.has(id) ? clone(collections.appConfig.get(id)) : null)
   }
 }
@@ -167,6 +171,36 @@ test('features 逐键补齐：运营已关闭的开关不会被重新打开', as
   const r = await h.main({ adminSecret: SECRET })
   assert.equal(r.ok, true)
   assert.equal(h.doc('runtime').features.aiAdvice, false)
+})
+
+test('读取已有配置失败时中止初始化，不得用默认值覆盖（评审 P2 4430849974）', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: {
+      runtime: {
+        _id: 'runtime',
+        notice: '重要停服公告',
+        noticeEnabled: true,
+        features: { aiAdvice: false },
+        minVersion: '9.9.9',
+        forceUpdate: true
+      }
+    }
+  })
+
+  // 模拟读取超时 / 数据库错误（非「不存在」）
+  h.fail.get = Object.assign(new Error('read timeout'), { errCode: -502001 })
+
+  // 必须中止本次初始化，而不是拿 null 当「尚未初始化」写回默认值
+  await assert.rejects(h.main({ adminSecret: SECRET }), /read timeout/)
+
+  // 运营在控制台设好的公告、开关、强制更新必须原样保留
+  const doc = h.doc('runtime')
+  assert.equal(doc.notice, '重要停服公告', '公告不得被抹掉')
+  assert.equal(doc.noticeEnabled, true, '公告开关不得被复位')
+  assert.equal(doc.features.aiAdvice, false, '已关闭的功能开关不得被重新打开')
+  assert.equal(doc.forceUpdate, true, '强制更新不得被重置为 false')
+  assert.equal(doc.minVersion, '9.9.9', '最低版本不得被降低')
 })
 
 test('force=true 时整体重置为默认值', async () => {

@@ -18,6 +18,9 @@ const db = cloud.database()
 const USERS = db.collection('users')
 const CONFIG = db.collection('appConfig')
 
+/** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
+const { isNotFound } = require('./db-error.js')
+
 const EDITABLE = ['nickName', 'avatarUrl', 'exam']
 
 /** 字段最长字数，超长截断 */
@@ -87,7 +90,10 @@ exports.main = async (event) => {
       const options = Array.isArray(doc.options) ? doc.options : []
       return { ok: true, examOptions: options }
     } catch (e) {
-      return { ok: true, examOptions: [] }
+      // 集合确实还没建立才等价为空列表；读失败必须报错，
+      // 否则端上会把「读不到」当成「没有可选项」（评审 P2 4430849974 同类）
+      if (isNotFound(e)) return { ok: true, examOptions: [] }
+      return { ok: false, error: 'READ_EXAM_OPTIONS_FAILED' }
     }
   }
 
@@ -98,7 +104,12 @@ exports.main = async (event) => {
       const res = await CONFIG.doc('runtime').get()
       return { ok: true, config: res.data || {} }
     } catch (e) {
-      return { ok: true, config: {} }
+      // 读失败绝不能返回 {ok:true, config:{}}：端上拿到的空配置会被
+      // user.getRuntimeConfig() 理解为「拉取成功且运营没有任何限制」，
+      // 从而清掉上一次判定的版本阻断——
+      // 这会让端上针对评审 P2 4429855406 的修复完全失效（同一根因，服务端侧）。
+      if (isNotFound(e)) return { ok: true, config: {} }
+      return { ok: false, error: 'READ_CONFIG_FAILED' }
     }
   }
 

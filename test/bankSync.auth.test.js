@@ -24,6 +24,8 @@ const ADMIN_TOKEN = 'admin-token'
 const ADMIN_OPENID = 'admin-openid'
 
 function harness({ admins = [], env = {} } = {}) {
+  /** 置为 Error 可模拟数据库读取抛出非「不存在」的失败 */
+  const fail = { get: null }
   const collections = {
     questions: new Map(),
     users: new Map([
@@ -45,6 +47,7 @@ function harness({ admins = [], env = {} } = {}) {
       doc(id) {
         return {
           async get() {
+            if (fail.get) throw fail.get
             const store = collections[name]
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
@@ -116,7 +119,12 @@ function harness({ admins = [], env = {} } = {}) {
   }
 
   const main = loadModule(path.join(__dirname, '../cloudfunctions/bankSync/index.js')).main
-  return { main: main, db: db }
+  return {
+    main: main,
+    db: db,
+    fail: fail,
+    bank: () => (collections.questions.has('bank') ? clone(collections.questions.get('bank')) : null)
+  }
 }
 
 const BANK = { manifest: { subjects: [{ key: 'gk', name: '公基' }] }, questions: { gk: [] } }
@@ -196,6 +204,31 @@ test('题库已存在时普通调用无法覆盖，返回 BANK_EXISTS', async ()
   const got = await h.main({ action: 'get' })
   assert.deepEqual(got.bank.questions, BANK.questions)
   assert.equal(got.bank.updatedBy, 'normal-openid')
+})
+
+test('读取题库失败不得绕过 force + 管理员校验（评审 P2 4430849974 同类）', async () => {
+  const h = harness()
+  // 先由普通用户种入题库：此后题库文档是存在的
+  const first = await h.main({ action: 'set', token: USER_TOKEN, bank: BANK })
+  assert.equal(first.ok, true)
+  const before = h.bank()
+
+  // 模拟读取超时 / 数据库错误（非「不存在」）
+  h.fail.get = Object.assign(new Error('read timeout'), { errCode: -502001 })
+
+  // 正常情况下这次覆盖会被 BANK_EXISTS 挡下（无 force、非管理员）。
+  // 若把读失败当成「文档不存在」，bankExists() 会返回 false，
+  // 于是 force + 管理员两道校验被整体跳过，任何人都能冲掉运营题库。
+  const evil = {
+    manifest: { subjects: [{ key: 'gk', name: '被篡改' }] },
+    questions: { gk: [{ id: 'fake', answer: ['A'] }] }
+  }
+  await assert.rejects(h.main({ action: 'set', token: USER_TOKEN, bank: evil }), /read timeout/)
+
+  const after = h.bank()
+  assert.deepEqual(after.manifest, before.manifest, '题库 manifest 不得被覆盖')
+  assert.deepEqual(after.questions, before.questions, '题库内容不得被覆盖')
+  assert.equal(after.updatedBy, 'normal-openid', '写入者不得被改写')
 })
 
 test('并发首次初始化只有一个成功，另一个收到 BANK_EXISTS', async () => {

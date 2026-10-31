@@ -29,6 +29,8 @@ const CONFIG = db.collection('appConfig')
 
 /** 鉴权原语；部署副本随本函数一起上传 */
 const { verifyAdminSecret } = require('./auth.js')
+/** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
+const { readOptionalDoc } = require('./db-error.js')
 
 /** 目标考试默认可选项（仅作为云端集合尚未配置时的初始种子） */
 const DEFAULT_EXAM_OPTIONS = [
@@ -58,14 +60,16 @@ const DEFAULT_RUNTIME = {
   privacyVersion: 20261030
 }
 
-/** 读取已有文档；不存在返回 null */
+/**
+ * 读取已有文档；**确认不存在**才返回 null，其余错误向上冒泡。
+ *
+ * 不能无条件吞异常：这段代码后面紧跟 CONFIG.doc(id).set()，
+ * 一旦「读超时」被当成「文档还没有」返回 null，fillDefaults(null, DEFAULT_*)
+ * 就会拼出一份纯默认值文档写回去，把运营在控制台设好的公告、
+ * 关闭的功能开关、强制更新全部抹掉（评审 P2 4430849974）。
+ */
 async function readDoc(id) {
-  try {
-    const res = await CONFIG.doc(id).get()
-    return (res && res.data) || null
-  } catch (e) {
-    return null
-  }
+  return readOptionalDoc(() => CONFIG.doc(id).get())
 }
 
 /**
@@ -91,12 +95,14 @@ exports.main = async (event) => {
 
   const force = e.force === true
 
-  const existingOptions = await readDoc('examOptions')
+  // 非 force 时才读：force 是「明确要求用默认值重建」，此时不读也就不会被读失败阻塞。
+  // 读失败会向上抛出，让本次初始化中止，而不是用默认值去覆盖（评审 P2 4430849974）。
+  const existingOptions = force ? null : await readDoc('examOptions')
   const options = force
     ? { _id: 'examOptions', options: DEFAULT_EXAM_OPTIONS, updatedAt: Date.now() }
     : fillDefaults(existingOptions, { _id: 'examOptions', options: DEFAULT_EXAM_OPTIONS })
 
-  const existingRuntime = await readDoc('runtime')
+  const existingRuntime = force ? null : await readDoc('runtime')
   const runtime = force
     ? Object.assign({}, DEFAULT_RUNTIME, { updatedAt: Date.now() })
     : fillDefaults(existingRuntime, DEFAULT_RUNTIME)

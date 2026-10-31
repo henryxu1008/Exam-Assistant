@@ -21,7 +21,16 @@ const ROOT = path.resolve(__dirname, '..')
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],
-  ['shared/auth.js', 'cloudfunctions/bankSync/auth.js', 'cloudfunctions/initConfig/auth.js']
+  ['shared/auth.js', 'cloudfunctions/bankSync/auth.js', 'cloudfunctions/initConfig/auth.js'],
+  // 「读失败不得当成不存在」的判定必须所有云函数一致：
+  // initConfig 就是照抄了 studySync 的旧实现才带着同一个缺陷。
+  [
+    'shared/db-error.js',
+    'cloudfunctions/studySync/db-error.js',
+    'cloudfunctions/initConfig/db-error.js',
+    'cloudfunctions/bankSync/db-error.js',
+    'cloudfunctions/userProfile/db-error.js'
+  ]
 ]
 
 function sha256(file) {

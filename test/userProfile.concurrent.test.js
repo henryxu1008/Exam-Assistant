@@ -18,6 +18,9 @@ function deferred() {
 }
 
 function harness({ expired = true, pauseRevoke = false, failRevoke = false, missingTokenAt = false } = {}) {
+  /** 置为 Error 可模拟 appConfig 读取抛出非「不存在」的失败 */
+  const fail = { configGet: null }
+  const config = new Map([['runtime', { _id: 'runtime', forceUpdate: true, minVersion: '9.9.9' }]])
   const user = {
     _id: 'user-a', openid: 'A', token: INITIAL_TOKEN,
     tokenAt: NOW - (expired ? 31 : 1) * DAY,
@@ -57,7 +60,19 @@ function harness({ expired = true, pauseRevoke = false, failRevoke = false, miss
         update: ({ data }) => update(filter, data)
       }
     },
-    doc(id) { return { update: ({ data }) => update({ _id: id }, data) } },
+    doc(id) {
+      return {
+        update: ({ data }) => update({ _id: id }, data),
+        async get() {
+          // 仅 appConfig 下的文档可被读取；users 走 where 查询
+          if (config.has(id)) {
+            if (fail.configGet) throw fail.configGet
+            return { data: clone(config.get(id)) }
+          }
+          throw new Error('document does not exist')
+        }
+      }
+    },
     async add() { throw new Error('existing-user fixture should not add another user') }
   }
   const cloud = {
@@ -68,22 +83,29 @@ function harness({ expired = true, pauseRevoke = false, failRevoke = false, miss
     static now() { return NOW }
   }
 
-  function load(name) {
+  function loadModule(absPath) {
     const exports = {}
-    const source = fs.readFileSync(path.join(__dirname, `../cloudfunctions/${name}/index.js`), 'utf8')
-    vm.runInNewContext(source, {
-      exports, Date: FixedDate, process: { env: {} },
-      require(module) {
-        if (module === 'wx-server-sdk') return cloud
-        if (module === 'crypto') return crypto
-        if (module === 'https') return { get() { throw new Error('unexpected network request') } }
-        throw new Error(`unexpected module ${module}`)
+    const module = { exports: exports }
+    vm.runInNewContext(fs.readFileSync(absPath, 'utf8'), {
+      exports, module, Date: FixedDate, process: { env: {} }, Buffer,
+      require(name) {
+        if (name === 'wx-server-sdk') return cloud
+        if (name === 'crypto') return crypto
+        if (name === 'https') return { get() { throw new Error('unexpected network request') } }
+        // 云函数包内的相对模块（如 shared/ 的部署副本），按其自身路径递归加载
+        if (name.indexOf('./') === 0) return loadModule(path.join(path.dirname(absPath), name))
+        throw new Error(`unexpected module ${name}`)
       }
     })
-    return exports.main
+    return module.exports
+  }
+
+  function load(name) {
+    return loadModule(path.join(__dirname, `../cloudfunctions/${name}/index.js`)).main
   }
   return {
     profile: load('userProfile'), login: load('userLogin'),
+    fail: fail,
     row: () => clone(rows.get('user-a')), other: () => clone(rows.get('user-b')),
     writes: () => writes, revokeStarted: revokeStarted.promise,
     release: () => releaseRevoke.resolve()
@@ -180,4 +202,29 @@ test('缺失或未知令牌直接拒绝，不修改其它会话', async () => {
   assert.equal((await h.profile({ token: 'unknown' })).error, 'INVALID_TOKEN')
   assert.equal(h.writes(), 0)
   assert.equal(h.row().token, INITIAL_TOKEN)
+})
+
+/* ------------------------------------------------------------------ *
+ * 运营配置读取失败必须报错，不能用空配置冒充「没有限制」
+ * （评审 P2 4430849974 同类；涉及让 P2 4429855406 的端上修复不失效）
+ * ------------------------------------------------------------------ */
+
+test('运营配置读取失败时返回 ok:false，不得返回空配置', async () => {
+  const h = harness({ expired: false })
+  // 模拟读取超时 / 数据库错误（非「不存在」）
+  h.fail.configGet = Object.assign(new Error('read timeout'), { errCode: -502001 })
+
+  const r = await h.profile({ action: 'config' })
+  assert.equal(r.ok, false, '读取失败不得报告成功')
+  assert.equal(r.error, 'READ_CONFIG_FAILED')
+  // 绝不能是 {ok:true, config:{}}：端上 user.getRuntimeConfig() 会把它
+  // 理解成「拉取成功且运营没有任何限制」，从而清掉版本阻断态
+  assert.equal(r.config, undefined, '不得给出空配置冒充「没有限制」')
+})
+
+test('运营配置确实还不存在时仍返回空配置（幂等）', async () => {
+  const h = harness({ expired: false })
+  const r = await h.profile({ action: 'config' })
+  assert.equal(r.ok, true, '确认不存在应视为尚无限制')
+  assert.deepEqual(r.config, { _id: 'runtime', forceUpdate: true, minVersion: '9.9.9' })
 })

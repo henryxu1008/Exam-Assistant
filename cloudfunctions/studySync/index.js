@@ -38,6 +38,8 @@ const ATTEMPTS = db.collection('attempts')
 const { mergeStats } = require('./stats-merge.js')
 /** 令牌校验（与 userProfile 保持一致）；部署副本随本函数一起上传 */
 const { findByToken } = require('./auth.js')
+/** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
+const { isNotFound, readOptionalDoc } = require('./db-error.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -51,19 +53,6 @@ const ATTEMPT_FIELDS = [
 /**
  * 只放行白名单字段；云函数之间不共享本地模块，令牌查找逻辑需与 userProfile 保持一致。
  */
-/**
- * 判断数据库错误是否为「文档不存在」。
- *
- * 删除场景下它等价于已删除（幂等成功）；其余错误必须向上冒泡返回 ok:false，
- * 否则端上会清掉持久化的待删除标记并放行上传，而服务端数据其实还在，
- * 下次拉取会把「已清空」的数据又并回来（评审 P2 4425946091）。
- */
-function isNotFound(e) {
-  const code = e && (e.errorCode != null ? e.errorCode : e.errCode)
-  if (code === -502005 || code === -502004) return true
-  return /not exist|不存在/i.test(String((e && (e.message || e.errMsg)) || ''))
-}
-
 function sanitizeStats(payload) {
   const src = payload && typeof payload === 'object' ? payload : {}
   const out = {}
@@ -98,13 +87,7 @@ function sanitizeAttempt(a, openid) {
  * 去覆盖服务端文档并报告成功——一次读超时就抹掉了账号备份（评审 P1 4429855402）。
  */
 async function readExisting(getDoc) {
-  try {
-    const got = await getDoc()
-    return (got && got.data) || null
-  } catch (e) {
-    if (isNotFound(e)) return null
-    throw e
-  }
+  return readOptionalDoc(getDoc)
 }
 
 exports.main = async (event) => {
@@ -149,6 +132,11 @@ exports.main = async (event) => {
       hasMore = list.length >= limit
       nextSkip = hasMore ? skip + list.length : null
     } catch (e) {
+      // 只有「确认还没有作答流水」才等价为空页；查询失败必须报错。
+      // 返回 {ok:true, attempts: [], hasMore: false} 会让端上把一次不完整的恢复
+      // 当成已完整恢复并停在 bootPulled=true：换机后 session 里带着「已提交」标记
+      // 却没有对应作答，页面会把这些题渲染成已提交且禁止重答（评审 P2 4430849971）。
+      if (!isNotFound(e)) return { ok: false, error: 'READ_ATTEMPTS_FAILED' }
       attempts = []
     }
     return { ok: true, stats, attempts, hasMore, nextSkip }
