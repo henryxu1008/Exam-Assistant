@@ -24,7 +24,7 @@
  * 统一机制（一处实现，三个字段共用）：
  *   - 每个可修改实体携带 updatedAt，任何修改都必须推进它；
  *   - 删除用「纪元 epoch」墓碑表达，纪元高的一方其空值胜出；
- *   - 冲突一律 last-write-wins，且决胜规则对参数顺序对称，
+ *   - 可编辑字段的冲突按版本决胜，作答贡献独立合并，
  *     保证 mergeStats(a, b) 与 mergeStats(b, a) 结果一致——
  *     端上 incoming 是云端、云端 incoming 是上传方，顺序必须无关。
  *
@@ -136,7 +136,7 @@ function sortByTime(list) {
  * 合并两份学习档案。
  *
  * 语义（除 settings 外均为对称的「并集 / 取较新或较大」）：
- *  - records        ：按 qid 逐个 last-write-wins，比较 updatedAt（旧数据回退 lastAt）；
+ *  - records        ：作答贡献按写入者合并；可编辑字段按 updatedAt 决胜；
  *  - daily          ：按日期 key 取并集，同日各指标取较大值，
  *                     chapters / subjects 取键并集、同键指标取较大；
  *  - practiceSession：先合并同 id 会话的进度，再取较新的一方；
@@ -155,12 +155,12 @@ function mergeStats(base, incoming) {
   const R = incoming || {}
   const out = Object.assign({}, def, L)
 
-  // records：按 qid 逐个 last-write-wins。
+  // records：仅可编辑元数据按版本决胜，累计贡献独立合并。
   // 不能用 lastAt 单独判定：收藏 / 移出错题本不改变 lastAt，
   // 仅按 lastAt 比较会让这类修改在合并后被丢弃（评审 P2 4423125081）。
-  const records = Object.assign({}, R.records || {})
-  Object.keys(L.records || {}).forEach((id) => {
-    records[id] = pickNewer(L.records[id], records[id], ['lastAt'])
+  const records = {}
+  Object.keys(Object.assign({}, L.records, R.records)).forEach((id) => {
+    records[id] = mergeRecord((L.records || {})[id], (R.records || {})[id])
   })
   out.records = records
 
@@ -173,10 +173,6 @@ function mergeStats(base, incoming) {
     daily[key] = mergeDaily(ld, rd)
   })
   out.daily = daily
-
-  // practiceSession：恢复的会话在另一台设备继续作答时 createdAt 不变，
-  // 只按 createdAt 二选一会丢掉远端进度（评审 P2 4422339103）。
-  out.practiceSession = mergeSession(L.practiceSession, R.practiceSession)
 
   // aiMessages：先用纪元判定「清空」，再并集。
   // 只并集的话，用户清空对话后上传 []，服务端会把旧消息并回去，
@@ -213,6 +209,8 @@ function mergeStats(base, incoming) {
     attempts.push(a)
   })
   out.attempts = attempts
+  // 先合并事实，再重算会话派生值；不能把单台设备缓存的成绩随元数据一起选中。
+  out.practiceSession = mergeSession(L.practiceSession, R.practiceSession, attempts)
 
   // settings：后到达的一方为准
   out.settings = Object.assign({}, def.settings, L.settings || {}, R.settings || {})
@@ -228,20 +226,113 @@ function mergeStats(base, incoming) {
  *  - 同一会话（在另一台设备恢复后继续作答）：进度取并集，
  *    否则本地缓存会把远端已作答的题目渲染成未作答。
  */
-function mergeSession(a, b) {
-  if (!a) return b || null
-  if (!b) return a || null
-  if (a.id && b.id && a.id !== b.id) return pickNewer(a, b, ['createdAt'])
-  const newer = pickNewer(a, b, ['updatedAt', 'createdAt'])
-  const baseMap = newer === a ? (b.submitted || {}) : (a.submitted || {})
-  return Object.assign({}, newer, {
-    // submitted 按 qid 取并集：任一侧已提交即视为已作答
-    submitted: Object.assign({}, baseMap, newer.submitted || {}),
-    // 进度只前进不回退
-    currentIndex: Math.max(Number(a.currentIndex || 0), Number(b.currentIndex || 0)),
-    completedAt: Math.max(Number(a.completedAt || 0), Number(b.completedAt || 0)),
-    status: a.status === 'completed' || b.status === 'completed' ? 'completed' : newer.status
+function mergeSession(a, b, attempts) {
+  if (!a && !b) return null
+  const newer = pickNewer(a, b, ['createdAt'])
+  const same = a && b && a.id === b.id
+  const left = same ? a : newer
+  const right = same ? b : newer
+  const questionIds = Array.from(new Set((newer.questionIds || []).concat(
+    same ? (newer === a ? b.questionIds : a.questionIds) || [] : []
+  )))
+  const facts = attemptIndex(attempts)
+  const submitted = {}
+  ;[left, right].forEach((session) => {
+    Object.keys(session.submitted || {}).forEach((qid) => {
+      if (session.questionIds && session.questionIds.length && session.questionIds.indexOf(qid) === -1) return
+      const marker = Object.assign({}, session.submitted[qid])
+      const attempt = facts[marker.attemptId]
+      if (attempt && attempt.sessionId === session.id && attempt.questionId === qid) {
+        marker.score = attempt.score
+        marker.createdAt = attempt.createdAt
+      }
+      submitted[qid] = pickNewer(submitted[qid], marker, ['createdAt'])
+    })
   })
+  const merged = Object.assign({}, newer, {
+    submitted,
+    // 进度只前进不回退
+    currentIndex: Math.max(Number(left.currentIndex || 0), Number(right.currentIndex || 0)),
+    completedAt: Math.max(Number(left.completedAt || 0), Number(right.completedAt || 0)),
+    status: left.status === 'completed' || right.status === 'completed' ? 'completed' : newer.status
+  })
+  if (Array.isArray(newer.questionIds)) merged.questionIds = questionIds
+  return Object.assign(merged, recomputeSessionStats(merged, attempts))
+}
+
+function attemptIndex(attempts) {
+  const index = Object.create(null)
+  ;(attempts || []).forEach((a) => { if (a && a.id) index[a.id] = a })
+  return index
+}
+
+/** 成绩只由已选定的作答派生；分支数组顺序不能重新决定答案。 */
+function recomputeSessionStats(session, attempts) {
+  const facts = attemptIndex(attempts)
+  const submitted = (session && session.submitted) || {}
+  const ids = Object.keys(submitted).sort()
+  const errorIds = []
+  let correct = 0
+  let complete = true
+  ids.forEach((qid) => {
+    const marker = submitted[qid] || {}
+    const fact = facts[marker.attemptId]
+    const score = fact && fact.sessionId === session.id && fact.questionId === qid ? fact.score : marker.score
+    if (score === 1) correct += 1
+    else if (score === 0) errorIds.push(qid)
+    else complete = false
+  })
+  return { sessionTotal: ids.length, sessionCorrect: correct, errorIds, statsComplete: complete }
+}
+
+/**
+ * 老快照无分区时保留共同历史基线；以后每台设备只推进自己的贡献。
+ * 旧版的独立分支若没有贡献归属，无法仅凭累计值恢复精确增量，不能直接相加。
+ */
+function recordCountsBy(record) {
+  const r = record || {}
+  return r.answerBy || { __legacy__: { attempts: Number(r.attempts) || 0, right: Number(r.right) || 0, wrong: Number(r.wrong) || 0 } }
+}
+
+function sumRecordCounts(record) {
+  record.attempts = 0
+  record.right = 0
+  record.wrong = 0
+  Object.keys(record.answerBy).forEach((writer) => {
+    const c = record.answerBy[writer] || {}
+    record.attempts += Math.max(Number(c.attempts) || 0, (Number(c.right) || 0) + (Number(c.wrong) || 0))
+    record.right += Number(c.right) || 0
+    record.wrong += Number(c.wrong) || 0
+  })
+  return record
+}
+
+function mergeRecord(a, b) {
+  const metadata = (record) => {
+    if (!record) return record
+    const out = Object.assign({}, record)
+    ;['answerBy', 'attempts', 'right', 'wrong', 'lastWrongAt'].forEach((field) => { delete out[field] })
+    return out
+  }
+  // 同版本决胜也不能包含合并后的计数，否则重放/合并分组会反过来改变收藏等字段。
+  const out = Object.assign({}, pickNewer(metadata(a), metadata(b), ['lastAt']))
+  if ((a && a.lastWrongAt !== undefined) || (b && b.lastWrongAt !== undefined)) {
+    out.lastWrongAt = Math.max(Number(a && a.lastWrongAt) || 0, Number(b && b.lastWrongAt) || 0)
+  }
+  if (![a, b].some((r) => r && (r.answerBy || ['attempts', 'right', 'wrong'].some((field) => r[field] !== undefined)))) return out
+  const left = recordCountsBy(a)
+  const right = recordCountsBy(b)
+  out.answerBy = {}
+  Object.keys(Object.assign({}, left, right)).forEach((writer) => {
+    const l = left[writer] || {}
+    const r = right[writer] || {}
+    out.answerBy[writer] = {
+      attempts: Math.max(Number(l.attempts) || 0, Number(r.attempts) || 0),
+      right: Math.max(Number(l.right) || 0, Number(r.right) || 0),
+      wrong: Math.max(Number(l.wrong) || 0, Number(r.wrong) || 0)
+    }
+  })
+  return sumRecordCounts(out)
 }
 
 /**
@@ -342,6 +433,9 @@ module.exports = {
   sumCounter,
   mergeStats,
   mergeSession,
+  recomputeSessionStats,
+  recordCountsBy,
+  sumRecordCounts,
   sortByTime,
   versionOf,
   bumpVersion,

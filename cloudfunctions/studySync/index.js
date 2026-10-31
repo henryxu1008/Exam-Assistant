@@ -136,6 +136,9 @@ exports.main = async (event) => {
 
   if (action === 'update') {
     const incoming = sanitizeStats(event.stats)
+    // 新上传的流水仅用于本次合并派生成绩；完整流水仍单独存 attempts 集合。
+    incoming.attempts = (Array.isArray(event.attempts) ? event.attempts : [])
+      .map((a) => sanitizeAttempt(a, openid)).filter(Boolean)
 
     // 事务内「读已有快照 → 合并 → 写入」：并发上传互相累加，而不是后到者覆盖前者。
     // old 版这里是无条件 set()，两台设备各自练习后同步会丢一端的进度。
@@ -143,6 +146,7 @@ exports.main = async (event) => {
       const ref = tx.collection('studyStats').doc(openid)
       const existing = await readExisting(() => ref.get())
       const merged = mergeStats(existing, incoming)
+      delete merged.attempts
       merged._id = openid
       merged.openid = openid
       merged.updatedAt = Date.now()

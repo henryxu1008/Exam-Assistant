@@ -23,7 +23,7 @@ function makeState(over) {
   )
 }
 
-test('records：本地更新的取本地，云端更新的取云端', () => {
+test('records：累计作答不回退，较新元数据仍可胜出', () => {
   const local = makeState({
     records: {
       q1: { id: 'q1', lastAt: 1000, right: 1 },
@@ -39,7 +39,8 @@ test('records：本地更新的取本地，云端更新的取云端', () => {
   })
   const merged = store.mergeStats(local, remote)
   assert.strictEqual(merged.records.q1.right, 1, 'q1 应保留本地较新值')
-  assert.strictEqual(merged.records.q2.right, 0, 'q2 应取云端较新值')
+  assert.strictEqual(merged.records.q2.lastAt, 900, 'q2 应取云端较新元数据')
+  assert.strictEqual(merged.records.q2.right, 1, '云端较新元数据不能抹掉累计正确次数')
   assert.ok(merged.records.q3, 'q3 应来自云端')
   assert.strictEqual(Object.keys(merged.records).length, 3)
 })

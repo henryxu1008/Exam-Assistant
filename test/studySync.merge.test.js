@@ -259,3 +259,26 @@ test('stats 白名单之外的字段不会落库', async () => {
   assert.equal(h.stats().evil, undefined)
   assert.equal(h.stats().openid, OPENID)
 })
+
+test('云端分两次增量上传后会话成绩立即一致，原始流水仍独立存储', async () => {
+  const h = harness()
+  const session = (qid, id) => ({
+    id: 'session', status: 'in_progress', questionIds: ['q1', 'q2'], createdAt: 1,
+    submitted: { [qid]: { attemptId: id } }, sessionTotal: 1, sessionCorrect: 1, errorIds: []
+  })
+  await h.main({ token: TOKEN, action: 'update',
+    stats: statsPayload({ practiceSession: session('q1', 'a1') }),
+    attempts: [{ id: 'a1', sessionId: 'session', questionId: 'q1', score: 0, createdAt: 1 }]
+  })
+  await h.main({ token: TOKEN, action: 'update',
+    stats: statsPayload({ practiceSession: session('q2', 'a2') }),
+    attempts: [{ id: 'a2', sessionId: 'session', questionId: 'q2', score: 1, createdAt: 2 }]
+  })
+  const restored = h.stats()
+  assert.equal(restored.practiceSession.sessionTotal, 2)
+  assert.equal(restored.practiceSession.sessionCorrect, 1)
+  assert.deepEqual(restored.practiceSession.errorIds, ['q1'])
+  assert.equal(restored.practiceSession.statsComplete, true)
+  assert.equal(restored.attempts, undefined, '完整流水不能塞回 studyStats 单文档')
+  assert.equal(h.attempts().length, 2)
+})

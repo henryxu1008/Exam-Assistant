@@ -11,7 +11,8 @@ const config = require('./config.js')
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
  * 避免端上与云端的合并语义漂移。
  */
-const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion, counterBy, sumCounter } = require('../shared/stats-merge.js')
+const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion, counterBy, sumCounter,
+  recordCountsBy, sumRecordCounts, recomputeSessionStats } = require('../shared/stats-merge.js')
 
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
@@ -67,7 +68,7 @@ function getWriterId() {
       wx.setStorageSync(WRITER_KEY, writerId)
     }
   } catch (e) {
-    writerId = 'w_local'
+    writerId = newId('w')
   }
   return writerId
 }
@@ -120,6 +121,26 @@ let userScope = 'anon'
  * 避免把账号 A 的档案并入账号 B 的内存态并随之上传（评审 P1）。
  */
 let cloudSyncGeneration = 0
+
+// 页面持有的练习上下文必须与当前会话一致；替换后即使会话 ID 回到原值也不能复用。
+let practiceGeneration = 0
+const practiceRestoredListeners = new Set()
+
+function getPracticeContext() {
+  const session = load().practiceSession
+  return { scope: userScope, generation: practiceGeneration, syncGeneration: cloudSyncGeneration, sessionId: session && session.id }
+}
+
+function isPracticeContextCurrent(context) {
+  const session = load().practiceSession
+  return !!context && context.scope === userScope && context.generation === practiceGeneration &&
+    context.syncGeneration === cloudSyncGeneration && !!session && context.sessionId === session.id
+}
+
+function onPracticeRestored(listener) {
+  practiceRestoredListeners.add(listener)
+  return () => practiceRestoredListeners.delete(listener)
+}
 
 // 当前进程内的对话代次：账号切换或删除历史即递增，阻止缓存页面和旧异步回复复用。
 // 不随普通消息追加变化；A→B→A 也必须产生新代次，不能只比较 openid。
@@ -412,9 +433,12 @@ function pullFromCloud(onDone) {
       if (typeof onDone === 'function') onDone(false)
       return
     }
+    let practiceChanged = false
     if (stats || allAttempts.length) {
       const before = state
       state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
+      practiceChanged = JSON.stringify(before.practiceSession) !== JSON.stringify(state.practiceSession)
+      if (practiceChanged) practiceGeneration += 1
       // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
       // 关闭后离线重开即丢失，本地独有数据也不会按承诺上传（评审 P2）
       dirty = true
@@ -431,6 +455,9 @@ function pullFromCloud(onDone) {
       dirty = true
     }
     if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
+    if (practiceChanged) practiceRestoredListeners.forEach((listener) => {
+      try { listener() } catch (e) { console.error('[store] 练习恢复通知失败', e) }
+    })
     if (typeof onDone === 'function') onDone(true)
   }
   const fetchPage = () => {
@@ -760,18 +787,23 @@ function recordAnswer(question, isCorrect, costMs) {
     wrongLogs: []
   }
 
-  r.attempts += 1
+  r.answerBy = Object.assign({}, recordCountsBy(r))
+  const writer = getWriterId()
+  const own = Object.assign({ attempts: 0, right: 0, wrong: 0 }, r.answerBy[writer])
+  own.attempts += 1
+  if (isCorrect) own.right += 1
+  else own.wrong += 1
+  r.answerBy[writer] = own
+  sumRecordCounts(r)
   r.lastAt = now
   if (isCorrect) {
-    r.right += 1
-    r.streak += 1
+    r.streak = (Number(r.streak) || 0) + 1
     r.bestStreak = Math.max(r.bestStreak || 0, r.streak)
     r.level = Math.min(5, (r.level || 0) + 1)
     // 连续 MASTER_DAYS 天答对的错题，自动移出错题本
     r.rightDays = nextRightDays(r.rightDays || [], key)
     if (r.wrong > 0 && r.rightDays.length >= MASTER_DAYS) r.mastered = true
   } else {
-    r.wrong += 1
     r.streak = 0
     r.level = Math.max(0, (r.level || 0) - 2)
     r.lastWrongAt = now
@@ -1048,27 +1080,30 @@ function createPracticeSession(opt) {
     params: (opt && opt.params) || null, // 用于「重进页面恢复未完成会话」时比对参数
     status: 'in_progress',
     createdAt: Date.now(),
+    updatedAt: Date.now(),
     completedAt: 0,
     currentIndex: 0,
-    submitted: {} // qid -> { attemptId, clientOpId }
+    submitted: {} // qid -> { attemptId, clientOpId, score, createdAt }
   }
   s.practiceSession = session
+  practiceGeneration += 1
   persist()
   return session
 }
 
 /** 更新会话当前进度（前后翻页/自动下一题/暂停恢复） */
-function updatePracticeSession(patch) {
+function updatePracticeSession(patch, context) {
   const s = load()
+  if (context && !isPracticeContextCurrent(context)) return null
   if (!s.practiceSession) return null
-  s.practiceSession = Object.assign({}, s.practiceSession, patch || {})
+  s.practiceSession = Object.assign({}, s.practiceSession, patch || {}, { updatedAt: bumpVersion(s.practiceSession) })
   persist()
   return s.practiceSession
 }
 
 /** 将会话标记为 completed */
-function completePracticeSession() {
-  return updatePracticeSession({ status: 'completed', completedAt: Date.now() })
+function completePracticeSession(context) {
+  return updatePracticeSession({ status: 'completed', completedAt: Date.now() }, context)
 }
 
 /** 主动重练：作废当前会话并新建（生成新 attemptId 序列） */
@@ -1082,37 +1117,28 @@ function getAttempts() {
 }
 
 /**
- * 根据不可变作答流水，按「每题最近一次作答」派生会话聚合统计。
- * 用于 submitAttempt 后同步 sessionCorrect/sessionTotal/errorIds，
- * 使得会话被持久化、重进页面恢复时进度与实时一致（评审 P2）。
- */
-function recomputeSessionStats(session, attempts) {
-  const byQ = {}
-  ;(attempts || []).forEach((a) => {
-    if (session && a.sessionId !== session.id) return
-    byQ[a.questionId] = a // 顺序追加 -> 后写覆盖，保留最后一次作答
-  })
-  const ids = Object.keys(byQ)
-  const errorIds = ids.filter((id) => byQ[id].score === 0)
-  const correct = ids.filter((id) => byQ[id].score === 1).length
-  return { sessionTotal: ids.length, sessionCorrect: correct, errorIds: errorIds }
-}
-
-/**
  * 幂等提交一次作答。
  * @param {Object} question 题目对象
  * @param {Array} selected 用户作答
  * @param {Boolean} isCorrect 判分结果
  * @param {Number} costMs 用时
  * @param {String} clientOpId 客户端操作 ID（同一操作的重复提交用同一 ID 实现幂等）
- * @returns {{record: Object, attempt: Object|null, dup: Boolean}}
+ * @param {Object} [context] 发起页面绑定的练习上下文，失效时拒绝写入
+ * @returns {{ok: Boolean, record: Object|null, attempt: Object|null, dup: Boolean, error?: String}}
  */
-function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
+function submitAttempt(question, selected, isCorrect, costMs, clientOpId, context) {
   if (!question || !question.id) {
     throw new TypeError('submitAttempt: question 非法')
   }
   const s = load()
   const session = s.practiceSession
+  if (context && !isPracticeContextCurrent(context)) {
+    return { ok: false, error: 'STALE_PRACTICE_CONTEXT', record: null, attempt: null, dup: false }
+  }
+  if (session && (context || (session.questionIds || []).length) &&
+    (session.questionIds || []).indexOf(question.id) === -1) {
+    return { ok: false, error: 'QUESTION_OUTSIDE_SESSION', record: null, attempt: null, dup: false }
+  }
   const opId = clientOpId || newId('op')
 
   // submitted 只保留本题最后一次答案，不能作为历史操作的去重索引。
@@ -1122,7 +1148,7 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
   )
   const latest = session && session.submitted && session.submitted[question.id]
   if (existing || (latest && latest.clientOpId === opId)) {
-    return { record: getRecord(question.id), attempt: existing || null, dup: true }
+    return { ok: true, record: getRecord(question.id), attempt: existing || null, dup: true }
   }
 
   const attemptId = newId('at')
@@ -1149,15 +1175,14 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId) {
   if (!s.practiceSession) s.practiceSession = null
   if (s.practiceSession) {
     if (!s.practiceSession.submitted) s.practiceSession.submitted = {}
-    s.practiceSession.submitted[question.id] = { attemptId: attemptId, clientOpId: opId }
+    s.practiceSession.submitted[question.id] = { attemptId, clientOpId: opId, score: attempt.score, createdAt: attempt.createdAt }
     // 同步派生聚合统计，保证「重进页面恢复会话」时进度/正确率/错题与实时一致（评审 P2）
     const stats = recomputeSessionStats(s.practiceSession, s.attempts)
-    s.practiceSession.sessionTotal = stats.sessionTotal
-    s.practiceSession.sessionCorrect = stats.sessionCorrect
-    s.practiceSession.errorIds = stats.errorIds
+    Object.assign(s.practiceSession, stats)
+    s.practiceSession.updatedAt = bumpVersion(s.practiceSession)
   }
   persist()
-  return { record: agg.record, attempt: attempt, dup: false }
+  return { ok: true, record: agg.record, attempt: attempt, dup: false }
 }
 
 module.exports = {
@@ -1165,6 +1190,9 @@ module.exports = {
   todayKey,
   shortDate,
   getUserScope,
+  getPracticeContext,
+  isPracticeContextCurrent,
+  onPracticeRestored,
   setUserScope,
   clearScope,
   load,
