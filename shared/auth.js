@@ -61,7 +61,8 @@ async function getAdminOpenids(CONFIG) {
     const list = res && res.data && Array.isArray(res.data.openids) ? res.data.openids : []
     return fromEnv.concat(list.map((s) => String(s).trim()).filter(Boolean))
   } catch (e) {
-    // 未配置管理员名单：仅环境变量生效
+    // swallow: 名单读不到（文档不存在、读超时、权限错误）时只认环境变量名单。
+    // 方向必须是 fail-closed：宁可少认几个管理员，也不能在读不到名单时放宽权限。
     return fromEnv
   }
 }

@@ -73,7 +73,8 @@ async function findByToken(token) {
   if (!doc) return null
   // 过期令牌直接作废，小程序端会静默重新登录换取新令牌
   if (!doc.tokenAt || Date.now() - doc.tokenAt > TOKEN_TTL) {
-    await clearTokenIfCurrent(doc).catch(() => {})
+    // 过期令牌的清理属于尽力而为，失败不影响本次「令牌已过期」的判定结果
+    await clearTokenIfCurrent(doc).catch(() => { /* swallow: 同上，清理失败不影响本次判定 */ })
     return null
   }
   return doc

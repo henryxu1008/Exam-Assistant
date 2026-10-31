@@ -21,7 +21,14 @@ const ROOT = path.resolve(__dirname, '..')
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],
-  ['shared/auth.js', 'cloudfunctions/bankSync/auth.js', 'cloudfunctions/initConfig/auth.js'],
+  // studySync/auth.js 此前也是逐字节一致的副本，却没被登记，
+  // 于是「源文件改了、这份漏同步」完全不可见——把登记表与实际一致的情况对齐
+  [
+    'shared/auth.js',
+    'cloudfunctions/bankSync/auth.js',
+    'cloudfunctions/initConfig/auth.js',
+    'cloudfunctions/studySync/auth.js'
+  ],
   // 「读失败不得当成不存在」的判定必须所有云函数一致：
   // initConfig 就是照抄了 studySync 的旧实现才带着同一个缺陷。
   [
