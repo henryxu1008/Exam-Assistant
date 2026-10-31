@@ -98,6 +98,28 @@ test('解除强制更新后阻断态清除且入口恢复正常', async () => {
   assert.equal(app.guardEntry(), false, '解除后入口应恢复')
 })
 
+test('确认拉取到无限制的配置时才解除阻断（评审 P2 4429855406）', () => {
+  user = require('../utils/user.js')
+  user.markUnsupportedVersion()
+  require('../app.js')
+
+  app._applyRuntimeConfig(null)
+  assert.equal(user.isVersionBlocked(), true, '配置不可用（null）时保持原状')
+
+  app._applyRuntimeConfig({ version: 1 })
+  assert.equal(user.isVersionBlocked(), false, '确认无限制后才解除')
+})
+
+test('云端配置拉取失败时返回 null，而非冒充「无限制」的空对象', async () => {
+  user = require('../utils/user.js')
+  wx.cloud = {
+    init() {},
+    callFunction: () => Promise.reject(new Error('config down'))
+  }
+  const cfg = await user.getRuntimeConfig()
+  assert.strictEqual(cfg, null, '拉取失败必须返回 null，不能用 {} 冒充「无限制」')
+})
+
 test('离线下阻断态仍持久化（重启后依然拦截）', () => {
   user = require('../utils/user.js')
   user.markUnsupportedVersion()

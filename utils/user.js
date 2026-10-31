@@ -287,15 +287,23 @@ function getExamOptions() {
 }
 
 /**
- * 拉取运营配置（公告 / 功能开关 / 强制更新等）：取自云端 appConfig.runtime，
- * 失败（无云环境 / 配置缺失）时返回空对象，由调用方决定默认行为。
- * @returns {Promise<Object>}
+ * 拉取运营配置（公告 / 功能开关 / 强制更新等）：取自云端 appConfig.runtime。
+ *
+ * 「拿不到配置」与「配置里没有限制」是两件事，必须用不同的值区分：
+ *  - 拉取成功且没有任何限制 → {}（空对象，表示确实没有限制）
+ *  - 无云环境 / 拉取失败     → null（表示「不知道」）
+ *
+ * 若两者都返回 {}，调用方就会把「不知道」当成「没有限制」：
+ * 一个此前被判定为版本过低的用户，只要离线重启一次就会失去阻断态，
+ * 继续正常使用本应被拒绝的版本（评审 P2 4429855406）。
+ *
+ * @returns {Promise<Object|null>} null 表示配置不可用
  */
 function getRuntimeConfig() {
-  if (!hasCloud()) return Promise.resolve({})
+  if (!hasCloud()) return Promise.resolve(null)
   return call(config.functions.profile, { action: 'config' })
     .then((r) => (r && r.config && typeof r.config === 'object' ? r.config : {}))
-    .catch(() => ({}))
+    .catch(() => null)
 }
 
 /** 本地已同意的隐私政策版本号（云端 privacyVersion 变更时据此提示重新查看） */

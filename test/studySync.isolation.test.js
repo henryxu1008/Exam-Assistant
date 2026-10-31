@@ -27,8 +27,8 @@ function makeHarness() {
 
   const stores = { users: users, studyStats: studyStats, attempts: attempts }
 
-  /** 置为 Error 可模拟数据库删除抛出非「不存在」的失败 */
-  const fail = { remove: null }
+  /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
+  const fail = { remove: null, get: null }
 
   function collection(name) {
     const store = stores[name]
@@ -36,6 +36,7 @@ function makeHarness() {
       doc(id) {
         return {
           async get() {
+            if (fail.get) throw fail.get
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
           },
@@ -224,6 +225,31 @@ test('删除失败时返回 ok:false，不得承认成功（评审 P2 4425946091
   assert.strictEqual(res.ok, false, '删除失败不得报告成功')
   assert.strictEqual(res.error, 'DELETE_STATS_FAILED')
   assert.ok(h.studyStats.has('alice'), '失败时服务端数据应仍在')
+})
+
+test('快照读取失败时不得当成「没有云端数据」（评审 P1 4429855402）', async () => {
+  const h = makeHarness()
+  // 服务端先有一份含 q1 的备份
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  const before = clone(h.studyStats.get('alice'))
+
+  // 模拟读取超时 / 数据库错误（非「不存在」）
+  h.fail.get = Object.assign(new Error('read timeout'), { errCode: -502001 })
+
+  let ok = null
+  try {
+    ok = (await h.main({ token: 'tokA', action: 'update', stats: updatePayload(2), attempts: [] })).ok
+  } catch (e) {
+    ok = false // 无事务兜底路径会直接抛出，同样不得静默成功
+  }
+
+  assert.notStrictEqual(ok, true, '读取失败不得报告成功')
+  assert.ok(h.studyStats.get('alice').records.q1, '不得用不完整快照覆盖服务端备份')
+  assert.strictEqual(
+    h.studyStats.get('alice').records.q1.lastAt,
+    before.records.q1.lastAt,
+    '服务端已有记录必须原样保留'
+  )
 })
 
 test('文档不存在时删除仍算成功（幂等，评审 P2 4425946091）', async () => {

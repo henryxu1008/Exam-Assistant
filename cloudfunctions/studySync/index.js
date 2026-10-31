@@ -91,15 +91,19 @@ function sanitizeAttempt(a, openid) {
 }
 
 /**
- * 读取服务端已有档案快照；不存在返回 null。
- * 事务内读取不存在的文档会抛错，这里统一归一化为 null。
+ * 读取服务端已有档案快照；确认不存在时返回 null。
+ *
+ * 只有「确认不存在」才等价于 null。其余错误（超时 / 权限 / 配额……）必须向上冒泡：
+ * 若把读取失败也当成「没有云端数据」，update 就会拿调用方这一份不完整的快照
+ * 去覆盖服务端文档并报告成功——一次读超时就抹掉了账号备份（评审 P1 4429855402）。
  */
 async function readExisting(getDoc) {
   try {
     const got = await getDoc()
     return (got && got.data) || null
   } catch (e) {
-    return null
+    if (isNotFound(e)) return null
+    throw e
   }
 }
 
@@ -119,7 +123,9 @@ exports.main = async (event) => {
       const res = await STATS.doc(openid).get()
       stats = res.data || null
     } catch (e) {
-      // 文档不存在视为尚未同步过
+      // 只有「确认不存在」才算尚未同步过；读失败必须报错，
+      // 否则端上会把「读不到」理解成「云端没有数据」（评审 P1 4429855402）
+      if (!isNotFound(e)) return { ok: false, error: 'READ_STATS_FAILED' }
       stats = null
     }
     // 作答流水可能很多：单查上限 100 条，采用分页拉取（按 createdAt + _id 排序避免重复/遗漏）

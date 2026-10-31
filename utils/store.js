@@ -11,7 +11,7 @@ const config = require('./config.js')
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
  * 避免端上与云端的合并语义漂移。
  */
-const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion } = require('../shared/stats-merge.js')
+const { CURRENT_VERSION, getDefaultState, mergeStats, bumpVersion, counterBy, sumCounter } = require('../shared/stats-merge.js')
 
 const STORAGE_KEY = 'exam_quiz_data_v1'
 
@@ -48,6 +48,51 @@ const MIGRATIONS = {
 }
 
 /** 生成带前缀的唯一 ID（会话 / 作答 / 客户端操作） */
+/**
+ * 本设备的「写入者标识」，用于给 daily 计数器分区（评审 P2 4429855405）。
+ *
+ * 必须存在独立的本地 key、且**不参与同步**：若它跟着档案一起同步，
+ * 两台设备会共用同一个标识，分区就退化成单一写入者，又回到 max 的老问题。
+ */
+const WRITER_KEY = 'exam_quiz_writer_v1'
+
+let writerId = null
+
+function getWriterId() {
+  if (writerId) return writerId
+  try {
+    writerId = wx.getStorageSync(WRITER_KEY)
+    if (typeof writerId !== 'string' || !writerId) {
+      writerId = newId('w')
+      wx.setStorageSync(WRITER_KEY, writerId)
+    }
+  } catch (e) {
+    writerId = 'w_local'
+  }
+  return writerId
+}
+
+/**
+ * 计数器累加：只写分区明细，聚合值由分区求和重算。
+ *
+ * 先 counterBy() 归一化的原因：老数据没有 by，直接用空 by 累加
+ * 会把已有的聚合值当作 0 丢掉。归一化后老值归入 legacy 写入者，再叠加新贡献。
+ *
+ * @param {Object} node 计数器节点（会被就地修改）
+ * @param {Boolean} isCorrect 本题是否答对
+ * @param {Number} costMs 本题耗时
+ */
+function bumpCounter(node, isCorrect, costMs) {
+  node.by = counterBy(node)
+  const wid = getWriterId()
+  const mine = node.by[wid] || { total: 0, correct: 0, timeMs: 0 }
+  mine.total += 1
+  if (isCorrect) mine.correct += 1
+  mine.timeMs += costMs || 0
+  node.by[wid] = mine
+  return sumCounter(node)
+}
+
 function newId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
@@ -743,21 +788,17 @@ function recordAnswer(question, isCorrect, costMs) {
     total: 0,
     correct: 0,
     timeMs: 0,
+    by: {},
     chapters: {},
     subjects: {}
   }
-  d.total += 1
-  if (isCorrect) d.correct += 1
-  d.timeMs += costMs || 0
-  const c = d.chapters[question.chapter] || { total: 0, correct: 0 }
-  c.total += 1
-  if (isCorrect) c.correct += 1
+  bumpCounter(d, isCorrect, costMs)
+  const c = d.chapters[question.chapter] || { total: 0, correct: 0, by: {} }
+  bumpCounter(c, isCorrect, 0)
   d.chapters[question.chapter] = c
   // 科目维度：供「当前科目」口径统计（今日进度 / 趋势）
-  const sj = d.subjects[question.subject] || { total: 0, correct: 0, timeMs: 0 }
-  sj.total += 1
-  if (isCorrect) sj.correct += 1
-  sj.timeMs += costMs || 0
+  const sj = d.subjects[question.subject] || { total: 0, correct: 0, timeMs: 0, by: {} }
+  bumpCounter(sj, isCorrect, costMs)
   d.subjects[question.subject] = sj
   s.daily[key] = d
 

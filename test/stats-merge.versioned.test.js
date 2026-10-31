@@ -80,6 +80,61 @@ test('合并后的对话按时间升序排列（评审 P2 4425408887）', () => 
   assert.deepEqual(times.slice(-60), seq(61, 120).map((m) => m.time))
 })
 
+test('两台设备各自作答同一天时，daily 计数求和而非取 max（评审 P2 4429855405）', () => {
+  const mk = (wid, n) =>
+    baseState({
+      daily: {
+        '2026-10-30': {
+          date: '2026-10-30',
+          total: n,
+          correct: n,
+          timeMs: n * 100,
+          by: { [wid]: { total: n, correct: n, timeMs: n * 100 } },
+          chapters: {},
+          subjects: {}
+        }
+      }
+    })
+
+  // 两端各答了 1 道不同的题：取 max 会得到 1，正确答案是 2
+  const d = mergeStats(mk('wA', 1), mk('wB', 1)).daily['2026-10-30']
+  assert.equal(d.total, 2, '两端各自 1 题，合计应为 2')
+  assert.equal(d.correct, 2)
+  assert.equal(d.timeMs, 200)
+
+  // 端上用 mergeStats(本地, 云端)、云端用 mergeStats(服务端, 上传方)，
+  // 两侧 incoming 含义不同，合并必须对参数顺序无关
+  assert.equal(
+    mergeStats(mk('wB', 1), mk('wA', 1)).daily['2026-10-30'].total,
+    d.total,
+    '合并必须对参数顺序对称'
+  )
+})
+
+test('老数据（无分区明细）合并时不丢历史', () => {
+  const legacy = baseState({
+    daily: {
+      '2026-10-30': {
+        date: '2026-10-30', total: 5, correct: 4, timeMs: 500, chapters: {}, subjects: {}
+      }
+    }
+  })
+  const fresh = baseState({
+    daily: {
+      '2026-10-30': {
+        date: '2026-10-30', total: 1, correct: 1, timeMs: 100,
+        by: { wA: { total: 1, correct: 1, timeMs: 100 } },
+        chapters: {}, subjects: {}
+      }
+    }
+  })
+
+  const d = mergeStats(legacy, fresh).daily['2026-10-30']
+  assert.equal(d.total, 6, 'legacy 的 5 加上新贡献的 1')
+  assert.equal(d.correct, 5)
+  assert.equal(d.timeMs, 600)
+})
+
 test('同一纪元内的对话仍按 time 并集去重（不误删）', () => {
   const a = baseState({ aiMessages: [{ time: 1, role: 'u' }], aiEpoch: 2 })
   const b = baseState({ aiMessages: [{ time: 1, role: 'u' }, { time: 2, role: 'a' }], aiEpoch: 2 })

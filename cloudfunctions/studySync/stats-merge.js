@@ -244,43 +244,102 @@ function mergeSession(a, b) {
   })
 }
 
-/** 合并单日统计：同日各指标取较大值，chapters/subjects 取键并集、同键指标取较大 */
+/**
+ * 计数器节点：{ total, correct, timeMs, by: { [写入者]: {total, correct, timeMs} } }
+ *
+ * 为什么必须按写入者分区（评审 P2 4429855405）：
+ *  daily 是「账户级单调聚合计数器」。两台设备从同一基线各自作答后，
+ *  各自把 total 从 5 加到 6；此时取 max 得 6，而正确答案是 7——
+ *  较小那一支的增量被吞掉了。根因是 max 对「同一写入者的单调序列」正确，
+ *  对「两个分支的独立贡献」错误。
+ *
+ *  分区之后：写入者内取 max（其序列单调，max 正确），
+ *  写入者间求和（各自独立贡献，求和正确）。聚合值由分区明细求和得出，
+ *  不再是独立事实。
+ */
+
+/** 取出分区明细；老数据没有 by 时，把已有聚合值归入一个 legacy 写入者，保证历史不丢 */
+function counterBy(node) {
+  const n = node || {}
+  if (n.by && Object.keys(n.by).length) return n.by
+  return {
+    __legacy__: {
+      total: Number(n.total) || 0,
+      correct: Number(n.correct) || 0,
+      timeMs: Number(n.timeMs) || 0
+    }
+  }
+}
+
+/** 由分区明细重算聚合值（分区是唯一事实来源） */
+function sumCounter(node) {
+  let total = 0
+  let correct = 0
+  let timeMs = 0
+  Object.keys(node.by || {}).forEach((w) => {
+    const c = node.by[w] || {}
+    total += Number(c.total) || 0
+    correct += Number(c.correct) || 0
+    timeMs += Number(c.timeMs) || 0
+  })
+  node.total = total
+  node.correct = correct
+  node.timeMs = timeMs
+  return node
+}
+
+/**
+ * 合并计数器：写入者内取 max（单调），写入者间求和（独立贡献）。
+ * 对参数顺序对称——端上用 mergeStats(本地, 云端)，云端用 mergeStats(服务端, 上传方)，
+ * 两侧 incoming 含义不同，合并必须对顺序无关。
+ */
+function mergeCounter(a, b) {
+  const out = { by: Object.assign({}, counterBy(b)) }
+  const la = counterBy(a)
+  Object.keys(la).forEach((w) => {
+    const av = la[w] || {}
+    const bv = out.by[w]
+    out.by[w] = bv
+      ? {
+        total: Math.max(Number(av.total) || 0, Number(bv.total) || 0),
+        correct: Math.max(Number(av.correct) || 0, Number(bv.correct) || 0),
+        timeMs: Math.max(Number(av.timeMs) || 0, Number(bv.timeMs) || 0)
+      }
+      : {
+        total: Number(av.total) || 0,
+        correct: Number(av.correct) || 0,
+        timeMs: Number(av.timeMs) || 0
+      }
+  })
+  return sumCounter(out)
+}
+
+/** 合并单日统计：chapters/subjects 取键并集，同键按「分区求和」合并 */
 function mergeDaily(ld, rd) {
   const chapters = Object.assign({}, rd.chapters || {})
   Object.keys(ld.chapters || {}).forEach((c) => {
-    const lc = ld.chapters[c]
     const rc = chapters[c]
-    if (!rc) { chapters[c] = lc; return }
-    chapters[c] = {
-      total: Math.max(lc.total || 0, rc.total || 0),
-      correct: Math.max(lc.correct || 0, rc.correct || 0)
-    }
+    chapters[c] = rc ? mergeCounter(ld.chapters[c], rc) : sumCounter({ by: counterBy(ld.chapters[c]) })
   })
   const subjects = Object.assign({}, rd.subjects || {})
   Object.keys(ld.subjects || {}).forEach((s) => {
-    const ls = ld.subjects[s]
     const rs = subjects[s]
-    if (!rs) { subjects[s] = ls; return }
-    subjects[s] = {
-      total: Math.max(ls.total || 0, rs.total || 0),
-      correct: Math.max(ls.correct || 0, rs.correct || 0),
-      timeMs: Math.max(ls.timeMs || 0, rs.timeMs || 0)
-    }
+    subjects[s] = rs ? mergeCounter(ld.subjects[s], rs) : sumCounter({ by: counterBy(ld.subjects[s]) })
   })
-  return {
-    date: ld.date || rd.date,
-    total: Math.max(ld.total || 0, rd.total || 0),
-    correct: Math.max(ld.correct || 0, rd.correct || 0),
-    timeMs: Math.max(ld.timeMs || 0, rd.timeMs || 0),
-    chapters: chapters,
-    subjects: subjects
-  }
+  const out = mergeCounter(ld, rd)
+  out.date = ld.date || rd.date
+  out.chapters = chapters
+  out.subjects = subjects
+  return out
 }
 
 module.exports = {
   CURRENT_VERSION,
   getDefaultState,
   mergeDaily,
+  mergeCounter,
+  counterBy,
+  sumCounter,
   mergeStats,
   mergeSession,
   sortByTime,
