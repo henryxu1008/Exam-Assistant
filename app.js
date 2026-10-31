@@ -44,8 +44,6 @@ App({
       .catch(() => {})
     // 2) 题库云端覆盖（拉取最新题目，无云时保持内置兜底）
     bank.loadCloudBank().catch(() => {})
-    // 3) 首次运行把内置题库种入云端（仅一次）
-    bank.pushStaticBankToCloud().catch(() => {})
   },
 
   /** 应用云端运营配置：强制更新校验 + 隐私政策版本变更重新提示 */

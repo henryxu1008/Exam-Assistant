@@ -25,7 +25,7 @@ const TOKEN_TTL = 30 * 24 * 60 * 60 * 1000
  * @returns {Promise<Object|null>}
  */
 async function findByToken(USERS, token) {
-  if (!token) return null
+  if (typeof token !== 'string' || !token) return null
   const res = await USERS.where({ token: token }).limit(1).get()
   const doc = res.data && res.data.length ? res.data[0] : null
   if (!doc) return null

@@ -876,3 +876,146 @@ test('云端合并结果会写入本地存储（而非只留在内存）', async
   assert.ok(persisted.records['merged-q'], '合并结果必须持久化，否则离线重开即丢失')
   assert.deepStrictEqual(persisted.attempts.map((a) => a.id), ['a-cloud'])
 })
+
+test('大量离线流水分批补传，只有最后一批发布完整档案；失败不推进总游标', async () => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  for (let i = 0; i < 193; i++) store.submitAttempt(q('batch-' + i), ['A'], true, 10, 'op-' + i)
+  let rejectSecond = true
+  let updates = 0
+  const calls = mockCloud(() => ++updates === 2 && rejectSecond ? { ok: false } : { ok: true })
+  store.flush()
+  await tick()
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].data.stats, undefined)
+  assert.equal(calls[0].data.attempts.length, 48)
+  assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), '')
+  rejectSecond = false
+  store.flush()
+  await tick()
+  const retried = calls.slice(2)
+  assert.deepEqual(retried.map(c => c.data.attempts.length), [48, 48, 48, 48, 1])
+  assert.equal(retried[0].data.stats, undefined)
+  assert.equal(retried[1].data.stats, undefined)
+  assert.equal(Object.keys(retried[4].data.stats.records).length, 193)
+  assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), 193)
+})
+
+test('排队上传的档案快照不混入发起后尚未携带的作答', async () => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  const deferred = mockDeferred()
+  store.submitAttempt(q('first'), ['A'], true, 10, 'first')
+  store.flush()
+  await tick()
+  store.submitAttempt(q('later'), ['A'], true, 10, 'later')
+  store.flush()
+  assert.equal(deferred.calls[0].data.stats.records.later, undefined)
+  assert.equal(deferred.calls[0].data.attempts.length, 1)
+  deferred.resolve(0, { ok: true })
+  await tick()
+  assert.ok(deferred.calls[1].data.stats.records.later)
+  assert.equal(deferred.calls[1].data.attempts.length, 2)
+  deferred.resolve(1, { ok: true })
+})
+
+test('旧设备收到 STALE_EPOCH 后采用服务端新代次，不合并或补传旧学习数据', async () => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  store.submitAttempt(q('deleted'), ['A'], true, 10, 'old')
+  const calls = mockCloud(opts => opts.data.action === 'get'
+    ? { ok: true, dataEpoch: 3, syncRevision: 8, stats: { records: { fresh: { id: 'fresh', attempts: 1 } } },
+      attempts: [{ id: 'fresh-a', questionId: 'fresh' }], hasMore: false }
+    : opts.data.dataEpoch === 0 ? { ok: false, error: 'STALE_EPOCH', dataEpoch: 3 } : { ok: true, dataEpoch: 3 })
+  store.flush()
+  await tick()
+  assert.equal(store.getRecord('deleted'), null)
+  assert.ok(store.getRecord('fresh'))
+  assert.equal(store.load().dataEpoch, 3)
+  const last = calls.filter(c => c.data.action === 'update').pop().data
+  assert.equal(last.dataEpoch, 3)
+  assert.equal(last.stats.records.deleted, undefined)
+  assert.deepEqual(last.attempts.map(a => a.id), ['fresh-a'])
+})
+
+test('清空操作 ID 持久化，重启重试使用同一 ID 并在确认后携带新代次上传', async () => {
+  wx.__cloudReady = false
+  let store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load().dataEpoch = 2
+  const first = mockCloud(() => ({ ok: false, error: 'DELETE_ATTEMPTS_FAILED' }))
+  store.clearAll()
+  await tick()
+  const original = first.find(c => c.data.action === 'delete').data
+  const data = wx.getStorageSync('exam_quiz_data_v1__o1')
+  const operation = wx.getStorageSync('exam_quiz_pending_delete_v1__o1')
+  store.__clearFlushTimer()
+  wx.__cloudReady = false
+  store = freshStore()
+  login('o1', 'tok')
+  wx.setStorageSync('exam_quiz_data_v1__o1', data)
+  wx.setStorageSync('exam_quiz_pending_delete_v1__o1', operation)
+  store.setUserScope('o1')
+  store.load()
+  store.submitAttempt(q('after-reset'), ['A'], true, 10, 'new')
+  const resumed = mockCloud(() => ({ ok: true, dataEpoch: 3 }))
+  store.flush()
+  await tick()
+  const reset = resumed.find(c => c.data.action === 'delete').data
+  assert.equal(reset.deleteId, original.deleteId)
+  assert.equal(reset.dataEpoch, 2)
+  const upload = resumed.find(c => c.data.action === 'update').data
+  assert.equal(upload.dataEpoch, 3)
+  assert.equal(upload.attempts[0].questionId, 'after-reset')
+  assert.equal(wx.getStorageSync('exam_quiz_pending_delete_v1__o1'), '')
+})
+
+test('恢复分页修订号变化时整批丢弃，不能发布部分恢复', async () => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  const calls = mockCloud((opts, index) => index === 0
+    ? { ok: true, dataEpoch: 1, syncRevision: 10, stats: { records: { partial: { id: 'partial' } } },
+      attempts: [{ id: 'page1' }], hasMore: true, nextSkip: 1 }
+    : { ok: true, dataEpoch: 1, syncRevision: 11, stats: {}, attempts: [], hasMore: false })
+  let done
+  store.pullFromCloud(ok => { done = ok })
+  await tick()
+  assert.equal(done, false)
+  assert.equal(store.getRecord('partial'), null)
+  assert.equal(calls[1].data.syncRevision, 10)
+  assert.equal(calls.filter(c => c.data.action === 'update').length, 0)
+})
+
+test('旧布尔清空标记升级为持久操作，下一次清空生成新 ID', async () => {
+  wx.__cloudReady = false
+  const store = freshStore()
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  wx.setStorageSync('exam_quiz_pending_delete_v1__o1', true)
+  const calls = mockCloud(opts => ({ ok: true, dataEpoch: (opts.data.dataEpoch || 0) + (opts.data.action === 'delete' ? 1 : 0) }))
+  store.flush()
+  await tick()
+  const first = calls.find(c => c.data.action === 'delete').data
+  assert.ok(first.deleteId)
+  assert.equal(first.dataEpoch, 0)
+  store.clearAll()
+  await tick()
+  const second = calls.filter(c => c.data.action === 'delete')[1].data
+  assert.notEqual(first.deleteId, second.deleteId)
+  assert.equal(second.dataEpoch, 1)
+  assert.equal(store.load().dataEpoch, 2)
+})

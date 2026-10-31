@@ -8,8 +8,8 @@
  *
  * action=set：写入/覆盖云端题库。题库内容会下发给所有用户，属于高权限写操作，
  *   必须满足以下全部条件，否则拒绝（评审 P1 4422245843 同类的服务端鉴权）：
- *   1) 调用方必须持有有效登录令牌（token 能查到用户且在有效期内）——拒绝匿名直调；
- *   2) 云端尚无题库时：任何已登录调用方都可完成一次性初始化；
+ *   1) 调用方须持有有效登录令牌或管理员密钥——拒绝匿名直调；
+ *   2) 首次初始化和后续覆盖都必须为管理员；
  *   3) 云端已有题库时：仅管理员可覆盖，且必须显式 force=true。
  *   4) 「不存在才写」的判定与写入放在同一个事务里，避免并发重复/互相覆盖。
  *
@@ -91,6 +91,7 @@ exports.main = async (event) => {
       return { ok: false, error: event.token ? 'INVALID_TOKEN' : 'NO_TOKEN' }
     }
     const isAdmin = admin.ok || (await getAdminOpenids(CONFIG)).indexOf(user.openid) !== -1
+    if (!isAdmin) return { ok: false, error: 'NOT_ADMIN' }
     const actorId = admin.ok ? ADMIN_ACTOR_ID : user.openid
 
     const data = Object.assign({ _id: 'bank', updatedAt: Date.now(), updatedBy: actorId }, bank)
@@ -99,7 +100,6 @@ exports.main = async (event) => {
     // 覆盖运营已维护的题库：必须显式 force，且调用方具备管理员身份
     if (exists) {
       if (event.force !== true) return { ok: false, error: 'BANK_EXISTS' }
-      if (!isAdmin) return { ok: false, error: 'NOT_ADMIN' }
       await BANK.doc('bank').set({ data: data })
       return { ok: true }
     }
@@ -108,16 +108,7 @@ exports.main = async (event) => {
     // 并发的多个客户端同时首次种入时，后到的会在事务内看到文档已存在而被拒绝。
     const write = async (tx) => {
       const ref = tx.collection('questions').doc('bank')
-      let existing = null
-      try {
-        const got = await ref.get()
-        existing = got && got.data
-      } catch (e) {
-        // 只有事务内「确认不存在」才是可写入窗口；读失败必须让事务整体失败重试，
-        // 否则会把运营已有的题库当成不存在而覆盖掉
-        if (!isNotFound(e)) throw e
-        existing = null
-      }
+      const existing = await readOptionalDoc(() => ref.get())
       if (existing) return { ok: false, error: 'BANK_EXISTS' }
       await ref.set({ data: data })
       return { ok: true }

@@ -394,7 +394,7 @@ function hasLocalSyncData(snapshot) {
  * @returns {{gen: Number, scope: String, token: String}}
  */
 function captureSyncContext() {
-  return { gen: cloudSyncGeneration, scope: userScope, token: getToken() }
+  return { gen: cloudSyncGeneration, scope: userScope, token: getToken(), dataEpoch: Number(state && state.dataEpoch || 0) }
 }
 
 /**
@@ -427,6 +427,8 @@ function pullFromCloud(onDone) {
   bootPulled = true
   let skip = 0
   let stats = null
+  let dataEpoch = null
+  let syncRevision
   const allAttempts = []
   const abort = () => {
     // 回包被判为过期时必须重新武装启动拉取：冷启动时 load() 会在 _checkSession()
@@ -445,10 +447,23 @@ function pullFromCloud(onDone) {
       return
     }
     let practiceChanged = false
+    if (dataEpoch !== null && dataEpoch < Number(state.dataEpoch || 0)) { abort(); return }
+    if (dataEpoch !== null && dataEpoch > Number(state.dataEpoch || 0)) {
+      // 服务端清空是账号级边界，旧代次内容不得再次参与并集或上传。
+      state = getDefaultState()
+      state.dataEpoch = dataEpoch
+      cloudSyncGeneration += 1
+      practiceGeneration += 1
+      aiConversationVersion += 1
+      practiceChanged = true
+      setAttemptCursor(0, ctx.scope)
+      setPendingPush(ctx.scope, false)
+      dirty = true
+    }
     if (stats || allAttempts.length) {
       const before = state
       state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
-      practiceChanged = JSON.stringify(before.practiceSession) !== JSON.stringify(state.practiceSession)
+      practiceChanged = practiceChanged || JSON.stringify(before.practiceSession) !== JSON.stringify(state.practiceSession)
       if (practiceChanged) practiceGeneration += 1
       // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
       // 关闭后离线重开即丢失，本地独有数据也不会按承诺上传（评审 P2）
@@ -464,6 +479,7 @@ function pullFromCloud(onDone) {
       // 空云端需要初始化备份；升级前本地历史没有 pending 标记，也不能被跳过。
       dirty = true
     }
+    if (dataEpoch !== null) state.dataEpoch = dataEpoch
     if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
     if (practiceChanged) practiceRestoredListeners.forEach((listener) => {
       try { listener() } catch (e) { console.error('[store] 练习恢复通知失败', e) }
@@ -473,11 +489,15 @@ function pullFromCloud(onDone) {
   const fetchPage = () => {
     callCloud({
       name: config.functions.studySync,
-      data: { token: ctx.token, action: 'get', skip: skip },
+      data: { token: ctx.token, action: 'get', skip, ...(syncRevision === undefined ? {} : { syncRevision, dataEpoch }) },
       success: (res) => {
         if (isStaleContext(ctx)) { abort(); return }
         const r = res && res.result
         if (!r || !r.ok) { finish(false); return }
+        const pageEpoch = Number(r.dataEpoch || 0)
+        if (dataEpoch !== null && (dataEpoch !== pageEpoch || syncRevision !== r.syncRevision)) { finish(false); return }
+        dataEpoch = pageEpoch
+        syncRevision = r.syncRevision
         if (r.stats) stats = r.stats
         if (Array.isArray(r.attempts)) {
           for (let i = 0; i < r.attempts.length; i++) allAttempts.push(r.attempts[i])
@@ -530,7 +550,7 @@ const PENDING_DELETE_KEY = 'exam_quiz_pending_delete_v1'
 
 function getPendingDelete(scope) {
   try {
-    return wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope || userScope}`) === true
+    return !!wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope || userScope}`)
   } catch (e) {
     return false
   }
@@ -539,11 +559,23 @@ function getPendingDelete(scope) {
 function setPendingDelete(scope, on) {
   try {
     const key = `${PENDING_DELETE_KEY}__${scope || userScope}`
-    if (on) wx.setStorageSync(key, true)
-    else wx.removeStorageSync(key)
+    if (on) {
+      const existing = wx.getStorageSync(key)
+      if (!existing || typeof existing.deleteId !== 'string' || !Number.isSafeInteger(existing.dataEpoch)) {
+        // 意图和 ID 使用同一个持久化值；兼容旧版布尔待删除标记。
+        wx.setStorageSync(key, { deleteId: newId('reset'), dataEpoch: Number(state && state.dataEpoch || 0) })
+      }
+    } else wx.removeStorageSync(key)
   } catch (e) {
     /* ignore */
   }
+}
+
+function getDeleteOperation(scope) {
+  try {
+    const operation = wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope}`)
+    return operation && typeof operation.deleteId === 'string' ? operation : null
+  } catch (e) { return null }
 }
 
 /** 待重试的云端上传标记（按作用域隔离） */
@@ -586,12 +618,28 @@ function deleteCloudRequest(ctx) {
     callCloud({
       name: config.functions.studySync,
       // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
-      data: { token: ctx.token, action: 'delete' },
+      data: { token: ctx.token, action: 'delete', ...ctx.deleteOperation },
       success: (res) => {
         const r = res && res.result
         // 只有应用层确认删除成功、且上下文仍然有效，才清除标记
         if (r && r.ok && !isStaleContext(ctx)) {
+          if (r.superseded) {
+            // 其他设备的更新清空已经取代本次意图。尚未获得新代次的本地数据也作废。
+            state = getDefaultState()
+            cloudSyncGeneration += 1
+            practiceGeneration += 1
+            aiConversationVersion += 1
+            setAttemptCursor(0, ctx.scope)
+          }
+          state.dataEpoch = Number.isSafeInteger(r.dataEpoch) ? r.dataEpoch : ctx.dataEpoch
           setPendingDelete(ctx.scope, false)
+          if (r.superseded) {
+            bootPulled = false
+            pullFromCloud()
+            practiceRestoredListeners.forEach((listener) => {
+              try { listener() } catch (e) { console.error('[store] 练习恢复通知失败', e) }
+            })
+          }
           // 补上被这次删除拦下的上传，否则本地新数据要等到下次变更才同步
           dirty = true
           flush()
@@ -635,7 +683,7 @@ function pushToCloud() {
   // 空快照删不掉服务端已有数据，上传只会把刚清空的内容又并回去（评审 P2 4425593448）
   if (getPendingDelete(openid)) return
   const ctx = captureSyncContext()
-  const payload = {
+  const payload = JSON.parse(JSON.stringify({
     records: state.records,
     daily: state.daily,
     settings: state.settings,
@@ -644,7 +692,7 @@ function pushToCloud() {
     aiMessages: state.aiMessages,
     aiEpoch: state.aiEpoch,
     version: state.version
-  }
+  }))
   // 增量上传作答流水：只传本地尚未同步的新增部分（按光标切片），云端按 _id 幂等 upsert
   const attemptsAll = state.attempts || []
   const cursor = getAttemptCursor(ctx.scope)
@@ -659,36 +707,36 @@ function pushToCloud() {
       dirty = true
     }
   }
-  enqueueCloudWrite(() => new Promise((resolve) => {
-    callCloud({
-      name: config.functions.studySync,
-      // attempts 必须作为顶层字段：云函数只从 event.attempts 读取，
-      // 而 stats 会过白名单过滤掉 attempts——放进 payload 会导致
-      // 「流水一条都没上传，光标却已推进」（评审 P1）。
-      data: { token: ctx.token, action: 'update', stats: payload, attempts: newAttempts },
-      // 云函数返回 { ok:false } 时仍然走 success 回调：只有应用层确认成功才推进光标。
-      // 且确认必须落回它发起时的作用域：账号 A 的上传在切到 B 之后才确认，
-      // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
-      success: (res) => {
-        const r = res && res.result
-        if (!r || !r.ok) { keepPending(); resolve(); return }
-        if (r && r.ok && !isStaleContext(ctx)) {
-          setAttemptCursor(syncedUpTo, ctx.scope)
-          // 只有应用层确认成功才清除待重试标记
-          if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
-        }
-        resolve()
-      },
-      fail: () => {
-        // 上传失败必须保留待重试状态。flush 在本地落盘成功后就把 dirty 清掉了，
-        // 这里不重新置脏的话，下次 flush（例如进入后台）不会再尝试；
-        // 若云端此刻还没有快照，重启后的拉取也带不出数据，
-        // 于是这次作答会一直卡在本地（评审 P2 4425946077）。
+  // 分批只追加流水，最后一批才发布完整档案，避免半批流水对应完整提交标记。
+  const batches = []
+  for (let i = 0; i < newAttempts.length; i += 48) batches.push(newAttempts.slice(i, i + 48))
+  if (!batches.length) batches.push([])
+  enqueueCloudWrite(async () => {
+    for (let index = 0; index < batches.length; index++) {
+      if (isStaleContext(ctx)) return
+      const result = await new Promise((resolve) => {
+        callCloud({
+          name: config.functions.studySync,
+          data: { token: ctx.token, action: 'update', dataEpoch: ctx.dataEpoch,
+            ...(index === batches.length - 1 ? { stats: payload } : {}), attempts: batches[index] },
+          success: (res) => resolve(res && res.result),
+          fail: () => resolve(null)
+        })
+      })
+      if (!result || !result.ok) {
         keepPending()
-        resolve()
+        if (result && result.error === 'STALE_EPOCH' && !isStaleContext(ctx)) {
+          bootPulled = false
+          pullFromCloud()
+        }
+        return
       }
-    })
-  }))
+    }
+    if (!isStaleContext(ctx)) {
+      setAttemptCursor(syncedUpTo, ctx.scope)
+      if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
+    }
+  })
 }
 
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
@@ -706,6 +754,8 @@ function deleteCloud() {
   const ctx = captureSyncContext()
   // 先落标记：删除失败（例如离线）时保留意图，后续 flush 重试
   setPendingDelete(ctx.scope, true)
+  ctx.deleteOperation = getDeleteOperation(ctx.scope)
+  if (!ctx.deleteOperation) return
   if (pendingDeleteQueued) return
   pendingDeleteQueued = true
   // 与 push 共用一个队列：保证「清空」排在它之前发起的在途上传之后落地，
@@ -1054,7 +1104,9 @@ function clearAiMessages() {
 }
 
 function clearAll() {
+  const dataEpoch = Number(load().dataEpoch || 0)
   state = getDefaultState()
+  state.dataEpoch = dataEpoch
   state.aiEpoch = Number(state.aiEpoch || 0) + 1
   aiConversationVersion += 1
   // 在途的云端拉取若回来，会把刚清空的档案再并回来

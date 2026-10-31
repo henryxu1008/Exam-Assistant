@@ -1,31 +1,9 @@
-/**
- * 云函数 studySync
- * 入参：{ token, action: 'get' | 'update' | 'delete', stats?, attempts? }
- * 出参：{ ok, stats?, attempts? }
- *
- * action=get：返回当前用户的学习档案（studyStats 文档）+ 一页作答流水（attempts 集合）。
- *   作答流水按 createdAt + _id 升序分页，单页上限 100 条；前端带 skip 顺序翻页直到 hasMore 为 false，
- *   从而支持超过 100/1000 条的大流水（云数据库单查上限 100，直接 .get() 会被截断）。
- * action=update：与服务端已有档案「合并」后 upsert（白名单字段），并把新增作答流水 upsert 进 attempts 集合。
- * action=delete：删除当前用户的学习档案（studyStats 文档）与全部作答流水（attempts 集合），
- *   对应前端「清空学习数据」，保证本地与云端一并清空。
- *
- * 设计：
- *  - 聚合/派生数据（records/daily/settings/practiceSession/aiMessages/version）存 studyStats 单文档（按 openid）。
- *  - 原始作答流水 attempts 量可能较大且只追加，单独存 attempts 集合（每条一个文档，
- *    _id = attempt.id、openid 归属），避免单文档 16MB 上限与并发覆盖。
- *
- * 为什么必须用合并而不是整doc覆盖（评审 P1 4422245834）：
- *  端上只在「每个作用域启动后」拉取一次，之后的每次 flush 都是直接上传本地快照。
- *  两台设备恢复同一账号后各自练习、各自上传，若服务端无条件 set()，
- *  后到的一方的整份文档会抹掉另一端新增的 records / daily / aiMessages。
- *  因此在事务内「先读已有快照 → 与本次上传 mergeStats 合并 → 再写入」，
- *  让并发上传是累加而非互相覆盖。合并实现与端上共用 shared/stats-merge.js。
- *
- * 依赖集合：users（校验令牌）、studyStats、attempts。
+/** 学习档案同步：档案/流水原子提交；dataEpoch 拦截清空前的旧设备写入。
+ * 清空保留不含学习内容的服务端墓碑，物理清理只匹配旧代次。
+ * get 返回 syncRevision，客户端必须在全部分页成功后才发布恢复结果。
  */
-
 const cloud = require('wx-server-sdk')
+const crypto = require('crypto')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
@@ -70,9 +48,12 @@ function sanitizeStats(payload) {
  * 就能整doc覆盖那条流水、并把 openid 改成自己的——账号隔离被绕过
  * （评审 P1 4422339084）。加上前缀后，任何写入都只能落进自己的命名空间。
  */
-function sanitizeAttempt(a, openid) {
+function sanitizeAttempt(a, openid, dataEpoch) {
   if (!a || !a.id) return null
-  const out = { _id: `${openid}__${String(a.id)}`, openid: openid }
+  // 新代次用无分隔符的哈希 ID，与必含 __ 的历史 ID 命名空间不相交。
+  const id = dataEpoch ? crypto.createHash('sha256').update(JSON.stringify([openid, dataEpoch, a.id])).digest('hex')
+    : `${openid}__${String(a.id)}`
+  const out = { _id: id, openid, dataEpoch }
   ATTEMPT_FIELDS.forEach((k) => {
     if (a[k] !== undefined) out[k] = a[k]
   })
@@ -90,108 +71,133 @@ async function readExisting(getDoc) {
   return readOptionalDoc(getDoc)
 }
 
-exports.main = async (event) => {
-  const token = event.token
-  if (!token) return { ok: false, error: 'NO_TOKEN' }
+// 两次档案读写 + 最多 48 条流水各读写一次，低于 CloudBase 每事务 100 次操作限制。
+const MAX_ATTEMPTS = 48
+const epochOf = (doc) => Number(doc && doc.dataEpoch || 0)
+const revisionOf = (doc) => Number(doc && doc.syncRevision || 0)
+const sameRevision = (a, b) => epochOf(a) === epochOf(b) && revisionOf(a) === revisionOf(b)
 
-  const user = await findByToken(USERS, token)
+// 清理只匹配旧代次；新代次使用不同文档 ID，清理与新作答并发也不会误删。
+async function purgeBefore(openid, dataEpoch) {
+  for (const condition of [db.command.lt(dataEpoch), db.command.exists(false)]) {
+    for (;;) {
+      const res = await ATTEMPTS.where({ openid, dataEpoch: condition }).limit(100).get()
+      if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
+      if (!res.data.length) break
+      for (const row of res.data) {
+        try { await ATTEMPTS.doc(row._id).remove() } catch (e) { if (!isNotFound(e)) throw e }
+      }
+    }
+  }
+}
+
+exports.main = async (event = {}) => {
+  if (!event.token) return { ok: false, error: 'NO_TOKEN' }
+  const user = await findByToken(USERS, event.token)
   if (!user) return { ok: false, error: 'INVALID_TOKEN' }
-
   const openid = user.openid
   const action = event.action || 'get'
 
   if (action === 'get') {
-    let stats = null
-    try {
-      stats = await readExisting(() => STATS.doc(openid).get())
-    } catch (e) {
+    let stats
+    try { stats = await readExisting(() => STATS.doc(openid).get()) } catch (e) {
       return { ok: false, error: 'READ_STATS_FAILED' }
     }
-    // 作答流水可能很多：单查上限 100 条，采用分页拉取（按 createdAt + _id 排序避免重复/遗漏）
-    const limit = Math.min(parseInt(event.limit, 10) || 100, 100)
-    const skip = Math.max(parseInt(event.skip, 10) || 0, 0)
-    try {
-      const res = await ATTEMPTS.where({ openid })
-        .orderBy('createdAt', 'asc')
-        .orderBy('_id', 'asc')
-        .skip(skip)
-        .limit(limit)
-        .get()
-      // 查询的「没有匹配记录」必须由成功响应里的空数组证明。
-      // 集合/索引缺失或响应异常都不能套用单文档不存在的语义。
-      if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
-      const list = res.data
-      const attempts = list.map((d) => {
-        const { _id, openid: _o, ...rest } = d
-        return rest
-      })
-      const hasMore = list.length >= limit
-      const nextSkip = hasMore ? skip + list.length : null
-      return { ok: true, stats, attempts, hasMore, nextSkip }
-    } catch (e) {
-      // 任意分页失败都不发布局部档案或完成游标，让端上整批丢弃并可重试。
-      return { ok: false, error: 'READ_ATTEMPTS_FAILED' }
+    const dataEpoch = epochOf(stats)
+    const syncRevision = revisionOf(stats)
+    if (event.syncRevision !== undefined && (event.syncRevision !== syncRevision || event.dataEpoch !== dataEpoch)) {
+      return { ok: false, error: 'SNAPSHOT_CHANGED' }
     }
+    const limit = Math.max(1, Math.min(parseInt(event.limit, 10) || 100, 100))
+    const skip = Math.max(parseInt(event.skip, 10) || 0, 0)
+    let list
+    try {
+      // 代次 0 兼容升级前没有 dataEpoch 的流水；清空后只读当前代次。
+      const filter = dataEpoch ? { openid, dataEpoch } : { openid }
+      const res = await ATTEMPTS.where(filter).orderBy('createdAt', 'asc').orderBy('_id', 'asc')
+        .skip(skip).limit(limit).get()
+      if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
+      list = res.data
+    } catch (e) { return { ok: false, error: 'READ_ATTEMPTS_FAILED' } }
+    try {
+      // where 不能放入事务。前后读修订号并跨页携带，整批恢复才是同一快照。
+      const after = await readExisting(() => STATS.doc(openid).get())
+      if (!sameRevision(stats, after)) return { ok: false, error: 'SNAPSHOT_CHANGED' }
+    } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
+    const attempts = list.map(({ _id, openid: _owner, dataEpoch: _epoch, ...rest }) => rest)
+    const hasMore = list.length >= limit
+    return { ok: true, stats: stats && !stats.deleted ? sanitizeStats(stats) : null,
+      attempts, hasMore, nextSkip: hasMore ? skip + list.length : null, dataEpoch, syncRevision }
   }
 
   if (action === 'update') {
-    // 无事务不能保证并发合并安全；明确拒绝，让端上保留待传状态。
     if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
-    const incoming = sanitizeStats(event.stats)
-    // 新上传的流水仅用于本次合并派生成绩；完整流水仍单独存 attempts 集合。
-    incoming.attempts = (Array.isArray(event.attempts) ? event.attempts : [])
-      .map((a) => sanitizeAttempt(a, openid)).filter(Boolean)
-
-    // 事务内「读已有快照 → 合并 → 写入」：并发上传互相累加，而不是后到者覆盖前者。
-    // old 版这里是无条件 set()，两台设备各自练习后同步会丢一端的进度。
-    const write = async (tx) => {
-      const ref = tx.collection('studyStats').doc(openid)
-      const existing = await readExisting(() => ref.get())
-      const merged = mergeStats(existing, incoming)
-      delete merged.attempts
-      merged._id = openid
-      merged.openid = openid
-      merged.updatedAt = Date.now()
-      await ref.set({ data: merged })
-    }
-
+    const dataEpoch = event.dataEpoch === undefined ? 0 : event.dataEpoch
+    if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'BAD_EPOCH' }
+    const raw = Array.isArray(event.attempts) ? event.attempts : []
+    if (raw.length > MAX_ATTEMPTS) return { ok: false, error: 'BATCH_TOO_LARGE' }
+    if (raw.some((a) => !a || typeof a.id !== 'string' || !a.id)) return { ok: false, error: 'BAD_ATTEMPT' }
+    const attempts = raw.map((a) => sanitizeAttempt(a, openid, dataEpoch))
     try {
-      await db.runTransaction(write)
-    } catch (e) {
-      return { ok: false, error: 'TX_FAILED' }
-    }
-
-    // 增量 upsert 新增作答流水：同一 _id 重复写入是幂等的，不会重复落库
-    const list = Array.isArray(event.attempts) ? event.attempts : []
-    const tasks = []
-    for (const a of list) {
-      const cleanA = sanitizeAttempt(a, openid)
-      if (!cleanA) continue
-      tasks.push(ATTEMPTS.doc(cleanA._id).set({ data: cleanA }))
-    }
-    if (tasks.length) await Promise.all(tasks)
-    return { ok: true }
+      return await db.runTransaction(async (tx) => {
+        const ref = tx.collection('studyStats').doc(openid)
+        const existing = await readExisting(() => ref.get())
+        if (epochOf(existing) !== dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
+        const incoming = sanitizeStats(event.stats)
+        incoming.attempts = attempts
+        const merged = mergeStats(existing, incoming)
+        delete merged.attempts
+        Object.assign(merged, { _id: openid, openid, dataEpoch, syncRevision: revisionOf(existing) + 1,
+          deleted: !event.stats && !!(existing && existing.deleted),
+          lastDeleteId: existing && existing.lastDeleteId || null, updatedAt: Date.now() })
+        // 流水和派生档案一起提交。任一流水写失败会回滚整个事务。
+        for (const attempt of attempts) {
+          const attemptRef = tx.collection('attempts').doc(attempt._id)
+          const accepted = await readExisting(() => attemptRef.get())
+          if (accepted) {
+            // 重试只能重放同一事实，不允许同 ID 修改已接受的答案/得分。
+            if (JSON.stringify(sanitizeAttempt(accepted, openid, dataEpoch)) !== JSON.stringify(attempt)) {
+              const error = new Error('ATTEMPT_CONFLICT')
+              error.code = 'ATTEMPT_CONFLICT'
+              throw error
+            }
+          } else await attemptRef.set({ data: attempt })
+        }
+        await ref.set({ data: merged })
+        return { ok: true, dataEpoch }
+      })
+    } catch (e) { return { ok: false, error: e.code === 'ATTEMPT_CONFLICT' ? e.code : 'TX_FAILED' } }
   }
 
   if (action === 'delete') {
-    // 删除学习档案与全部作答流水（对应前端「清空学习数据」）。
-    //
-    // 只有「确认不存在」才算删除成功（幂等）；其余错误必须向上冒泡返回 ok:false。
-    // 无条件吞异常再返回成功是危险的：端上会据此清掉持久化的待删除标记
-    // 并放行上传，而服务端数据其实还在，下次拉取就把「已清空」的数据
-    // 又并回来（评审 P2 4425946091）。
-    try {
-      await STATS.doc(openid).remove()
-    } catch (e) {
-      if (!isNotFound(e)) return { ok: false, error: 'DELETE_STATS_FAILED' }
+    if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+    if (!Number.isSafeInteger(event.dataEpoch) || event.dataEpoch < 0 ||
+      typeof event.deleteId !== 'string' || !event.deleteId || event.deleteId.length > 120) {
+      return { ok: false, error: 'RESET_PROTOCOL_REQUIRED' }
     }
+    let result
     try {
-      await ATTEMPTS.where({ openid }).remove()
-    } catch (e) {
-      if (!isNotFound(e)) return { ok: false, error: 'DELETE_ATTEMPTS_FAILED' }
+      result = await db.runTransaction(async (tx) => {
+        const ref = tx.collection('studyStats').doc(openid)
+        const existing = await readExisting(() => ref.get())
+        const current = epochOf(existing)
+        // 丢失 ACK / 旧设备重试不得再清空新作答；旧清空已被更新的清空取代。
+        if (existing && existing.lastDeleteId === event.deleteId) {
+          return { ok: true, dataEpoch: current }
+        }
+        if (event.dataEpoch < current) return { ok: true, dataEpoch: current, superseded: true }
+        if (event.dataEpoch !== current) return { ok: false, error: 'STALE_EPOCH', dataEpoch: current }
+        await ref.set({ data: { _id: openid, openid, dataEpoch: current + 1,
+          syncRevision: revisionOf(existing) + 1, deleted: true, lastDeleteId: event.deleteId, updatedAt: Date.now() } })
+        return { ok: true, dataEpoch: current + 1 }
+      })
+    } catch (e) { return { ok: false, error: 'DELETE_STATS_FAILED' } }
+    if (!result.ok) return result
+    try { await purgeBefore(openid, result.dataEpoch) } catch (e) {
+      // 墓碑已经生效，但尚未完成物理清理。保留同一 deleteId 重试。
+      return { ok: false, error: 'DELETE_ATTEMPTS_FAILED', dataEpoch: result.dataEpoch }
     }
-    return { ok: true }
+    return result
   }
-
   return { ok: false, error: 'BAD_ACTION' }
 }

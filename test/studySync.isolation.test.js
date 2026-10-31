@@ -7,121 +7,11 @@
 
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const path = require('node:path')
-const vm = require('node:vm')
-const crypto = require('node:crypto')
 
-const NOW = new Date('2026-10-30T06:00:00Z').getTime()
-const DAY = 86400000
 
 const clone = (v) => JSON.parse(JSON.stringify(v))
 
-function makeHarness() {
-  const users = new Map([
-    ['u1', { _id: 'u1', openid: 'alice', token: 'tokA', tokenAt: NOW }],
-    ['u2', { _id: 'u2', openid: 'bob', token: 'tokB', tokenAt: NOW }]
-  ])
-  const studyStats = new Map()
-  const attempts = new Map()
-
-  const stores = { users: users, studyStats: studyStats, attempts: attempts }
-
-  /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
-  const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined }
-
-  function collection(name) {
-    const store = stores[name]
-    return {
-      doc(id) {
-        return {
-          async get() {
-            if (fail.get) throw fail.get
-            if (!store.has(id)) throw new Error('document does not exist')
-            return { data: clone(store.get(id)) }
-          },
-          async set({ data }) {
-            const store = { users: users, studyStats: studyStats, attempts: attempts }[name]
-            store.set(id, clone(data))
-            return { stats: { updated: 1 } }
-          },
-          async remove() {
-            if (fail.remove) throw fail.remove
-            const store = { users: users, studyStats: studyStats, attempts: attempts }[name]
-            if (!store.has(id)) throw new Error('document does not exist')
-            store.delete(id)
-            return { stats: { removed: 1 } }
-          }
-        }
-      },
-      where(filter) {
-        let limit = Infinity
-        let skip = 0
-        const rows = () =>
-          Array.from(store.values()).filter((row) =>
-          Object.keys(filter).every((k) => row[k] === filter[k])
-          )
-        return {
-          limit(c) { limit = c; return this },
-          skip(c) { skip = c; return this },
-          orderBy() { return this },
-          async get() {
-            // 只命中 attempts：users 上的同款查询是令牌查找，不能一并打挂
-            if (fail.attempts && name === 'attempts') throw fail.attempts
-            if (name === 'attempts' && fail.attemptsResult !== undefined) return fail.attemptsResult
-            return { data: rows().slice(skip, skip + limit).map(clone) }
-          },
-          async remove() {
-            if (fail.remove) throw fail.remove
-            const hit = rows()
-            hit.forEach((r) => store.delete(r._id))
-            return { stats: { removed: hit.length } }
-          }
-        }
-      }
-    }
-  }
-
-  const db = { collection: collection }
-  let queue = Promise.resolve()
-  db.runTransaction = (fn) => {
-    const run = queue.then(() => fn({ collection }))
-    queue = run.then(() => {}, () => {})
-    return run
-  }
-
-  class FixedDate extends Date {
-    static now() { return NOW }
-  }
-
-  function loadModule(absPath) {
-    const exports = {}
-    const module = { exports: exports }
-    vm.runInNewContext(fs.readFileSync(absPath, 'utf8'), {
-      exports,
-      module,
-      Date: FixedDate,
-      Buffer,
-      process: { env: {} },
-      require(name) {
-        if (name === 'wx-server-sdk') return { init() {}, database: () => db }
-        if (name === 'crypto') return crypto
-        if (name.indexOf('./') === 0) return loadModule(path.join(path.dirname(absPath), name))
-        throw new Error(`unexpected module ${name}`)
-      }
-    })
-    return module.exports
-  }
-
-  return {
-    db: db,
-    users: users,
-    studyStats: studyStats,
-    attempts: attempts,
-    fail: fail,
-    main: loadModule(path.join(__dirname, '../cloudfunctions/studySync/index.js')).main
-  }
-}
+const { makeHarness } = require('./support/study-sync-harness.js')
 
 /** 记录一次 update 上传，含本地流式编号，便于断言并发顺序 */
 function updatePayload(n) {
@@ -219,7 +109,7 @@ test('跨账号删除不会误删他人数据', async () => {
   await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
   await h.main({ token: 'tokB', action: 'update', stats: updatePayload(2), attempts: updatePayload(2).attempts })
 
-  await h.main({ token: 'tokA', action: 'delete' })
+  await h.main({ token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'delete-1' })
 
   assert.ok(!h.attempts.has('alice__a1'), 'alice 的流水应被删除')
   assert.ok(h.attempts.get('bob__a2'), 'bob 的流水必须保留')
@@ -230,9 +120,9 @@ test('删除失败时返回 ok:false，不得承认成功（评审 P2 4425946091
   await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
 
   // 模拟数据库抛出非「不存在」的失败（权限 / 网络 / 配额……）
-  h.fail.remove = Object.assign(new Error('permission denied'), { errCode: -502003 })
+  h.fail.statsWrite = Object.assign(new Error('permission denied'), { errCode: -502003 })
 
-  const res = await h.main({ token: 'tokA', action: 'delete' })
+  const res = await h.main({ token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'delete-1' })
   assert.strictEqual(res.ok, false, '删除失败不得报告成功')
   assert.strictEqual(res.error, 'DELETE_STATS_FAILED')
   assert.ok(h.studyStats.has('alice'), '失败时服务端数据应仍在')
@@ -318,7 +208,7 @@ test('流水查询响应结构异常不得当成空页', async () => {
 test('文档不存在时删除仍算成功（幂等，评审 P2 4425946091）', async () => {
   const h = makeHarness()
   // 从未上传过，studyStats 里没有该文档
-  const res = await h.main({ token: 'tokA', action: 'delete' })
+  const res = await h.main({ token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'delete-1' })
   assert.strictEqual(res.ok, true, '确认不存在应视为已清空')
 })
 
@@ -326,8 +216,8 @@ test('无令牌 / 无效令牌时删除被拒绝', async () => {
   const h = makeHarness()
   await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
 
-  assert.strictEqual((await h.main({ action: 'delete' })).error, 'NO_TOKEN')
-  assert.strictEqual((await h.main({ action: 'delete', token: 'nope' })).error, 'INVALID_TOKEN')
+  assert.strictEqual((await h.main({ action: 'delete', dataEpoch: 0, deleteId: 'delete-1' })).error, 'NO_TOKEN')
+  assert.strictEqual((await h.main({ action: 'delete', dataEpoch: 0, deleteId: 'delete-1', token: 'nope' })).error, 'INVALID_TOKEN')
   assert.strictEqual(h.studyStats.size, 1, '被拒绝的删除不得生效')
 })
 
@@ -342,4 +232,136 @@ test('运行时不支持事务时拒绝学习档案合并，不能静默退回�
   assert.strictEqual(result.error, 'TRANSACTION_REQUIRED')
   assert.deepEqual(h.studyStats.get('alice'), original)
   assert.strictEqual(h.attempts.size, 0)
+})
+
+test('原子提交：流水写失败时档案和已写的流水全部回滚', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  const before = clone(h.studyStats.get('alice'))
+  let writes = 0
+  h.fail.pauseAttempt = () => { if (++writes === 2) throw new Error('injected second write timeout') }
+  const result = await h.main({ token: 'tokA', action: 'update', stats: updatePayload(2),
+    attempts: [{ id: 'a2', createdAt: 2 }, { id: 'a3', createdAt: 3 }] })
+  assert.equal(result.ok, false)
+  assert.deepEqual(h.studyStats.get('alice'), before)
+  assert.equal(h.attempts.size, 1)
+})
+
+test('原子可见性：流水提交暂停时其他设备不能看见对应提交标记', async () => {
+  const h = makeHarness()
+  let release, started
+  const gate = new Promise(resolve => { release = resolve })
+  const ready = new Promise(resolve => { started = resolve })
+  h.fail.pauseAttempt = async () => { started(); await gate }
+  const stats = updatePayload(1)
+  stats.practiceSession = { id: 's1', queueIds: ['q1'], submitted: { q1: { score: 1, createdAt: 1 } } }
+  const writing = h.main({ token: 'tokA', action: 'update', stats,
+    attempts: [{ id: 'a1', sessionId: 's1', questionId: 'q1', score: 1, createdAt: 1 }] })
+  await ready
+  const during = await h.main({ token: 'tokA', action: 'get' })
+  assert.equal(during.ok, true)
+  assert.equal(during.stats, null)
+  assert.equal(during.attempts.length, 0)
+  release()
+  assert.equal((await writing).ok, true)
+  const after = await h.main({ token: 'tokA', action: 'get' })
+  assert.equal(after.stats.practiceSession.submitted.q1.score, 1)
+  assert.equal(after.attempts.length, 1)
+})
+
+test('清空代次：其他设备的旧快照和旧流水均不能复活', async () => {
+  const h = makeHarness()
+  const old = { token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts }
+  await h.main(old)
+  const reset = await h.main({ token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'reset-a' })
+  assert.equal(reset.dataEpoch, 1)
+  const stale = await h.main(old)
+  assert.equal(stale.error, 'STALE_EPOCH')
+  const got = await h.main({ token: 'tokA', action: 'get' })
+  assert.equal(got.stats, null)
+  assert.equal(got.attempts.length, 0)
+  assert.equal(got.dataEpoch, 1)
+})
+
+test('清空重试：ACK 丢失及被新清空取代都不会再次删除新代次作答', async () => {
+  const h = makeHarness()
+  const reset = { token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'reset-a' }
+  await h.main(reset)
+  await h.main({ token: 'tokA', action: 'update', dataEpoch: 1, stats: updatePayload(2), attempts: updatePayload(2).attempts })
+  assert.equal((await h.main(reset)).dataEpoch, 1)
+  assert.ok((await h.main({ token: 'tokA' })).stats.records.q2)
+  await h.main({ token: 'tokA', action: 'delete', dataEpoch: 1, deleteId: 'reset-b' })
+  await h.main({ token: 'tokA', action: 'update', dataEpoch: 2, stats: updatePayload(3), attempts: updatePayload(3).attempts })
+  assert.equal((await h.main(reset)).dataEpoch, 2)
+  const got = await h.main({ token: 'tokA' })
+  assert.ok(got.stats.records.q3)
+  assert.equal(got.attempts.length, 1)
+})
+
+test('清空清理失败：旧代次立即不可恢复，重试只删除旧流水', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  h.fail.remove = new Error('injected delete timeout')
+  const reset = { token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'reset-a' }
+  assert.equal((await h.main(reset)).error, 'DELETE_ATTEMPTS_FAILED')
+  assert.equal((await h.main({ token: 'tokA' })).attempts.length, 0)
+  await h.main({ token: 'tokA', action: 'update', dataEpoch: 1, stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  h.fail.remove = null
+  assert.equal((await h.main(reset)).ok, true)
+  assert.equal(h.attempts.size, 1, '同名流水的新代次必须保留')
+  assert.equal([...h.attempts.values()][0].dataEpoch, 1)
+})
+
+test('分页恢复期间有并发写入时拒绝混合修订号', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  const first = await h.main({ token: 'tokA', action: 'get', limit: 1 })
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(2), attempts: updatePayload(2).attempts })
+  const second = await h.main({ token: 'tokA', action: 'get', limit: 1, skip: 1,
+    syncRevision: first.syncRevision, dataEpoch: first.dataEpoch })
+  assert.equal(second.error, 'SNAPSHOT_CHANGED')
+  assert.equal(second.stats, undefined)
+  assert.equal(second.hasMore, undefined)
+})
+
+test('超事务上限的批次和缺少清空协议的调用在写入前拒绝', async () => {
+  const h = makeHarness()
+  const result = await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1),
+    attempts: Array.from({ length: 49 }, (_, i) => ({ id: String(i) })) })
+  assert.equal(result.error, 'BATCH_TOO_LARGE')
+  assert.equal((await h.main({ token: 'tokA', action: 'delete' })).error, 'RESET_PROTOCOL_REQUIRED')
+  assert.equal(h.studyStats.size, 0)
+})
+
+test('已接受流水不可变：同 ID 重试不重复，改答案会回滚整份上传', async () => {
+  const h = makeHarness()
+  const event = { token: 'tokA', action: 'update', stats: updatePayload(1), attempts: [{ id: 'a1', score: 1 }] }
+  assert.equal((await h.main(event)).ok, true)
+  assert.equal((await h.main(event)).ok, true)
+  assert.equal(h.attempts.size, 1)
+  const before = clone(h.studyStats.get('alice'))
+  const result = await h.main({ ...event, stats: updatePayload(2), attempts: [{ id: 'a2', score: 0 }, { id: 'a1', score: 0 }] })
+  assert.equal(result.error, 'ATTEMPT_CONFLICT')
+  assert.deepEqual(h.studyStats.get('alice'), before)
+  assert.equal(h.attempts.has('alice__a2'), false)
+  assert.equal(h.attempts.get('alice__a1').score, 1)
+})
+
+test('物理清理暂停时可提交新代次同名流水，清理完成后仍保留', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+  let release, started
+  const gate = new Promise(resolve => { release = resolve })
+  const ready = new Promise(resolve => { started = resolve })
+  h.fail.pauseRemove = async () => { started(); await gate }
+  const resetting = h.main({ token: 'tokA', action: 'delete', dataEpoch: 0, deleteId: 'reset-a' })
+  await ready
+  assert.equal((await h.main({ token: 'tokA', action: 'update', dataEpoch: 1,
+    stats: updatePayload(1), attempts: updatePayload(1).attempts })).ok, true)
+  release()
+  assert.equal((await resetting).ok, true)
+  const got = await h.main({ token: 'tokA' })
+  assert.equal(got.attempts.length, 1)
+  assert.equal(got.attempts[0].id, 'a1')
+  assert.equal([...h.attempts.values()][0].dataEpoch, 1)
 })

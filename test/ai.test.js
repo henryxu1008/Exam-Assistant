@@ -39,12 +39,15 @@ test('requestLLM 在远端请求中注入学习者数据快照（评审 P2）', 
   global.wx.cloud = {
     callFunction: (p) => { captured = p; return Promise.resolve({ result: { content: 'ok' } }) }
   }
+  wx.setStorageSync('exam_quiz_session_v1', { token: 'current-session-token' })
   ai.REMOTE_LLM.enabled = true
   return ai
     .requestLLM([{ role: 'user', content: '你好' }], '公共基础知识', {})
     .then(() => {
       ai.REMOTE_LLM.enabled = false
       assert.ok(captured, '应发起云端调用')
+      assert.equal(captured.data.token, 'current-session-token', '远端鉴权必须携带当前会话 token')
+      wx.removeStorageSync('exam_quiz_session_v1')
       const sys = (captured.data.messages || []).filter((m) => m.role === 'system')
       assert.ok(sys.some((m) => /学习者当前数据快照/.test(m.content)), '远端请求应携带学习者数据快照')
     })

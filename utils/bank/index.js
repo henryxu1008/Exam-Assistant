@@ -9,7 +9,7 @@
  * 题库上云（动态更新题目、不发版）：
  *  - 默认数据源来自静态 manifest + 分片（离线 / 控制台未配置时的兜底）。
  *  - 启动后由 app.js 调用 loadCloudBank() 从 bankSync 拉取云端题库，整体替换 source。
- *  - pushStaticBankToCloud() 在云端为空时把内置静态题库种入云端（仅一次，受 seed 标记保护）。
+ *  - pushStaticBankToCloud() 供管理员显式导入内置题库；权限由服务端校验，不自动执行。
  *  - 拉到的云端题库会缓存到本地存储，下次启动即使断网也用得上一次云端版本。
  *  - 所有查询函数只读 `source`，因此切换数据源对外完全透明。
  *
@@ -260,7 +260,7 @@ function getToken() {
 
 /**
  * 一次性把内置静态题库种入云端（仅当云端为空）；受本地 seed 标记保护，不会反复覆盖。
- * 云端同时做了鉴权：无令牌拒绝；题库已存在时仅管理员可强制覆盖（评审 P1）。
+ * 首次导入和覆盖均由云端校验管理员；普通启动只读云端题库。
  * @param {Object} [opt] { force: true } 由管理员工具调用时显式全量覆盖
  */
 const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
@@ -273,6 +273,7 @@ async function pushStaticBankToCloud(opt) {
     if (!token) return false // 未登录：云端会拒绝，不浪费一次调用
     const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'get' } })
     const r = res && res.result
+    if (!r || !r.ok) return false
     if (!force && r && r.ok && r.bank) {
       wx.setStorageSync(SEED_FLAG_KEY, 1) // 云端已存在，标记已种
       return false
