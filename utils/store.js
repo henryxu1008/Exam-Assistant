@@ -368,12 +368,24 @@ function pullFromCloud(onDone) {
       return
     }
     if (stats || allAttempts.length) {
+      const before = state
       state = mergeStats(state, Object.assign({}, stats || {}, { attempts: allAttempts }))
       // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
       // 关闭后离线重开即丢失，本地独有数据也不会按承诺上传（评审 P2）
       dirty = true
-      flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
+      // 会话被拉取恢复时必须推进会话版本号：AI 页可能在启动拉取完成之前
+      // 就缓存了初始会话与版本号，而 _syncConversation() 只在版本变化时才重载消息。
+      // 不推进的话，本次启动剩下的时间里 AI 页会一直显示恢复前的历史，
+      // 在途的异步回复也不会被作废（评审 P2 4425946095）。
+      const convBefore = JSON.stringify(before.aiMessages || []) + '|' + Number(before.aiEpoch || 0)
+      const convAfter = JSON.stringify(state.aiMessages || []) + '|' + Number(state.aiEpoch || 0)
+      if (convBefore !== convAfter) aiConversationVersion += 1
+    } else if (getPendingPush(ctx.scope)) {
+      // 云端还没有快照，但本地有上次没成功的上传：补一次，不必再等本地变更。
+      // 否则这次作答会一直卡在本地（评审 P2 4425946077）。
+      dirty = true
     }
+    if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
     if (typeof onDone === 'function') onDone(true)
   }
   const fetchPage = () => {
@@ -445,6 +457,27 @@ function getPendingDelete(scope) {
 function setPendingDelete(scope, on) {
   try {
     const key = `${PENDING_DELETE_KEY}__${scope || userScope}`
+    if (on) wx.setStorageSync(key, true)
+    else wx.removeStorageSync(key)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/** 待重试的云端上传标记（按作用域隔离） */
+const PENDING_PUSH_KEY = 'exam_quiz_pending_push_v1'
+
+function getPendingPush(scope) {
+  try {
+    return wx.getStorageSync(`${PENDING_PUSH_KEY}__${scope || userScope}`) === true
+  } catch (e) {
+    return false
+  }
+}
+
+function setPendingPush(scope, on) {
+  try {
+    const key = `${PENDING_PUSH_KEY}__${scope || userScope}`
     if (on) wx.setStorageSync(key, true)
     else wx.removeStorageSync(key)
   } catch (e) {
@@ -548,10 +581,24 @@ function pushToCloud() {
       // 若不校验就把 A 的长度写进 B 的光标，B 的下一条作答会被当成已同步而永久跳过。
       success: (res) => {
         const r = res && res.result
-        if (r && r.ok && !isStaleContext(ctx)) setAttemptCursor(syncedUpTo, ctx.scope)
+        if (r && r.ok && !isStaleContext(ctx)) {
+          setAttemptCursor(syncedUpTo, ctx.scope)
+          // 只有应用层确认成功才清除待重试标记
+          if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
+        }
         resolve()
       },
-      fail: () => { resolve() } // 上传失败静默：下次 flush 会再次尝试
+      fail: () => {
+        // 上传失败必须保留待重试状态。flush 在本地落盘成功后就把 dirty 清掉了，
+        // 这里不重新置脏的话，下次 flush（例如进入后台）不会再尝试；
+        // 若云端此刻还没有快照，重启后的拉取也带不出数据，
+        // 于是这次作答会一直卡在本地（评审 P2 4425946077）。
+        if (!isStaleContext(ctx)) {
+          setPendingPush(ctx.scope, true)
+          dirty = true
+        }
+        resolve()
+      }
     })
   }))
 }

@@ -691,6 +691,89 @@ test('清空入队后切换账号，删除仍绑定发起时的账号', async ()
 })
 
 /* ------------------------------------------------------------------ *
+ * 3g) 上传失败必须保留待重试状态（评审 P2 4425946077）
+ * ------------------------------------------------------------------ */
+
+test('上传失败后，无需新的本地变更也会再次重试上传', async () => {
+  const store = freshStore()
+  let failUpload = true
+  const calls = []
+
+  global.wx.__cloudReady = true
+  global.wx.cloud = {
+    callFunction: (opts) => {
+      calls.push(opts)
+      const action = opts.data && opts.data.action
+      if (action === 'update' && failUpload) {
+        if (opts.fail) opts.fail(new Error('offline'))
+        return Promise.reject(new Error('offline'))
+      }
+      if (opts.success) opts.success({ result: { ok: true, attempts: [], hasMore: false } })
+      return Promise.resolve({ result: { ok: true } })
+    }
+  }
+
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  await tick()
+
+  // 离线作答：上传失败
+  store.recordAnswer(q('a1'), true, 100)
+  store.flush()
+  await tick()
+
+  assert.equal(
+    calls.filter((c) => c.data && c.data.action === 'update').length,
+    1,
+    '应发起一次上传'
+  )
+
+  // 恢复网络后再次 flush（模拟进入后台强制落盘）：
+  // flush 首次已清掉 dirty，不保留重试状态的话这里不会再上传
+  failUpload = false
+  store.flush()
+  await tick()
+  await tick()
+
+  assert.ok(
+    calls.filter((c) => c.data && c.data.action === 'update').length >= 2,
+    '上传失败后再次 flush 必须重试'
+  )
+})
+
+/* ------------------------------------------------------------------ *
+ * 3h) 拉取恢复会话后要推进会话版本号（评审 P2 4425946095）
+ * ------------------------------------------------------------------ */
+
+test('拉取恢复会话后推进会话版本号，使已缓存的 AI 页重载', async () => {
+  const store = freshStore()
+  const deferred = mockDeferred()
+
+  login('o1', 'tok')
+  store.setUserScope('o1')
+  store.load()
+  const before = store.getAiConversationVersion()
+
+  deferred.resolve(0, {
+    ok: true,
+    stats: {
+      aiMessages: [{ time: 1, role: 'user', text: '云端历史' }],
+      aiEpoch: 0
+    },
+    attempts: [],
+    hasMore: false
+  })
+  await tick()
+
+  assert.ok(store.getAiMessages().length > 0, '会话应已从云端恢复')
+  assert.ok(
+    store.getAiConversationVersion() > before,
+    '会话被恢复时必须推进版本号，否则已缓存的 AI 页不会重载历史'
+  )
+})
+
+/* ------------------------------------------------------------------ *
  * 4) 题库种子上传需要登录身份
  * ------------------------------------------------------------------ */
 

@@ -27,6 +27,9 @@ function makeHarness() {
 
   const stores = { users: users, studyStats: studyStats, attempts: attempts }
 
+  /** 置为 Error 可模拟数据库删除抛出非「不存在」的失败 */
+  const fail = { remove: null }
+
   function collection(name) {
     const store = stores[name]
     return {
@@ -42,6 +45,7 @@ function makeHarness() {
             return { stats: { updated: 1 } }
           },
           async remove() {
+            if (fail.remove) throw fail.remove
             const store = { users: users, studyStats: studyStats, attempts: attempts }[name]
             if (!store.has(id)) throw new Error('document does not exist')
             store.delete(id)
@@ -62,6 +66,7 @@ function makeHarness() {
           orderBy() { return this },
           async get() { return { data: rows().slice(skip, skip + limit).map(clone) } },
           async remove() {
+            if (fail.remove) throw fail.remove
             const hit = rows()
             hit.forEach((r) => store.delete(r._id))
             return { stats: { removed: hit.length } }
@@ -101,6 +106,7 @@ function makeHarness() {
     users: users,
     studyStats: studyStats,
     attempts: attempts,
+    fail: fail,
     main: loadModule(path.join(__dirname, '../cloudfunctions/studySync/index.js')).main
   }
 }
@@ -205,6 +211,26 @@ test('跨账号删除不会误删他人数据', async () => {
 
   assert.ok(!h.attempts.has('alice__a1'), 'alice 的流水应被删除')
   assert.ok(h.attempts.get('bob__a2'), 'bob 的流水必须保留')
+})
+
+test('删除失败时返回 ok:false，不得承认成功（评审 P2 4425946091）', async () => {
+  const h = makeHarness()
+  await h.main({ token: 'tokA', action: 'update', stats: updatePayload(1), attempts: updatePayload(1).attempts })
+
+  // 模拟数据库抛出非「不存在」的失败（权限 / 网络 / 配额……）
+  h.fail.remove = Object.assign(new Error('permission denied'), { errCode: -502003 })
+
+  const res = await h.main({ token: 'tokA', action: 'delete' })
+  assert.strictEqual(res.ok, false, '删除失败不得报告成功')
+  assert.strictEqual(res.error, 'DELETE_STATS_FAILED')
+  assert.ok(h.studyStats.has('alice'), '失败时服务端数据应仍在')
+})
+
+test('文档不存在时删除仍算成功（幂等，评审 P2 4425946091）', async () => {
+  const h = makeHarness()
+  // 从未上传过，studyStats 里没有该文档
+  const res = await h.main({ token: 'tokA', action: 'delete' })
+  assert.strictEqual(res.ok, true, '确认不存在应视为已清空')
 })
 
 test('无令牌 / 无效令牌时删除被拒绝', async () => {

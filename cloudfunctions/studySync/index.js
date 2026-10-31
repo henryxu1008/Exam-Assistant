@@ -51,6 +51,19 @@ const ATTEMPT_FIELDS = [
 /**
  * 只放行白名单字段；云函数之间不共享本地模块，令牌查找逻辑需与 userProfile 保持一致。
  */
+/**
+ * 判断数据库错误是否为「文档不存在」。
+ *
+ * 删除场景下它等价于已删除（幂等成功）；其余错误必须向上冒泡返回 ok:false，
+ * 否则端上会清掉持久化的待删除标记并放行上传，而服务端数据其实还在，
+ * 下次拉取会把「已清空」的数据又并回来（评审 P2 4425946091）。
+ */
+function isNotFound(e) {
+  const code = e && (e.errorCode != null ? e.errorCode : e.errCode)
+  if (code === -502005 || code === -502004) return true
+  return /not exist|不存在/i.test(String((e && (e.message || e.errMsg)) || ''))
+}
+
 function sanitizeStats(payload) {
   const src = payload && typeof payload === 'object' ? payload : {}
   const out = {}
@@ -174,16 +187,21 @@ exports.main = async (event) => {
   }
 
   if (action === 'delete') {
-    // 删除学习档案与全部作答流水（对应前端「清空学习数据」）
+    // 删除学习档案与全部作答流水（对应前端「清空学习数据」）。
+    //
+    // 只有「确认不存在」才算删除成功（幂等）；其余错误必须向上冒泡返回 ok:false。
+    // 无条件吞异常再返回成功是危险的：端上会据此清掉持久化的待删除标记
+    // 并放行上传，而服务端数据其实还在，下次拉取就把「已清空」的数据
+    // 又并回来（评审 P2 4425946091）。
     try {
       await STATS.doc(openid).remove()
     } catch (e) {
-      /* 文档不存在视为已清空 */
+      if (!isNotFound(e)) return { ok: false, error: 'DELETE_STATS_FAILED' }
     }
     try {
       await ATTEMPTS.where({ openid }).remove()
     } catch (e) {
-      /* 无作答流水视为已清空 */
+      if (!isNotFound(e)) return { ok: false, error: 'DELETE_ATTEMPTS_FAILED' }
     }
     return { ok: true }
   }
