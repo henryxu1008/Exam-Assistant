@@ -6,20 +6,18 @@
  * 本模块对外提供与旧 questions.js 完全一致的函数集合，因此 pages / store / analytics / ai
  * 等调用方无需改动。
  *
- * 题目字段见 manifest.js 顶部说明。
+ * 题库上云（动态更新题目、不发版）：
+ *  - 默认数据源来自静态 manifest + 分片（离线 / 控制台未配置时的兜底）。
+ *  - 启动后由 app.js 调用 loadCloudBank() 从 bankSync 拉取云端题库，整体替换 source。
+ *  - pushStaticBankToCloud() 在云端为空时把内置静态题库种入云端（仅一次，受 seed 标记保护）。
+ *  - 拉到的云端题库会缓存到本地存储，下次启动即使断网也用得上一次云端版本。
+ *  - 所有查询函数只读 `source`，因此切换数据源对外完全透明。
  *
- * 后续「题库上云 / 分包」：只需把 loadSubject 里的 require 换成异步拉取（fetch / 分包加载），
- * 其余查询逻辑不动。
+ * 题目字段见 manifest.js 顶部说明。
  */
 
 const manifest = require('./manifest.js')
-
-const SUBJECT_BY_KEY = {}
-const SUBJECT_BY_NAME = {}
-manifest.subjects.forEach((s) => {
-  SUBJECT_BY_KEY[s.key] = s
-  SUBJECT_BY_NAME[s.name] = s
-})
+const config = require('../config.js')
 
 const cache = {}
 function loadSubject(key) {
@@ -30,12 +28,31 @@ function loadSubject(key) {
   return list
 }
 
-function allQuestions() {
-  let out = []
+/** 由静态 manifest + 分片组装一个完整数据源对象（与云端结构一致） */
+function buildStaticSource() {
+  const questions = {}
   manifest.subjects.forEach((s) => {
-    out = out.concat(loadSubject(s.key))
+    questions[s.key] = loadSubject(s.key)
   })
-  return out
+  return { manifest: manifest, questions: questions }
+}
+
+// 当前数据源：先尝试用上一次缓存的云端题库，否则用静态兜底
+let source = buildStaticSource()
+
+const CLOUD_BANK_KEY = 'exam_quiz_bank_cloud_v1'
+function loadPersistedCloudBank() {
+  try {
+    const raw = wx.getStorageSync(CLOUD_BANK_KEY)
+    if (raw && raw.manifest && raw.questions) return raw
+  } catch (e) {
+    /* ignore */
+  }
+  return null
+}
+if (typeof wx !== 'undefined') {
+  const persisted = loadPersistedCloudBank()
+  if (persisted) source = persisted
 }
 
 let _index = null
@@ -46,8 +63,12 @@ function index() {
   return _index
 }
 
-function getAllQuestions() {
-  return allQuestions().slice()
+function allQuestions() {
+  let out = []
+  source.manifest.subjects.forEach((s) => {
+    out = out.concat(source.questions[s.key] || [])
+  })
+  return out
 }
 
 function findQuestion(id) {
@@ -55,22 +76,26 @@ function findQuestion(id) {
   return index().get(id) || null
 }
 
+function getAllQuestions() {
+  return allQuestions().slice()
+}
+
 function getSubjects() {
-  // 科目清单由 manifest 驱动；count 仍按真实题目累计
-  return manifest.subjects.map((s) => {
-    const count = loadSubject(s.key).reduce((n) => n + 1, 0)
-    return { name: s.name, count: count }
-  })
+  // 科目清单由 dataSource 驱动；count 按真实题目累计
+  return source.manifest.subjects.map((s) => ({
+    name: s.name,
+    count: (source.questions[s.key] || []).length
+  }))
 }
 
 function getChapters(subject) {
-  // 章节清单由 manifest 驱动
+  // 章节清单由 dataSource 驱动
   if (!subject) {
     const all = []
-    manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(c.name)))
+    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(c.name)))
     return all
   }
-  const s = SUBJECT_BY_NAME[subject]
+  const s = source.manifest.subjects.filter((x) => x.name === subject)[0]
   return s ? s.chapters.map((c) => c.name) : []
 }
 
@@ -187,6 +212,89 @@ function judge(type, selected, answer) {
   return sel.length === ans.length && ans.every((k) => sel.indexOf(k) > -1)
 }
 
+/** 用云端题库整体替换数据源（结构须为 {manifest, questions}）；成功返回 true */
+function swapSource(bank) {
+  if (!bank || !bank.manifest || !bank.questions) return false
+  source = bank
+  _index = null
+  try {
+    wx.setStorageSync(CLOUD_BANK_KEY, bank)
+  } catch (e) {
+    /* ignore */
+  }
+  return true
+}
+
+function hasCloud() {
+  // 仅在云已初始化后才调用云 API，避免 "Cloud API isn't enabled"；
+  // 同时兼容无 wx 的运行环境（如部分测试）
+  if (typeof wx === 'undefined' || !wx.__cloudReady) return false
+  return !!wx.cloud && typeof wx.cloud.callFunction === 'function'
+}
+
+/** 从云端拉取题库并整体替换数据源；无云/失败时保持现有数据源 */
+async function loadCloudBank() {
+  if (!hasCloud()) return false
+  try {
+    const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'get' } })
+    const r = res && res.result
+    if (r && r.ok && r.bank) return swapSource(r.bank)
+  } catch (e) {
+    /* ignore */
+  }
+  return false
+}
+
+/** 登录会话存储键，与 utils/user.js 保持一致（避免 require user 造成循环依赖） */
+const SESSION_KEY = 'exam_quiz_session_v1'
+
+/** 读取本地会话令牌；题库写入是鉴权操作，没有令牌就不该发起（云端会直接拒绝） */
+function getToken() {
+  try {
+    const s = wx.getStorageSync(SESSION_KEY)
+    return (s && s.token) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+/**
+ * 一次性把内置静态题库种入云端（仅当云端为空）；受本地 seed 标记保护，不会反复覆盖。
+ * 云端同时做了鉴权：无令牌拒绝；题库已存在时仅管理员可强制覆盖（评审 P1）。
+ * @param {Object} [opt] { force: true } 由管理员工具调用时显式全量覆盖
+ */
+const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
+async function pushStaticBankToCloud(opt) {
+  if (!hasCloud()) return false
+  try {
+    const force = !!(opt && opt.force)
+    if (!force && wx.getStorageSync(SEED_FLAG_KEY)) return false
+    const token = getToken()
+    if (!token) return false // 未登录：云端会拒绝，不浪费一次调用
+    const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'get' } })
+    const r = res && res.result
+    if (!force && r && r.ok && r.bank) {
+      wx.setStorageSync(SEED_FLAG_KEY, 1) // 云端已存在，标记已种
+      return false
+    }
+    const staticBank = buildStaticSource()
+    const res2 = await wx.cloud.callFunction({
+      name: config.functions.bankSync,
+      data: { action: 'set', token: token, bank: staticBank, force: force }
+    })
+    const r2 = res2 && res2.result
+    if (!r2 || !r2.ok) {
+      // BANK_EXISTS 说明云端已有题库（可能是并发初始化），本地按「已种入」处理即可
+      if (r2 && r2.error === 'BANK_EXISTS') wx.setStorageSync(SEED_FLAG_KEY, 1)
+      return false
+    }
+    wx.setStorageSync(SEED_FLAG_KEY, 1)
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
 const api = {
   getAllQuestions,
   findQuestion,
@@ -201,7 +309,9 @@ const api = {
   isMultiSelect,
   normalizeText,
   judge,
-  TYPE_MAP
+  TYPE_MAP,
+  loadCloudBank,
+  pushStaticBankToCloud
 }
 
 // 兼容旧代码对 bank.QUESTIONS 的直接引用：保持惰性（不提前加载全部分片）

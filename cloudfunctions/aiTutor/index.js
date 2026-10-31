@@ -91,6 +91,7 @@ function callLLM(messages, subject) {
     try {
       url = new URL(CONFIG.endpoint)
     } catch (e) {
+      // swallow: endpoint 不是合法 URL，按「未配置上游」处理并回落本地作答
       resolve(null)
       return
     }
@@ -128,6 +129,8 @@ function callLLM(messages, subject) {
           try {
             data = JSON.parse(body)
           } catch (e) {
+            // swallow: 流里夹杂非 JSON 的保活行/脏数据时跳过该行继续解析，
+            // 最终拿不到 choices 就回落本地作答
             data = null
           }
           const choice = data && data.choices && data.choices[0]
@@ -182,7 +185,8 @@ async function reserveDailyQuota() {
       try {
         await USAGE.add({ data: { _id: key, date: key, count, createdAt: Date.now(), updatedAt: Date.now() } })
       } catch (e) {
-        // 并发创建时 _id 唯一约束只允许一个成功，后续仍须条件更新成功才能放行。
+        // swallow: 并发创建时 _id 唯一约束只允许一个成功，后续仍须条件更新成功才能放行。
+        // 这里失败不吃掉配额判定——真正放行与否由下面的条件自增决定。
       }
     }
     // 条件自增：仅当 count < cap 时 +1；updated===1 视为预约成功（并发安全）
@@ -192,6 +196,8 @@ async function reserveDailyQuota() {
     const updated = (upd && upd.updated) || (upd && upd.stats && upd.stats.updated) || 0
     return updated === 1
   } catch (e) {
+    // swallow: 预约过程中的任何失败（含计数读取失败）都视为「未预约成功」，
+    // 调用方据此拒绝本次请求——方向是 fail-closed，读失败不会变成「配额充足」。
     return false
   }
 }

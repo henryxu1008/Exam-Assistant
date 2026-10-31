@@ -1,0 +1,10 @@
+{
+  "name": "initConfig",
+  "version": "1.0.0",
+  "description": "一次性初始化：预置目标考试可选项到 appConfig 集合",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  },
+  "license": "MIT"
+}

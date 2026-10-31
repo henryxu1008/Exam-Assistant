@@ -169,7 +169,7 @@
     <view class="menu-item" wx:if="{{logged}}" bindtap="onLogout">
       <text class="menu-icon mi-gray">退</text>
       <text class="grow">退出登录</text>
-      <text class="small muted">清除本机资料 ›</text>
+      <text class="small muted">清空学习数据 ›</text>
     </view>
     <view class="menu-item" wx:else bindtap="goLogin">
       <text class="menu-icon mi-blue">登</text>
@@ -183,5 +183,5 @@
     </view>
   </view>
 
-  <view class="foot-tip small muted">数据全部保存在本机，卸载小程序将一并清除</view>
+  <view class="foot-tip small muted">学习数据已同步到云端，换设备也能延续进度</view>
 </view>

@@ -1,0 +1,10 @@
+{
+  "name": "studySync",
+  "version": "1.0.0",
+  "description": "学习档案云端同步：读取 / 更新（token 校验，白名单字段）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  },
+  "license": "MIT"
+}

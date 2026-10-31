@@ -166,24 +166,21 @@
   padding: 16rpx 0 8rpx;
 }
 
-.avatar-btn {
+/* 正方形头像盒子：固定宽高 + 圆形裁剪，图片不再受 button 内部布局影响 */
+.avatar-box {
+  position: relative;
   width: 168rpx;
   height: 168rpx;
-  padding: 0;
+  flex-shrink: 0;
   border-radius: 50%;
-  background: #f3f5fa;
-  border: none;
   overflow: hidden;
-}
-
-.avatar-btn::after {
-  border: none;
+  background: #f3f5fa;
 }
 
 .avatar-img {
+  display: block;
   width: 168rpx;
   height: 168rpx;
-  display: block;
 }
 
 .avatar-ph {
@@ -195,6 +192,25 @@
   font-weight: 700;
   color: #ffffff;
   background: linear-gradient(135deg, #6f9bff, #3d6bff);
+}
+
+/* 覆盖在头像上的选择按钮：只作点击热区，不参与布局，也不显示默认按钮样式 */
+.avatar-hit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 168rpx;
+  height: 168rpx;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.avatar-hit::after {
+  border: none;
 }
 
 .avatar-tip {
@@ -230,6 +246,45 @@
 .field-ph {
   color: #a7aebd;
   font-size: 27rpx;
+}
+
+/* ---------- 目标考试选择器 ---------- */
+.field-picker {
+  flex: 1;
+  height: 92rpx;
+  overflow: hidden;
+}
+
+.picker-inner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 92rpx;
+}
+
+.picker-value {
+  flex: 1;
+  font-size: 28rpx;
+  color: #1f2733;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-placeholder {
+  flex: 1;
+  font-size: 27rpx;
+  color: #a7aebd;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-arrow {
+  margin-left: 12rpx;
+  font-size: 36rpx;
+  line-height: 1;
+  color: #a7aebd;
 }
 
 .save-btn {
@@ -302,4 +357,27 @@
 .agree-link {
   display: inline;
   color: #3d6bff;
+}
+
+/* 登录前强制勾选协议 */
+.agree-check {
+  margin-bottom: 28rpx;
+}
+
+.agree-check-label {
+  display: flex;
+  align-items: flex-start;
+}
+
+.agree-checkbox {
+  margin-top: 4rpx;
+  transform: scale(0.8);
+}
+
+.agree-check-text {
+  flex: 1;
+  margin-left: 8rpx;
+  font-size: 24rpx;
+  line-height: 34rpx;
+  color: #8a8f99;
 }

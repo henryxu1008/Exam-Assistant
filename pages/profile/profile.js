@@ -141,7 +141,7 @@ Page({
   onAbout() {
     wx.showModal({
       title: '关于',
-      content: '备考刷题助手 v1.0.0\n本地题库 + 离线 AI 助教，全部数据保存在本机，不上传服务器。',
+      content: '备考刷题助手 v1.0.0\n云端题库与 AI 助教，学习数据已同步到云端，换设备不丢失。',
       showCancel: false,
       confirmText: '知道了'
     })
@@ -167,7 +167,7 @@ Page({
   onLogout() {
     wx.showModal({
       title: '退出登录',
-      content: '退出后需要重新微信授权登录（答题记录保留在本机）',
+      content: '退出后需要重新微信授权登录（学习数据已保存在云端）',
       confirmText: '退出',
       confirmColor: '#e5484d',
       success(res) {
