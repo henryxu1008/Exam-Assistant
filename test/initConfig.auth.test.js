@@ -27,7 +27,9 @@ function harness({ env = {}, seeds = {} } = {}) {
   const appConfig = new Map()
   Object.keys(seeds).forEach((id) => appConfig.set(id, seeds[id]))
   /** 置为 Error 可模拟数据库读取抛出非「不存在」的失败 */
-  const fail = { get: null }
+  const fail = { get: null, id: null, result: undefined }
+  const reads = []
+  const writes = []
 
   const collections = {
     users: new Map([['u1', { _id: 'u1', openid: 'o1', token: 'tok', tokenAt: NOW }]]),
@@ -39,12 +41,15 @@ function harness({ env = {}, seeds = {} } = {}) {
       doc(id) {
         return {
           async get() {
-            if (fail.get) throw fail.get
+            reads.push(id)
+            if (fail.get && (!fail.id || fail.id === id)) throw fail.get
+            if (fail.result !== undefined) return fail.result
             const store = collections[name]
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
           },
           async set({ data }) {
+            writes.push(id)
             collections[name].set(id, clone(data))
             return { stats: { updated: 1 } }
           }
@@ -85,6 +90,8 @@ function harness({ env = {}, seeds = {} } = {}) {
   return {
     main: loadModule(path.join(__dirname, '../cloudfunctions/initConfig/index.js')).main,
     fail: fail,
+    reads: reads,
+    writes: writes,
     doc: (id) => (collections.appConfig.has(id) ? clone(collections.appConfig.get(id)) : null)
   }
 }
@@ -193,6 +200,7 @@ test('读取已有配置失败时中止初始化，不得用默认值覆盖（�
 
   // 必须中止本次初始化，而不是拿 null 当「尚未初始化」写回默认值
   await assert.rejects(h.main({ adminSecret: SECRET }), /read timeout/)
+  assert.deepEqual(h.writes, [], '读取失败后不允许任何配置写入')
 
   // 运营在控制台设好的公告、开关、强制更新必须原样保留
   const doc = h.doc('runtime')
@@ -201,6 +209,48 @@ test('读取已有配置失败时中止初始化，不得用默认值覆盖（�
   assert.equal(doc.features.aiAdvice, false, '已关闭的功能开关不得被重新打开')
   assert.equal(doc.forceUpdate, true, '强制更新不得被重置为 false')
   assert.equal(doc.minVersion, '9.9.9', '最低版本不得被降低')
+})
+
+test('任一配置读取失败均在全部写入之前中止，恢复后可重试', async () => {
+  const seeds = {
+    examOptions: { _id: 'examOptions', options: ['自定义考试'] },
+    runtime: { _id: 'runtime', notice: '维护公告', features: { aiAdvice: false }, forceUpdate: true, minVersion: '9.9.9' }
+  }
+  for (const id of ['examOptions', 'runtime']) {
+    for (const error of [
+      new Error('read timeout'),
+      Object.assign(new Error('permission denied'), { errCode: -502003 }),
+      new Error('index does not exist'),
+      Object.assign(new Error('collection not exists'), { errCode: -502005 })
+    ]) {
+      const h = harness({ env: { ADMIN_SECRET: SECRET }, seeds: seeds })
+      h.fail.id = id
+      h.fail.get = error
+      await assert.rejects(h.main({ adminSecret: SECRET }), (e) => e === error)
+      assert.deepEqual(h.writes, [], id + ': 不得发生部分写入')
+      assert.deepEqual(h.doc('examOptions'), seeds.examOptions)
+      assert.deepEqual(h.doc('runtime'), seeds.runtime)
+
+      h.fail.get = null
+      assert.equal((await h.main({ adminSecret: SECRET })).ok, true)
+      assert.equal(h.doc('runtime').forceUpdate, true)
+      assert.equal(h.doc('runtime').features.aiAdvice, false)
+    }
+  }
+})
+
+test('异常读取响应不能触发配置覆盖，拒绝的凭据也不能访问数据库', async () => {
+  const seed = { _id: 'runtime', forceUpdate: true, notice: '维护公告' }
+  const h = harness({ env: { ADMIN_SECRET: SECRET }, seeds: { runtime: seed } })
+  h.fail.result = {}
+  await assert.rejects(h.main({ adminSecret: SECRET }), /INVALID_DOCUMENT_RESPONSE/)
+  assert.deepEqual(h.writes, [])
+  assert.deepEqual(h.doc('runtime'), seed)
+
+  h.reads.length = 0
+  assert.equal((await h.main({ adminSecret: 'wrong', force: true })).ok, false)
+  assert.deepEqual(h.reads, [])
+  assert.deepEqual(h.writes, [])
 })
 
 test('force=true 时整体重置为默认值', async () => {

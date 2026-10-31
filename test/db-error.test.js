@@ -17,9 +17,8 @@ const { isNotFound, readOptionalDoc } = require('../shared/db-error.js')
 test('isNotFound：只有「确认不存在」为真', () => {
   // 确认不存在：允许下游视为「没有数据」
   assert.equal(isNotFound(new Error('document does not exist')), true, '文档不存在')
-  assert.equal(isNotFound(new Error('collection not exists')), true, '集合不存在')
-  assert.equal(isNotFound({ errCode: -502005, message: '' }), true, 'errCode -502005')
-  assert.equal(isNotFound({ errorCode: -502004 }), true, 'errorCode -502004')
+  assert.equal(isNotFound({ code: 'DOCUMENT_NOT_FOUND' }), true, '明确的单文档不存在')
+  assert.equal(isNotFound({ errCode: -1, errMsg: 'document.get:fail document with _id runtime does not exist' }), true)
   assert.equal(isNotFound(new Error('文档不存在')), true, '中文「不存在」')
 
   // 其余一律为假：绝不把「读失败」当成「不存在」
@@ -68,9 +67,26 @@ test('readOptionalDoc：确认不存在返回 null，其余错误原样抛出', 
     { a: 1 },
     '正常读取返回 data'
   )
-  assert.equal(
-    await readOptionalDoc(async () => ({})),
-    null,
-    '无 data 视为不存在'
-  )
+  assert.equal(await readOptionalDoc(async () => ({ data: null })), null)
+})
+
+test('基础设施缺失或错误码冲突不得当成文档不存在', () => {
+  for (const error of [
+    new Error('collection not exists'),
+    new Error('index does not exist'),
+    new Error('database does not exist'),
+    { errCode: -502005 },
+    { errorCode: -502004 },
+    { code: 'DATABASE_COLLECTION_NOT_EXIST' },
+    { code: 'DATABASE_PERMISSION_DENIED', message: 'document does not exist' },
+    { errCode: -502001, message: 'document does not exist' },
+    { errorCode: 'UNKNOWN', errCode: 'DOCUMENT_NOT_FOUND' },
+    new Error('permission denied: document does not exist')
+  ]) assert.equal(isNotFound(error), false, JSON.stringify(error))
+})
+
+test('可选文档读取缺少有效 data 时必须失败', async () => {
+  for (const result of [undefined, null, {}, { data: undefined }, { data: [] }, { data: false }]) {
+    await assert.rejects(readOptionalDoc(async () => result), /INVALID_DOCUMENT_RESPONSE/)
+  }
 })

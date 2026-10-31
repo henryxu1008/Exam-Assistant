@@ -28,7 +28,7 @@ function makeHarness() {
   const stores = { users: users, studyStats: studyStats, attempts: attempts }
 
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
-  const fail = { remove: null, get: null, attempts: null }
+  const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined }
 
   function collection(name) {
     const store = stores[name]
@@ -68,6 +68,7 @@ function makeHarness() {
           async get() {
             // 只命中 attempts：users 上的同款查询是令牌查找，不能一并打挂
             if (fail.attempts && name === 'attempts') throw fail.attempts
+            if (name === 'attempts' && fail.attemptsResult !== undefined) return fail.attemptsResult
             return { data: rows().slice(skip, skip + limit).map(clone) }
           },
           async remove() {
@@ -271,16 +272,41 @@ test('作答流水查询失败不得报告「恢复已完成」（评审 P2 4430
   assert.notStrictEqual(res.hasMore, false, '不得给出「没有更多了」的假象')
 })
 
-test('还没有任何作答流水时仍返回空列表（幂等，评审 P2 4430849971）', async () => {
+test('成功查询且没有作答流水时才返回空列表（评审 P2 4430849971）', async () => {
   const h = makeHarness()
-  // 集合尚未建立也属于「确认不存在」
-  h.fail.attempts = Object.assign(new Error('collection not exists'), { errCode: -502005 })
 
   const res = await h.main({ token: 'tokA', action: 'get', skip: 0 })
-  assert.strictEqual(res.ok, true, '确认不存在应视为尚无流水')
+  assert.strictEqual(res.ok, true, '成功查询的空页表示尚无流水')
   // 云函数跑在 vm 里，数组原型跨 realm，不能用 deepEqual
   assert.strictEqual(res.attempts.length, 0, '应为空列表')
   assert.strictEqual(res.hasMore, false)
+})
+
+test('流水查询的集合/索引缺失与权限错误均不得当成空页', async () => {
+  const h = makeHarness()
+  for (const error of [
+    Object.assign(new Error('collection not exists'), { errCode: -502005 }),
+    new Error('index does not exist'),
+    new Error('document does not exist'),
+    Object.assign(new Error('permission denied'), { errCode: -502003 })
+  ]) {
+    h.fail.attempts = error
+    const res = await h.main({ token: 'tokA', action: 'get', skip: 100 })
+    assert.strictEqual(res.ok, false, error.message)
+    assert.strictEqual(res.error, 'READ_ATTEMPTS_FAILED')
+    assert.strictEqual(res.stats, undefined, '失败时不发布局部档案')
+    assert.strictEqual(res.hasMore, undefined, '失败时不发布完成游标')
+  }
+})
+
+test('流水查询响应结构异常不得当成空页', async () => {
+  const h = makeHarness()
+  for (const result of [null, {}, { data: null }, { data: {} }]) {
+    h.fail.attemptsResult = result
+    const res = await h.main({ token: 'tokA', action: 'get' })
+    assert.strictEqual(res.ok, false)
+    assert.strictEqual(res.error, 'READ_ATTEMPTS_FAILED')
+  }
 })
 
 test('文档不存在时删除仍算成功（幂等，评审 P2 4425946091）', async () => {

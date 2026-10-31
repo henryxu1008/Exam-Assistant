@@ -1,6 +1,6 @@
 /**
  * shared/db-error.js
- * 云数据库「确认不存在」的统一判定。
+ * 云数据库「确认单文档不存在」的统一判定。
  *
  * 为什么要单独抽成一个共享模块：
  * 多个云函数都要把「文档不存在」归一化为「没有数据」，但**只有确认不存在
@@ -17,11 +17,11 @@
  * 也不能让后面的写入覆盖掉读不到的真实数据。
  */
 
-/** 云数据库明确的「集合 / 文档不存在」错误码 */
-const NOT_FOUND_CODES = [-502004, -502005]
+/** 只接受明确的单文档缺失；集合/数据库/索引缺失均是访问失败。 */
+const NOT_FOUND_CODES = ['DOCUMENT_NOT_FOUND']
 
-/** 兜底：部分 SDK 版本只给文本，不含错误码 */
-const NOT_FOUND_TEXT = /not exist|不存在/i
+/** 旧版 wx SDK 可能只给单文档缺失文本或通用 -1；不能匹配任意 not exist。 */
+const NOT_FOUND_TEXT = /^(?:document\.get:fail\s*)?(?:document(?: with _id [^\r\n]+)? does not exist|文档不存在)[.!。]?$/i
 
 /**
  * 该错误是否表示「目标确认不存在」。
@@ -29,9 +29,12 @@ const NOT_FOUND_TEXT = /not exist|不存在/i
  * @returns {Boolean}
  */
 function isNotFound(e) {
-  const code = e && (e.errorCode != null ? e.errorCode : e.errCode)
-  if (typeof code === 'number' && NOT_FOUND_CODES.indexOf(code) !== -1) return true
-  return NOT_FOUND_TEXT.test(String((e && (e.message || e.errMsg)) || ''))
+  if (!e) return false
+  const codes = [e.errorCode, e.errCode, e.code].filter((code) => code != null && code !== '')
+  if (codes.length && codes.every((code) => NOT_FOUND_CODES.indexOf(code) !== -1)) return true
+  // 有明确的失败码时不得再用消息文本推翻它；未知码也不能凭猜测放行。
+  if (codes.some((code) => code !== -1 && code !== '-1')) return false
+  return NOT_FOUND_TEXT.test(String(e.message || e.errMsg || '').trim())
 }
 
 /**
@@ -46,7 +49,12 @@ function isNotFound(e) {
 async function readOptionalDoc(getDoc) {
   try {
     const got = await getDoc()
-    return (got && got.data) || null
+    // 成功响应必须带 data；缺字段/结构异常也不构成「确认不存在」。
+    if (!got || !Object.prototype.hasOwnProperty.call(got, 'data') ||
+      (got.data !== null && (typeof got.data !== 'object' || Array.isArray(got.data)))) {
+      throw new Error('INVALID_DOCUMENT_RESPONSE')
+    }
+    return got.data
   } catch (e) {
     if (isNotFound(e)) return null
     throw e

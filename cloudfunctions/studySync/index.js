@@ -103,20 +103,13 @@ exports.main = async (event) => {
   if (action === 'get') {
     let stats = null
     try {
-      const res = await STATS.doc(openid).get()
-      stats = res.data || null
+      stats = await readExisting(() => STATS.doc(openid).get())
     } catch (e) {
-      // 只有「确认不存在」才算尚未同步过；读失败必须报错，
-      // 否则端上会把「读不到」理解成「云端没有数据」（评审 P1 4429855402）
-      if (!isNotFound(e)) return { ok: false, error: 'READ_STATS_FAILED' }
-      stats = null
+      return { ok: false, error: 'READ_STATS_FAILED' }
     }
     // 作答流水可能很多：单查上限 100 条，采用分页拉取（按 createdAt + _id 排序避免重复/遗漏）
     const limit = Math.min(parseInt(event.limit, 10) || 100, 100)
     const skip = Math.max(parseInt(event.skip, 10) || 0, 0)
-    let attempts = []
-    let hasMore = false
-    let nextSkip = null
     try {
       const res = await ATTEMPTS.where({ openid })
         .orderBy('createdAt', 'asc')
@@ -124,22 +117,21 @@ exports.main = async (event) => {
         .skip(skip)
         .limit(limit)
         .get()
-      const list = res.data || []
-      attempts = list.map((d) => {
+      // 查询的「没有匹配记录」必须由成功响应里的空数组证明。
+      // 集合/索引缺失或响应异常都不能套用单文档不存在的语义。
+      if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
+      const list = res.data
+      const attempts = list.map((d) => {
         const { _id, openid: _o, ...rest } = d
         return rest
       })
-      hasMore = list.length >= limit
-      nextSkip = hasMore ? skip + list.length : null
+      const hasMore = list.length >= limit
+      const nextSkip = hasMore ? skip + list.length : null
+      return { ok: true, stats, attempts, hasMore, nextSkip }
     } catch (e) {
-      // 只有「确认还没有作答流水」才等价为空页；查询失败必须报错。
-      // 返回 {ok:true, attempts: [], hasMore: false} 会让端上把一次不完整的恢复
-      // 当成已完整恢复并停在 bootPulled=true：换机后 session 里带着「已提交」标记
-      // 却没有对应作答，页面会把这些题渲染成已提交且禁止重答（评审 P2 4430849971）。
-      if (!isNotFound(e)) return { ok: false, error: 'READ_ATTEMPTS_FAILED' }
-      attempts = []
+      // 任意分页失败都不发布局部档案或完成游标，让端上整批丢弃并可重试。
+      return { ok: false, error: 'READ_ATTEMPTS_FAILED' }
     }
-    return { ok: true, stats, attempts, hasMore, nextSkip }
   }
 
   if (action === 'update') {
