@@ -1,3 +1,4 @@
+const { withCommit } = require('./support/commit-response.js')
 require('./wx-shim.js')
 const { test, beforeEach, afterEach } = require('node:test')
 const assert = require('node:assert/strict')
@@ -28,7 +29,7 @@ beforeEach(() => {
     callFunction(opts) {
       if (opts.name === 'userProfile') return opts.data.action === 'config' ? runtime.promise : auth.promise
       const result = { ok: true, stats: null, bank: null, attempts: [], hasMore: false }
-      if (opts.success) opts.success({ result })
+      if (opts.success) opts.success({ result: withCommit(opts, result) })
       return Promise.resolve({ result })
     }
   }
@@ -140,7 +141,7 @@ test('同步完成后当前首页刷新学习数据，隐藏和销毁后不响�
   wx.cloud.callFunction = opts => {
     const result = { ok: true, attempts: [], acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id), hasMore: false, dataEpoch: 0,
       stats: { records: { synced: { id: 'synced', subject: store.getCurrentSubject(), chapter: '同步恢复', attempts: total, right: total, wrong: 0 } } } }
-    opts.success({ result })
+    opts.success({ result: withCommit(opts, result) })
     return Promise.resolve({ result })
   }
   await store.syncNow()
@@ -174,7 +175,7 @@ for (const name of ['analysis', 'profile']) {
     wx.cloud.callFunction = opts => {
       const result = { ok: true, attempts: [], acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id), hasMore: false, dataEpoch: 0,
         stats: { records: { synced: { id: 'synced', subject: store.getCurrentSubject(), chapter: '同步恢复', attempts: total, right: total, wrong: 0 } } } }
-      opts.success({ result })
+      opts.success({ result: withCommit(opts, result) })
       return Promise.resolve({ result })
     }
     await store.syncNow()

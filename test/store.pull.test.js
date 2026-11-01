@@ -1,3 +1,4 @@
+const { withCommit } = require('./support/commit-response.js')
 /**
  * store.pullFromCloud 分页拉取测试：验证云端作答流水超过单页上限（100）时，
  * 前端会带 skip 顺序翻页直到 hasMore=false，并最终与本地合并。
@@ -19,7 +20,7 @@ function setupCloud(pages) {
       const res = p || { ok: true, attempts: [], hasMore: false, nextSkip: null }
       const result = Object.assign({ ok: true }, res)
       // store 以 success/fail 回调方式调用（非 .then），mock 需触发 success
-      if (opts && typeof opts.success === 'function') opts.success({ result })
+      if (opts && typeof opts.success === 'function') opts.success({ result: withCommit(opts, result) })
       return Promise.resolve({ result })
     }
   }
@@ -105,7 +106,7 @@ test('恢复任一页失败时丢弃整批档案，重试从首页拉全后才�
   assert.deepStrictEqual(results, [false, false])
   assert.deepStrictEqual(store.load(), before)
   assert.deepStrictEqual(global.wx.getStorageSync(key), persistedBefore)
-  assert.strictEqual(calls.filter((c) => c.data.action === 'update').length, 0)
+  assert.strictEqual(calls.filter((c) => c.data.action === 'commitAttempts').length, 0)
 
   store.pullFromCloud((ok) => results.push(ok))
   assert.strictEqual(calls[3].data.skip, 0, '失败后的整批重试必须从首页开始')
@@ -148,16 +149,16 @@ test('首次上云无待传标记时，也会备份已有本地历史、设置�
       calls.push(opts)
       const result = { ok: true, stats: null, attempts: [], hasMore: false,
       dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }
-      opts.success({ result })
+      opts.success({ result: withCommit(opts, result) })
       return Promise.resolve({ result })
     } }
     assert.equal(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), '')
     store.load()
     await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(calls.filter((c) => c.data.action === 'update').length, 1, JSON.stringify(local))
+    assert.equal(calls.filter((c) => c.data.action === 'commitAttempts').length, 1, JSON.stringify(local))
     store.flush()
     await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(calls.filter((c) => c.data.action === 'update').length, 1, '初始化后无新编辑不重复备份')
+    assert.equal(calls.filter((c) => c.data.action === 'commitAttempts').length, 1, '初始化后无新编辑不重复备份')
   }
 })
 
@@ -173,10 +174,10 @@ test('空云端遇到全新默认本地状态时不制造无意义上传', async
     calls.push(opts)
     const result = { ok: true, stats: null, attempts: [], hasMore: false,
       dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }
-    opts.success({ result })
+    opts.success({ result: withCommit(opts, result) })
     return Promise.resolve({ result })
   } }
   store.load()
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(calls.filter((c) => c.data.action === 'update').length, 0)
+  assert.equal(calls.filter((c) => c.data.action === 'commitAttempts').length, 0)
 })

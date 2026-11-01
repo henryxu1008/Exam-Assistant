@@ -5,6 +5,7 @@
   "description": "备考刷题助手：微信小程序 + 云开发。本 package 仅用于本地单元测试 / lint / CI，不影响小程序运行时。",
   "scripts": {
     "test": "node --test",
+    "audit:learning": "node scripts/audit-learning.js",
     "lint": "node scripts/lint.js && node scripts/check-shared-sync.js && node scripts/check-error-handling.js"
   },
   "engines": {

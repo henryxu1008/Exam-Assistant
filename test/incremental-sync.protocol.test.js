@@ -9,7 +9,7 @@ const { device } = require('./support/study-sync-device.js')
 const snapshot = client => client.storage.get('exam_quiz_data_v1__alice')
 const cursor = client => snapshot(client).syncCursor.sequence
 const stop = (...clients) => clients.forEach(c => c.store.__clearFlushTimer())
-const write = (server, ids) => server.main({ token: 'tokA', action: 'update', attempts: ids.map((id, i) => ({ id, questionId: id, createdAt: 1000 - i })) })
+const write = (server, ids) => server.main({ token: 'tokA', action: 'commitAttempts', attemptProtocol: 2, attempts: ids.map((id, i) => ({ id, questionId: id, createdAt: 1000 - i })) })
 
 function appFor(client) {
   let app, network
@@ -72,7 +72,7 @@ test('网络恢复先确认离线队列，再拉取另一设备事实，双方�
   const before = a.controls.requests.length
   a.controls.offline = false
   assert.equal((await a.store.syncNow()).ok, true)
-  assert.deepEqual(a.controls.requests.slice(before).map(r => r.action), ['update', 'get'])
+  assert.deepEqual(a.controls.requests.slice(before).map(r => r.action), ['commitAttempts', 'get'])
   assert.equal(a.store.load().attemptOutbox.pending.length, 0)
   assert.equal(a.store.getAttempts().length, 2)
   assert.equal(a.store.getRecord('remote').attempts, 1)

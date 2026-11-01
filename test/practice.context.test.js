@@ -186,7 +186,11 @@ test('页面打开期间云端替换会话，立即恢复新题集，不把旧�
   page.setData({ selected: page.data.question.answer, canSubmit: true })
   const calls = []
   wx.__cloudReady = true
-  wx.cloud = { callFunction(opts) { calls.push(opts); return Promise.resolve() } }
+  wx.cloud = { callFunction(opts) {
+    calls.push(opts)
+    if (opts.data.action !== 'get') opts.fail(new Error('fixture offline write'))
+    return Promise.resolve()
+  } }
   store.pullFromCloud()
   const restored = {
     id: 'restored-session', subject: OTHER_SUBJECT, mode: 'single', questionIds: [questions[1].id],
@@ -249,7 +253,11 @@ test('同会话远端补齐作答后，页面刷新答案并直接结束得到�
   })
   const calls = []
   wx.__cloudReady = true
-  wx.cloud = { callFunction(opts) { calls.push(opts); return Promise.resolve() } }
+  wx.cloud = { callFunction(opts) {
+    calls.push(opts)
+    if (opts.data.action !== 'get') opts.fail(new Error('fixture offline write'))
+    return Promise.resolve()
+  } }
   store.pullFromCloud()
   calls.find((c) => c.data.action === 'get').success({ result: {
     ok: true, stats: { version: 3, practiceSession: remote },
@@ -339,4 +347,31 @@ test('本地保存失败时保留所选答案且不锁题，恢复存储后可�
   assert.equal(store.getRecord(q.id).attempts, 1)
   page.onSubmit()
   assert.equal(store.getAttempts().length, 1)
+})
+
+test('服务端确认改为业务 ID 后，本轮页面上下文与自动下一题计时器仍有效', async () => {
+  const { makeHarness } = require('./support/study-sync-harness.js')
+  const server = makeHarness()
+  wx.setStorageSync('exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' })
+  store.setUserScope('alice')
+  wx.__cloudReady = true
+  const requests = new Set(), outcomes = []
+  wx.cloud = { callFunction(opts) {
+    const task = server.main(opts.data).then(result => { outcomes.push({ action: opts.data.action, ok: result.ok, error: result.error }); opts.success({ result }) })
+    requests.add(task)
+    task.finally(() => requests.delete(task))
+    return task
+  } }
+  store.load()
+  const page = start('chapter')
+  store.saveSettings({ autoNext: true })
+  page.setData({ selected: page.data.question.answer })
+  page.onSubmit()
+  await new Promise(setImmediate)
+  while (requests.size) { await Promise.all([...requests]); await new Promise(setImmediate) }
+  assert.equal(page.data.submitted, true)
+  assert.equal(store.isPracticeContextCurrent(page._practiceContext), true)
+  assert.ok(page._timer, '确认只是 ID 收敛，不能取消已计划的自动下一题')
+  assert.ok(store.getPracticeSession().submitted[page.data.question.id].attemptId.startsWith('op_'), JSON.stringify(outcomes))
+  assert.equal(store.getRecord(page.data.question.id).attempts, 1)
 })

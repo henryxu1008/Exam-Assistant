@@ -19,18 +19,21 @@ function makeHarness() {
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
   const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined }
 
-  function collection(name, source = stores) {
+  const transactions = []
+  function collection(name, source = stores, trace = null) {
     const store = source[name]
     return {
       doc(id) {
         return {
           async get() {
+            if (trace) trace.push({ name, id, operation: 'get' })
             if (fail.get) throw fail.get
             if (name === 'studyStats' && String(id).startsWith('aiClear_') && fail.receiptRead) throw fail.receiptRead
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
           },
           async set({ data }) {
+            if (trace) trace.push({ name, id, operation: 'set' })
             if (name === 'attempts' && fail.attemptWrite) throw fail.attemptWrite
             if (name === 'studyStats' && fail.statsWrite) throw fail.statsWrite
             if (name === 'studyStats' && data.kind === 'aiClearReceipt' && fail.receiptWrite) throw fail.receiptWrite
@@ -94,7 +97,9 @@ function makeHarness() {
   db.runTransaction = (fn) => {
     const run = queue.then(async () => {
       const draft = Object.fromEntries(Object.entries(stores).map(([key, map]) => [key, new Map(Array.from(map, ([id, row]) => [id, clone(row)]))]))
-      const result = await fn({ collection: (name) => collection(name, draft) })
+      const trace = []
+      transactions.push(trace)
+      const result = await fn({ collection: (name) => collection(name, draft, trace) })
       for (const name of Object.keys(stores)) {
         stores[name].clear()
         for (const [id, row] of draft[name]) stores[name].set(id, row)
@@ -130,6 +135,7 @@ function makeHarness() {
 
   return {
     db: db,
+    transactions,
     users: users,
     studyStats: studyStats,
     attempts: attempts,
