@@ -214,7 +214,7 @@ exports.main = async (event = {}) => {
           } else await attemptRef.set({ data: attempt })
         }
         await ref.set({ data: merged })
-        return { ok: true, dataEpoch, aiEpoch: aiEpochOf(merged), aiStale }
+        return { ok: true, dataEpoch, aiEpoch: aiEpochOf(merged), aiStale, acceptedAttemptIds: attempts.map(a => a.id) }
       })
     } catch (e) { return { ok: false, error: e.code === 'ATTEMPT_CONFLICT' ? e.code : 'TX_FAILED' } }
   }

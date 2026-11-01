@@ -1,82 +1,9 @@
 /** 真实 store 与真实云函数组合，独立设备存储 + 模拟传输故障，不访问云数据库。 */
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const path = require('node:path')
-const vm = require('node:vm')
 const { makeHarness } = require('./support/study-sync-harness.js')
 
-function device(server, saved, cloudReady = true) {
-  const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
-    : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
-  const inflight = new Set()
-  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, requests: [] }
-  const clone = value => value === undefined ? '' : JSON.parse(JSON.stringify(value))
-  const wx = {
-    __cloudReady: cloudReady,
-    getStorageSync: key => {
-      if (controls.failDeleteRead && key.startsWith('exam_quiz_pending_delete_v1__')) {
-        if (typeof controls.failDeleteRead === 'number') controls.failDeleteRead -= 1
-        throw new Error('injected pending marker read failure')
-      }
-      return clone(storage.get(key))
-    },
-    setStorageSync: (key, value) => {
-      if (controls.failDeleteWrite && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected storage full for delete marker')
-      if (controls.failDataSyncWrite && key.startsWith('exam_quiz_data_v1__')) throw new Error('injected deletion ACK checkpoint failure')
-      storage.set(key, clone(value))
-    },
-    removeStorageSync: key => {
-      if (controls.failDeleteRemove && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected pending marker remove failure')
-      storage.delete(key)
-    },
-    setStorage: opts => {
-      if (controls.failStorage) { if (opts.fail) opts.fail(new Error('injected local storage failure')); return }
-      storage.set(opts.key, clone(opts.data)); if (opts.success) opts.success()
-    },
-    cloud: {
-      callFunction(opts) {
-        controls.requests.push(clone(opts.data))
-        const promise = (async () => {
-          if (controls.offline) { opts.fail(new Error('offline')); return }
-          const result = await server.main(clone(opts.data))
-          if (opts.data.action === 'clearAI') {
-            if (controls.clearAckGate) await controls.clearAckGate
-            if (controls.loseClearAck) { controls.loseClearAck = false; opts.fail(new Error('clear ack lost')); return }
-          }
-          if (controls.loseDeleteAck && opts.data.action === 'delete') {
-            controls.loseDeleteAck = false
-            opts.fail(new Error('ack lost'))
-          } else opts.success({ result: clone(result) })
-        })()
-        inflight.add(promise)
-        promise.finally(() => inflight.delete(promise))
-        return promise
-      }
-    }
-  }
-  const module = { exports: {} }
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../utils/store.js'), 'utf8'), {
-    module, wx, console, setTimeout, clearTimeout,
-    require(name) {
-      if (name === './questions.js') return { getSubjects: () => [{ name: '公基' }] }
-      if (name === './config.js') return require('../utils/config.js')
-      if (name === '../shared/stats-merge.js') return require('../shared/stats-merge.js')
-      throw new Error('Unexpected module ' + name)
-    }
-  })
-  const store = module.exports
-  store.setUserScope('alice')
-  store.load()
-  return {
-    store, controls, storage, wx,
-    async settle() {
-      await new Promise(setImmediate)
-      while (inflight.size) { await Promise.all([...inflight]); await new Promise(setImmediate) }
-    },
-    answer(id) { store.submitAttempt({ id, subject: '公基', chapter: '测试', type: 'single', answer: ['A'] }, ['A'], true, 10, id); store.flush() }
-  }
-}
+const { device } = require('./support/study-sync-device.js')
 
 test('双设备协议：清空后旧设备的离线快照被拒绝并恢复新代次', async () => {
   const server = makeHarness()
@@ -507,7 +434,7 @@ test('匿名本地清空不创建云端删除意图，也不能使用缓存令�
   a.store.__clearFlushTimer()
 })
 
-test('删除意图写盘失败时中止清空，保留原档案、游标和页面上下文', async () => {
+test('删除意图写盘失败时中止清空，保留原档案、队列和页面上下文', async () => {
   const server = makeHarness()
   const a = device(server)
   await a.settle()
@@ -520,7 +447,7 @@ test('删除意图写盘失败时中止清空，保留原档案、游标和页�
   await a.settle()
   const before = JSON.stringify(a.store.load())
   const persisted = JSON.stringify(a.storage.get('exam_quiz_data_v1__alice'))
-  const cursor = a.storage.get('exam_quiz_attempt_cursor_v1__alice')
+  const queue = JSON.stringify(a.storage.get('exam_quiz_data_v1__alice').attemptOutbox)
   const aiVersion = a.store.getAiConversationVersion()
   const practice = a.store.getPracticeContext()
   const requests = a.controls.requests.length
@@ -532,7 +459,7 @@ test('删除意图写盘失败时中止清空，保留原档案、游标和页�
   assert.equal(result.error, 'PERSIST_DELETE_FAILED')
   assert.equal(JSON.stringify(a.store.load()), before)
   assert.equal(JSON.stringify(a.storage.get('exam_quiz_data_v1__alice')), persisted)
-  assert.equal(a.storage.get('exam_quiz_attempt_cursor_v1__alice'), cursor)
+  assert.equal(JSON.stringify(a.storage.get('exam_quiz_data_v1__alice').attemptOutbox), queue)
   assert.equal(a.store.getAiConversationVersion(), aiVersion)
   assert.equal(a.store.isPracticeContextCurrent(practice), true)
   assert.equal(a.controls.requests.length, requests, '失败操作不能删除或上传空快照')

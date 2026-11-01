@@ -145,7 +145,8 @@ test('首次上云无待传标记时，也会备份已有本地历史、设置�
     wx.__cloudReady = true
     wx.cloud = { callFunction(opts) {
       calls.push(opts)
-      const result = { ok: true, stats: null, attempts: [], hasMore: false }
+      const result = { ok: true, stats: null, attempts: [], hasMore: false,
+      dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }
       opts.success({ result })
       return Promise.resolve({ result })
     } }
@@ -169,7 +170,8 @@ test('空云端遇到全新默认本地状态时不制造无意义上传', async
   wx.__cloudReady = true
   wx.cloud = { callFunction(opts) {
     calls.push(opts)
-    const result = { ok: true, stats: null, attempts: [], hasMore: false }
+    const result = { ok: true, stats: null, attempts: [], hasMore: false,
+      dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }
     opts.success({ result })
     return Promise.resolve({ result })
   } }

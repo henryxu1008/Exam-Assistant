@@ -190,9 +190,8 @@ test('submitAttempt 不同 clientOpId 视为新作答（次数累加）', () => 
 
 test('已提交题在本会话内只读：submitted 标记存在', () => {
   const store = freshStore()
-  const session = store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
+  store.createPracticeSession({ mode: 'all', subject: helpers.SUBJECT, questionIds: ['q1'] })
   store.submitAttempt(q('q1', 'ch1'), ['A'], true, 100, 'op-1')
-  assert.ok(session.submitted['q1'])
   assert.ok(store.getPracticeSession().submitted['q1'])
 })
 

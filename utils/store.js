@@ -6,6 +6,7 @@
 
 const bank = require('./questions.js')
 const config = require('./config.js')
+const attemptOutbox = require('./attempt-outbox.js')
 
 /**
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
@@ -20,8 +21,8 @@ const STORAGE_KEY = 'exam_quiz_data_v1'
 /** 登录会话存储键，与 utils/user.js 保持一致（避免 require user 造成循环依赖） */
 const SESSION_KEY = 'exam_quiz_session_v1'
 
-/** attempts 流水已上传到云端的光标（按作用域隔离），值 = 已同步的本地 attempts 下标 */
-const ATTEMPT_CURSOR_KEY = 'exam_quiz_attempt_cursor_v1'
+/** 旧版本数组游标仅在清理作用域时删除，不再作为上传进度。 */
+const LEGACY_ATTEMPT_CURSOR_KEY = 'exam_quiz_attempt_cursor_v1'
 
 /**
  * 迁移函数表：MIGRATIONS[n] 负责把版本 n 的数据升级到 n + 1
@@ -277,11 +278,17 @@ function load() {
     state = getDefaultState()
     state.dataEpoch = deletion.dataEpoch
     state.pendingDeleteId = deletion.localResetId
-    setAttemptCursor(0)
     aiConversationVersion += 1
     cloudSyncGeneration += 1
     dirty = true
   }
+  try {
+    const migrated = attemptOutbox.ensure(state)
+    if (migrated && attemptOutbox.pending(state).length) {
+      dirty = true
+      wx.setStorageSync(scopeKey(), state)
+    }
+  } catch (e) { dirty = true } // 保留原档案；持久化/队列异常时禁止发送。
   // 启动后首次（且已登录）尝试从云端拉取一次学习档案
   if (isLogged() && getPendingDelete(userScope)) deleteCloud()
   else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
@@ -296,7 +303,7 @@ let flushTimer = null
 let lastFlushAt = 0
 let dirty = false
 
-/** 立即落盘：异步 API，避免全量序列化阻塞渲染 */
+/** 立即同步落盘，与作答/确认检查点严格排序；其他修改仍由 persist 节流。 */
 function flush() {
   if (flushTimer) {
     clearTimeout(flushTimer)
@@ -306,20 +313,23 @@ function flush() {
   // 离线清空后恢复网络时，靠这里把删除意图真正推到服务端（评审 P2 4425593448）。
   if (state && hasCloud() && isLogged() && getPendingDelete(userScope)) deleteCloud()
   if (!dirty && state && (state.aiClearQueue || []).length) clearAiFromCloud()
-  if (!dirty || !state) return
+  if (!state) return
+  if (!dirty) {
+    try { if (attemptOutbox.pending(state).length) pushToCloud() } catch (e) { dirty = true }
+    return
+  }
   dirty = false
   lastFlushAt = Date.now()
-  const storedScope = userScope
-  const storedState = state
-  wx.setStorage({
-    key: scopeKey(),
-    data: state,
-    success: () => state && (state.aiClearQueue || []).length ? clearAiFromCloud() : pushToCloud(), // 意图先落盘再发请求
-    fail: (e) => {
-      if (storedScope === userScope && storedState === state) dirty = true
-      console.error('[store] 持久化失败', e)
-    }
-  })
+  try {
+    attemptOutbox.ensure(state)
+    // 与 submitAttempt 的同步检查点使用同一写入顺序，旧异步写不能覆盖新作答。
+    wx.setStorageSync(scopeKey(), state)
+  } catch (e) {
+    dirty = true
+    console.error('[store] 持久化失败', e)
+    return
+  }
+  syncPersistedState()
 }
 
 /**
@@ -337,8 +347,8 @@ function __clearFlushTimer() {
 /* ============================================================
  * 云端同步（MVP）：本地为主、云端备份，换设备可延续学习进度。
  * - 同步派生/聚合数据（records/daily/settings/practiceSession/aiMessages）到 studyStats 单文档。
- * - 同步原始作答流水 attempts 到独立集合 attempts（每条一个文档，_id = attempt.id），
- *   增量 upsert（按本地光标只传新增），避免单文档过大与并发覆盖。
+ * - 同步不可变作答到独立 attempts 集合（文档 ID 按账号/代次隔离），
+ *   由持久 outbox 按 ID 发送/确认，重放不能改写已接受的事实。
  * - 双向合并：pull 时与云端按时间戳 / 日期 / id 并集合并（见 mergeStats），多端作答不互丢；
  *   合并结果回写本地并上传云端，最终两端收敛一致。
  * - 测试沙箱无 wx.cloud，hasCloud() 为 false，以下逻辑全部安全跳过。
@@ -488,10 +498,12 @@ function pullFromCloud(onDone) {
       practiceGeneration += 1
       aiConversationVersion += 1
       practiceChanged = true
-      setAttemptCursor(0, ctx.scope)
       setPendingPush(ctx.scope, false)
       dirty = true
     }
+    try { attemptOutbox.ensure(state) } catch (e) { abort(); return }
+    const localOutbox = state.attemptOutbox
+    const localResetId = state.pendingDeleteId
     if (stats || allAttempts.length || (aiEpoch !== undefined && aiEpoch !== Number(state.aiEpoch || 0))) {
       const before = state
       // AI 代次只认服务端；不同代次的本地片段不能跨清空合并。
@@ -516,6 +528,8 @@ function pullFromCloud(onDone) {
       // 空云端需要初始化备份；升级前本地历史没有 pending 标记，也不能被跳过。
       dirty = true
     }
+    state.attemptOutbox = localOutbox
+    if (localResetId) state.pendingDeleteId = localResetId
     if (dataEpoch !== null) state.dataEpoch = dataEpoch
     if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
     if (practiceChanged) practiceRestoredListeners.forEach((listener) => {
@@ -555,26 +569,6 @@ function pullFromCloud(onDone) {
   }
   bootPulled = true
   fetchPage()
-}
-
-/**
- * attempts 上传光标：返回已同步到云端的本地 attempts 下标（按作用域隔离）。
- * 必须显式传入发起时的作用域：上传确认回来时 userScope 可能已经切到别的账号，
- * 用全局 userScope 会把 A 已确认的长度写进 B 的光标，导致 B 的作答被永久跳过。
- */
-function getAttemptCursor(scope) {
-  try {
-    const v = wx.getStorageSync(`${ATTEMPT_CURSOR_KEY}__${scope || userScope}`)
-    return typeof v === 'number' && v >= 0 ? v : 0
-  } catch (e) {
-    return 0
-  }
-}
-
-function setAttemptCursor(n, scope) {
-  try {
-    wx.setStorageSync(`${ATTEMPT_CURSOR_KEY}__${scope || userScope}`, n)
-  } catch (e) {}
 }
 
 /** 待重试的云端删除标记（按作用域隔离） */
@@ -667,7 +661,6 @@ function deleteCloudRequest(ctx) {
             cloudSyncGeneration += 1
             practiceGeneration += 1
             aiConversationVersion += 1
-            setAttemptCursor(0, ctx.scope)
           }
           state.dataEpoch = Number.isSafeInteger(r.dataEpoch) ? r.dataEpoch : ctx.dataEpoch
           if (ctx.deleteOperation.localResetId) state.pendingDeleteId = ctx.deleteOperation.localResetId
@@ -719,84 +712,89 @@ function enqueueCloudWrite(task) {
   return run
 }
 
-/** 把当前学习档案增量上传到云端（白名单字段由云函数再次校验） */
+/** 传输只从已落盘的快照读取，队列确认也与档案一起落盘。 */
+function syncPersistedState() {
+  if (!state) return
+  if (getPendingDelete(userScope)) deleteCloud()
+  else if ((state.aiClearQueue || []).length) clearAiFromCloud()
+  else pushToCloud()
+}
+
+const queuedPushes = new Set()
+
 function pushToCloud() {
   if (!hasCloud() || !isLogged() || !state) return
-  // 作用域必须与会话身份一致才允许上传（评审 P1）：
-  // 冷启动时若仍停留在 anon 作用域，这里上传的会是匿名态的空档案，
-  // 而 studySync 按 openid 整doc覆盖，等于用空数据毁掉该账号的云端备份。
   const openid = getSessionOpenid()
   if (!openid || userScope !== openid) return
-  // 待重试的云端删除未落地前不上传：update 是合并而非整doc覆盖，
-  // 空快照删不掉服务端已有数据，上传只会把刚清空的内容又并回去（评审 P2 4425593448）
   if (getPendingDelete(openid) || (state.aiClearQueue || []).length) {
     setPendingPush(openid, true)
     dirty = true
     return
   }
   const ctx = captureSyncContext()
-  const payload = JSON.parse(JSON.stringify({
-    records: state.records,
-    daily: state.daily,
-    settings: state.settings,
-    settingsVersions: settingsFieldVersions(state),
-    practiceSession: state.practiceSession,
-    aiMessages: state.aiMessages,
-    aiEpoch: state.aiEpoch,
-    version: state.version
-  }))
-  // 增量上传作答流水：只传本地尚未同步的新增部分（按光标切片），云端按 _id 幂等 upsert
-  const attemptsAll = state.attempts || []
-  const cursor = getAttemptCursor(ctx.scope)
-  const newAttempts = attemptsAll.slice(cursor)
-  // 本次上传覆盖到的流水终点：请求在途期间 attempts 可能继续追加，
-  // 必须按发起时的长度推进光标，否则会跳过这段新增作答。
-  const syncedUpTo = attemptsAll.length
-  // 传输失败与应用层拒绝都属于未确认写入，必须留下同一份可重试状态。
   const keepPending = () => {
-    if (!isStaleContext(ctx)) {
-      setPendingPush(ctx.scope, true)
-      dirty = true
-    }
+    if (!isStaleContext(ctx)) { setPendingPush(ctx.scope, true); dirty = true }
   }
-  // 分批只追加流水，最后一批才发布完整档案，避免半批流水对应完整提交标记。
-  const batches = []
-  for (let i = 0; i < newAttempts.length; i += 48) batches.push(newAttempts.slice(i, i + 48))
-  if (!batches.length) batches.push([])
+  let snapshot
+  try {
+    snapshot = wx.getStorageSync(scopeKey())
+    if (!snapshot || typeof snapshot !== 'object' || !snapshot.attemptOutbox || Number(snapshot.dataEpoch || 0) !== ctx.dataEpoch) throw new Error('NO_DURABLE_SNAPSHOT')
+    attemptOutbox.ensure(snapshot)
+  } catch (e) { keepPending(); return }
+  const payload = {
+    records: snapshot.records, daily: snapshot.daily, settings: snapshot.settings,
+    settingsVersions: settingsFieldVersions(snapshot), practiceSession: snapshot.practiceSession,
+    aiMessages: snapshot.aiMessages, aiEpoch: snapshot.aiEpoch, version: snapshot.version
+  }
+  const operations = attemptOutbox.pending(snapshot)
+  const signature = JSON.stringify([ctx, payload, operations.map(a => a.id)])
+  if (queuedPushes.has(signature)) return
+  queuedPushes.add(signature)
   enqueueCloudWrite(async () => {
-    for (let index = 0; index < batches.length; index++) {
+    try {
       if (isStaleContext(ctx)) return
-      const result = await new Promise((resolve) => {
-        callCloud({
-          name: config.functions.studySync,
-          data: { token: ctx.token, action: 'update', dataEpoch: ctx.dataEpoch,
-            ...(index === batches.length - 1 ? { stats: payload } : {}), attempts: batches[index] },
-          success: (res) => resolve(res && res.result),
-          fail: () => resolve(null)
+      // 排队期间前一请求可能已确认其中部分 ID；不依赖流水数组的位置。
+      const currentIds = new Set(attemptOutbox.pending(state).map(a => a.id))
+      const unsent = operations.filter(a => currentIds.has(a.id))
+      const batches = []
+      for (let i = 0; i < unsent.length; i += 48) batches.push(unsent.slice(i, i + 48))
+      if (!batches.length) batches.push([])
+      for (let index = 0; index < batches.length; index++) {
+        if (isStaleContext(ctx)) return
+        const sent = batches[index]
+        const result = await new Promise(resolve => {
+          try {
+            callCloud({ name: config.functions.studySync,
+              data: { token: ctx.token, action: 'update', dataEpoch: ctx.dataEpoch,
+                ...(index === batches.length - 1 ? { stats: payload } : {}), attempts: sent },
+              success: res => resolve(res && res.result), fail: () => resolve(null) })
+          } catch (e) { resolve(null) }
         })
-      })
-      if (!result || !result.ok) {
-        keepPending()
-        if (result && result.error === 'STALE_EPOCH' && !isStaleContext(ctx)) {
+        if (isStaleContext(ctx)) return
+        const accepted = attemptOutbox.acknowledged(result, sent, ctx.dataEpoch)
+        if (accepted === null) {
+          keepPending()
+          if (result && result.error === 'STALE_EPOCH') { bootPulled = false; pullFromCloud() }
+          return
+        }
+        const next = JSON.parse(JSON.stringify(state))
+        attemptOutbox.remove(next, accepted)
+        try { wx.setStorageSync(scopeKey(), next) } catch (e) { keepPending(); return }
+        state = next
+        if (accepted.length !== sent.length) { keepPending(); return }
+        if (result.aiStale && Number.isSafeInteger(result.aiEpoch) &&
+          Number(state.aiEpoch || 0) === ctx.aiEpoch && !(state.aiClearQueue || []).length) {
+          state.aiMessages = []
+          state.aiEpoch = result.aiEpoch
+          aiConversationVersion += 1
+          persist()
           bootPulled = false
           pullFromCloud()
         }
-        return
       }
-      if (result.aiStale && Number.isSafeInteger(result.aiEpoch) && !isStaleContext(ctx) &&
-        Number(state.aiEpoch || 0) === ctx.aiEpoch && !(state.aiClearQueue || []).length) {
-        state.aiMessages = []
-        state.aiEpoch = result.aiEpoch
-        aiConversationVersion += 1
-        persist()
-        bootPulled = false
-        pullFromCloud()
-      }
-    }
-    if (!isStaleContext(ctx)) {
-      setAttemptCursor(syncedUpTo, ctx.scope)
-      if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
-    }
+      if (attemptOutbox.pending(state).length) keepPending()
+      else if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
+    } catch (e) { keepPending() } finally { queuedPushes.delete(signature) }
   })
 }
 
@@ -953,10 +951,15 @@ function getRecord(id) {
  * @returns {{record: Object, today: Object}}
  */
 function recordAnswer(question, isCorrect, costMs) {
+  const result = recordAnswerInto(load(), question, isCorrect, costMs)
+  persist()
+  return result
+}
+
+function recordAnswerInto(s, question, isCorrect, costMs) {
   if (!question || !question.id) {
     throw new TypeError('recordAnswer: question 非法')
   }
-  const s = load()
   const now = Date.now()
   const key = todayKey()
 
@@ -1034,7 +1037,6 @@ function recordAnswer(question, isCorrect, costMs) {
   d.subjects[question.subject] = sj
   s.daily[key] = d
 
-  persist()
   return { record: r, today: d }
 }
 
@@ -1235,7 +1237,6 @@ function clearAll() {
   aiConversationVersion += 1
   // 在途的云端拉取若回来，会把刚清空的档案再并回来
   cloudSyncGeneration += 1
-  setAttemptCursor(0) // 重置作答上传光标，避免清空后新作答因光标错位而不上传
   deleteCloud() // 同步删除云端学习档案与作答流水，保证本地与云端一并清空
   persist()
   flush() // 清空当前作用域（不可逆）
@@ -1255,7 +1256,7 @@ function clearScope(openid) {
   }
   try {
     wx.removeStorageSync(`${STORAGE_KEY}__${target}`)
-    wx.removeStorageSync(`${ATTEMPT_CURSOR_KEY}__${target}`)
+    wx.removeStorageSync(`${LEGACY_ATTEMPT_CURSOR_KEY}__${target}`)
   } catch (e) {
     /* ignore */
   }
@@ -1339,7 +1340,8 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
   if (!question || !question.id) {
     throw new TypeError('submitAttempt: question 非法')
   }
-  const s = load()
+  const original = load()
+  const s = JSON.parse(JSON.stringify(original))
   const session = s.practiceSession
   if (context && !isPracticeContextCurrent(context)) {
     return { ok: false, error: 'STALE_PRACTICE_CONTEXT', record: null, attempt: null, dup: false }
@@ -1378,7 +1380,7 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
   s.attempts.push(attempt)
 
   // 派生聚合统计（保持与旧 recordAnswer 一致的口径）
-  const agg = recordAnswer(question, isCorrect, costMs)
+  const agg = recordAnswerInto(s, question, isCorrect, costMs)
 
   // 标记本题本会话已提交
   if (!s.practiceSession) s.practiceSession = null
@@ -1390,7 +1392,14 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
     Object.assign(s.practiceSession, stats)
     s.practiceSession.updatedAt = bumpVersion(s.practiceSession)
   }
-  persist()
+  try {
+    attemptOutbox.add(s, attempt)
+    wx.setStorageSync(scopeKey(), s)
+  } catch (e) { return { ok: false, error: 'PERSIST_ATTEMPT_FAILED', record: null, attempt: null, dup: false } }
+  state = s
+  dirty = false
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+  syncPersistedState()
   return { ok: true, record: agg.record, attempt: attempt, dup: false }
 }
 

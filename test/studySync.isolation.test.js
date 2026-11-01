@@ -243,6 +243,7 @@ test('原子提交：流水写失败时档案和已写的流水全部回滚', as
   const result = await h.main({ token: 'tokA', action: 'update', stats: updatePayload(2),
     attempts: [{ id: 'a2', createdAt: 2 }, { id: 'a3', createdAt: 3 }] })
   assert.equal(result.ok, false)
+  assert.equal(result.acceptedAttemptIds, undefined, '事务回滚不得确认任何流水')
   assert.deepEqual(h.studyStats.get('alice'), before)
   assert.equal(h.attempts.size, 1)
 })
@@ -336,12 +337,17 @@ test('超事务上限的批次和缺少清空协议的调用在写入前拒绝',
 test('已接受流水不可变：同 ID 重试不重复，改答案会回滚整份上传', async () => {
   const h = makeHarness()
   const event = { token: 'tokA', action: 'update', stats: updatePayload(1), attempts: [{ id: 'a1', score: 1 }] }
-  assert.equal((await h.main(event)).ok, true)
-  assert.equal((await h.main(event)).ok, true)
+  for (let retry = 0; retry < 2; retry++) {
+    const accepted = await h.main(event)
+    assert.equal(accepted.ok, true)
+    assert.equal(accepted.dataEpoch, 0)
+    assert.deepEqual(Array.from(accepted.acceptedAttemptIds), ['a1'])
+  }
   assert.equal(h.attempts.size, 1)
   const before = clone(h.studyStats.get('alice'))
   const result = await h.main({ ...event, stats: updatePayload(2), attempts: [{ id: 'a2', score: 0 }, { id: 'a1', score: 0 }] })
   assert.equal(result.error, 'ATTEMPT_CONFLICT')
+  assert.equal(result.acceptedAttemptIds, undefined)
   assert.deepEqual(h.studyStats.get('alice'), before)
   assert.equal(h.attempts.has('alice__a2'), false)
   assert.equal(h.attempts.get('alice__a1').score, 1)
