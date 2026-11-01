@@ -131,7 +131,11 @@ Page({
       confirmColor: '#e5484d',
       success(res) {
         if (!res.confirm) return
-        store.clearAll()
+        const result = store.clearAll()
+        if (!result.ok) {
+          wx.showToast({ title: '清空失败，原数据已保留', icon: 'none' })
+          return
+        }
         wx.showToast({ title: '已清空', icon: 'none' })
         self.refresh()
       }

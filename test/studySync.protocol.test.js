@@ -10,13 +10,26 @@ function device(server, saved, cloudReady = true) {
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
-  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, requests: [] }
+  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, requests: [] }
   const clone = value => value === undefined ? '' : JSON.parse(JSON.stringify(value))
   const wx = {
     __cloudReady: cloudReady,
-    getStorageSync: key => clone(storage.get(key)),
-    setStorageSync: (key, value) => storage.set(key, clone(value)),
-    removeStorageSync: key => storage.delete(key),
+    getStorageSync: key => {
+      if (controls.failDeleteRead && key.startsWith('exam_quiz_pending_delete_v1__')) {
+        if (typeof controls.failDeleteRead === 'number') controls.failDeleteRead -= 1
+        throw new Error('injected pending marker read failure')
+      }
+      return clone(storage.get(key))
+    },
+    setStorageSync: (key, value) => {
+      if (controls.failDeleteWrite && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected storage full for delete marker')
+      if (controls.failDataSyncWrite && key.startsWith('exam_quiz_data_v1__')) throw new Error('injected deletion ACK checkpoint failure')
+      storage.set(key, clone(value))
+    },
+    removeStorageSync: key => {
+      if (controls.failDeleteRemove && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected pending marker remove failure')
+      storage.delete(key)
+    },
     setStorage: opts => {
       if (controls.failStorage) { if (opts.fail) opts.fail(new Error('injected local storage failure')); return }
       storage.set(opts.key, clone(opts.data)); if (opts.success) opts.success()
@@ -492,4 +505,193 @@ test('匿名本地清空不创建云端删除意图，也不能使用缓存令�
   assert.equal(a.controls.requests.filter(r => r.action === 'delete').length, 0)
   assert.ok((await server.main({ token: 'tokA' })).stats.records['account-backup'])
   a.store.__clearFlushTimer()
+})
+
+test('删除意图写盘失败时中止清空，保留原档案、游标和页面上下文', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('keep-original')
+  await a.settle()
+  a.store.saveSettings({ dailyGoal: 50 })
+  a.store.pushAiMessage({ time: 101, role: 'user', text: '必须保留' })
+  a.store.createPracticeSession({ subject: '公基', questionIds: ['keep-original'] })
+  a.store.flush()
+  await a.settle()
+  const before = JSON.stringify(a.store.load())
+  const persisted = JSON.stringify(a.storage.get('exam_quiz_data_v1__alice'))
+  const cursor = a.storage.get('exam_quiz_attempt_cursor_v1__alice')
+  const aiVersion = a.store.getAiConversationVersion()
+  const practice = a.store.getPracticeContext()
+  const requests = a.controls.requests.length
+  a.controls.failDeleteWrite = true
+  const result = a.store.clearAll()
+  await a.settle()
+  assert.ok(a.store.getRecord('keep-original'), '持久化失败必须在替换本地档案之前中止')
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'PERSIST_DELETE_FAILED')
+  assert.equal(JSON.stringify(a.store.load()), before)
+  assert.equal(JSON.stringify(a.storage.get('exam_quiz_data_v1__alice')), persisted)
+  assert.equal(a.storage.get('exam_quiz_attempt_cursor_v1__alice'), cursor)
+  assert.equal(a.store.getAiConversationVersion(), aiVersion)
+  assert.equal(a.store.isPracticeContextCurrent(practice), true)
+  assert.equal(a.controls.requests.length, requests, '失败操作不能删除或上传空快照')
+  const reopened = device(server, a.storage, false)
+  assert.ok(reopened.store.getRecord('keep-original'), '离线重启直接读取原本地档案')
+  for (const client of [a, reopened]) client.store.__clearFlushTimer()
+})
+
+test('删除意图已提交但本地清空快照未落盘就重启，不得再上传旧档案', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old-before-checkpoint')
+  await a.settle()
+  // 模拟已提交意图后的退出点：档案仍是清空前版本，尚无匹配的本地重置 ID。
+  a.storage.set('exam_quiz_pending_delete_v1__alice', { deleteId: 'accepted-reset', dataEpoch: 0, localResetId: 'reset-local-1' })
+  const reopened = device(server, a.storage, false)
+  assert.equal(reopened.store.getRecord('old-before-checkpoint'), null)
+  reopened.wx.__cloudReady = true
+  reopened.store.pullFromCloud()
+  await reopened.settle()
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.stats.records['old-before-checkpoint'], undefined)
+  assert.equal(cloud.attempts.length, 0)
+  assert.equal(cloud.dataEpoch, 1)
+  for (const client of [a, reopened]) client.store.__clearFlushTimer()
+})
+
+test('删除 ACK 的本地检查点失败时保留原操作，重启后不丢清空后的新作答', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old')
+  await a.settle()
+  a.controls.offline = true
+  a.store.clearAll()
+  a.answer('after-clear')
+  await a.settle()
+  const operation = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  a.controls.offline = false
+  a.controls.failDataSyncWrite = true
+  a.store.flush()
+  await a.settle()
+  assert.equal(a.storage.get('exam_quiz_pending_delete_v1__alice').deleteId, operation.deleteId)
+  const reopened = device(server, a.storage)
+  await reopened.settle()
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 1)
+  assert.equal(cloud.stats.records.old, undefined)
+  assert.ok(cloud.stats.records['after-clear'])
+  assert.equal(cloud.attempts.length, 1)
+  assert.equal(reopened.controls.requests.find(r => r.action === 'delete').deleteId, operation.deleteId)
+  for (const client of [a, reopened]) client.store.__clearFlushTimer()
+})
+
+test('ACK 标记移除失败不能卡死队列，重试仍使用原删除 ID', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old')
+  await a.settle()
+  a.controls.failDeleteRemove = true
+  a.store.clearAll()
+  await a.settle()
+  const operation = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  assert.ok(operation.deleteId)
+  a.answer('new')
+  await a.settle()
+  a.controls.failDeleteRemove = false
+  a.store.flush()
+  await a.settle()
+  assert.equal(a.storage.has('exam_quiz_pending_delete_v1__alice'), false)
+  const ids = a.controls.requests.filter(r => r.action === 'delete').map(r => r.deleteId)
+  assert.ok(ids.length >= 2)
+  assert.ok(ids.every(id => id === operation.deleteId))
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 1)
+  assert.ok(cloud.stats.records.new)
+  assert.equal(cloud.stats.records.old, undefined)
+  a.store.__clearFlushTimer()
+})
+
+test('标记读取失败不放行恢复或上传，恢复读取后正常重试，且不凭空生成删除', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old')
+  await a.settle()
+  const before = a.controls.requests.length
+  a.controls.failDeleteRead = 1
+  a.store.pullFromCloud()
+  await a.settle()
+  assert.equal(a.controls.requests.length, before, '短暂读取失败不等于删除意图存在')
+  assert.equal(a.storage.has('exam_quiz_pending_delete_v1__alice'), false)
+  a.controls.failDeleteRead = true
+  assert.equal(a.store.clearAll().error, 'PERSIST_DELETE_FAILED')
+  assert.ok(a.store.getRecord('old'))
+  a.answer('new-while-blocked')
+  a.store.pullFromCloud()
+  await a.settle()
+  assert.equal(a.controls.requests.length, before)
+  a.controls.failDeleteRead = false
+  a.store.flush()
+  await a.settle()
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 0)
+  assert.ok(cloud.stats.records.old)
+  assert.ok(cloud.stats.records['new-while-blocked'])
+  assert.equal(a.controls.requests.filter(r => r.action === 'delete').length, 0)
+  a.store.__clearFlushTimer()
+})
+
+test('已有待删除操作时再次清空也必须先写入新的本地重置 ID', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.controls.offline = true
+  a.store.clearAll()
+  a.answer('between-clears')
+  await a.settle()
+  const first = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  a.controls.failDeleteWrite = true
+  assert.equal(a.store.clearAll().ok, false)
+  assert.ok(a.store.getRecord('between-clears'))
+  a.controls.failDeleteWrite = false
+  a.controls.failStorage = true
+  assert.equal(a.store.clearAll().ok, true)
+  await a.settle()
+  const second = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  assert.equal(second.deleteId, first.deleteId)
+  assert.notEqual(second.localResetId, first.localResetId)
+  const reopened = device(server, a.storage, false)
+  assert.equal(reopened.store.getRecord('between-clears'), null, '第二次清空在本地快照写失败后仍可按新重置 ID 恢复')
+  for (const client of [a, reopened]) client.store.__clearFlushTimer()
+})
+
+test('被取代的删除已落盘但标记未移除时，重试不重复丢弃新代次作答', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  const b = device(server)
+  await a.settle()
+  await b.settle()
+  a.controls.offline = true
+  a.store.clearAll()
+  await a.settle()
+  b.store.clearAll()
+  await b.settle()
+  a.controls.offline = false
+  a.controls.failDeleteRemove = true
+  a.store.flush()
+  await a.settle()
+  assert.equal(a.store.load().dataEpoch, 1)
+  a.answer('after-adopted-reset')
+  await a.settle()
+  const reopened = device(server, a.storage)
+  await reopened.settle()
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 1)
+  assert.ok(cloud.stats.records['after-adopted-reset'])
+  assert.equal(cloud.attempts.length, 1)
+  for (const client of [a, b, reopened]) client.store.__clearFlushTimer()
 })

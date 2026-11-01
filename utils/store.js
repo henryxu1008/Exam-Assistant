@@ -271,6 +271,17 @@ function load() {
   if (!state.settings) state.settings = getDefaultState().settings
   if (!Array.isArray(state.aiMessages)) state.aiMessages = []
   if (!Array.isArray(state.attempts)) state.attempts = []
+  const deletion = userScope !== 'anon' && getDeleteOperation(userScope)
+  if (deletion && deletion.localResetId && state.pendingDeleteId !== deletion.localResetId) {
+    // 删除意图已提交、清空快照尚未落盘就退出时，旧档案不得带入新云端代次。
+    state = getDefaultState()
+    state.dataEpoch = deletion.dataEpoch
+    state.pendingDeleteId = deletion.localResetId
+    setAttemptCursor(0)
+    aiConversationVersion += 1
+    cloudSyncGeneration += 1
+    dirty = true
+  }
   // 启动后首次（且已登录）尝试从云端拉取一次学习档案
   if (isLogged() && getPendingDelete(userScope)) deleteCloud()
   else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
@@ -573,29 +584,35 @@ function getPendingDelete(scope) {
   try {
     return !!wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope || userScope}`)
   } catch (e) {
-    return false
+    // 标记暂时不可读时禁止恢复/上传，不能把访问失败当成「没有删除意图」。
+    return true
   }
 }
 
-function setPendingDelete(scope, on) {
+function setPendingDelete(scope, on, resetLocal = true) {
+  const key = `${PENDING_DELETE_KEY}__${scope || userScope}`
+  if (on) {
+    const existing = wx.getStorageSync(key)
+    const operation = existing && typeof existing.deleteId === 'string' && Number.isSafeInteger(existing.dataEpoch)
+      ? Object.assign({}, existing) : { deleteId: newId('reset'), dataEpoch: Number(state && state.dataEpoch || 0) }
+    // 每次显式清空均先提交本地重置 ID；云端重试仍复用 deleteId。
+    if (resetLocal) operation.localResetId = newId('local_reset')
+    wx.setStorageSync(key, operation)
+    return operation
+  }
   try {
-    const key = `${PENDING_DELETE_KEY}__${scope || userScope}`
-    if (on) {
-      const existing = wx.getStorageSync(key)
-      if (!existing || typeof existing.deleteId !== 'string' || !Number.isSafeInteger(existing.dataEpoch)) {
-        // 意图和 ID 使用同一个持久化值；兼容旧版布尔待删除标记。
-        wx.setStorageSync(key, { deleteId: newId('reset'), dataEpoch: Number(state && state.dataEpoch || 0) })
-      }
-    } else wx.removeStorageSync(key)
+    wx.removeStorageSync(key)
+    return true
   } catch (e) {
-    /* ignore */
+    return false // ACK 清理失败保留标记，后续重试同一操作。
   }
 }
 
-function getDeleteOperation(scope) {
+function getDeleteOperation(scope, migrateLegacy) {
   try {
     const operation = wx.getStorageSync(`${PENDING_DELETE_KEY}__${scope}`)
-    return operation && typeof operation.deleteId === 'string' ? operation : null
+    if (operation === true && migrateLegacy) return setPendingDelete(scope, true, false)
+    return operation && typeof operation.deleteId === 'string' && Number.isSafeInteger(operation.dataEpoch) ? operation : null
   } catch (e) { return null }
 }
 
@@ -639,12 +656,12 @@ function deleteCloudRequest(ctx) {
     callCloud({
       name: config.functions.studySync,
       // 用发起时的令牌：回包到达前若已登出/换号，这次删除不应以新身份执行
-      data: { token: ctx.token, action: 'delete', ...ctx.deleteOperation },
+      data: { token: ctx.token, action: 'delete', dataEpoch: ctx.deleteOperation.dataEpoch, deleteId: ctx.deleteOperation.deleteId },
       success: (res) => {
         const r = res && res.result
         // 只有应用层确认删除成功、且上下文仍然有效，才清除标记
         if (r && r.ok && !isStaleContext(ctx)) {
-          if (r.superseded) {
+          if (r.superseded && Number(state.dataEpoch || 0) !== r.dataEpoch) {
             // 其他设备的更新清空已经取代本次意图。尚未获得新代次的本地数据也作废。
             state = getDefaultState()
             cloudSyncGeneration += 1
@@ -653,7 +670,17 @@ function deleteCloudRequest(ctx) {
             setAttemptCursor(0, ctx.scope)
           }
           state.dataEpoch = Number.isSafeInteger(r.dataEpoch) ? r.dataEpoch : ctx.dataEpoch
-          setPendingDelete(ctx.scope, false)
+          if (ctx.deleteOperation.localResetId) state.pendingDeleteId = ctx.deleteOperation.localResetId
+          try { wx.setStorageSync(scopeKey(), state) } catch (e) {
+            dirty = true
+            resolve()
+            return
+          }
+          if (!setPendingDelete(ctx.scope, false)) {
+            dirty = true
+            resolve()
+            return
+          }
           if (r.superseded) {
             bootPulled = false
             pullFromCloud()
@@ -702,7 +729,11 @@ function pushToCloud() {
   if (!openid || userScope !== openid) return
   // 待重试的云端删除未落地前不上传：update 是合并而非整doc覆盖，
   // 空快照删不掉服务端已有数据，上传只会把刚清空的内容又并回去（评审 P2 4425593448）
-  if (getPendingDelete(openid) || (state.aiClearQueue || []).length) return
+  if (getPendingDelete(openid) || (state.aiClearQueue || []).length) {
+    setPendingPush(openid, true)
+    dirty = true
+    return
+  }
   const ctx = captureSyncContext()
   const payload = JSON.parse(JSON.stringify({
     records: state.records,
@@ -774,10 +805,10 @@ function pushToCloud() {
 let pendingDeleteQueued = false
 
 function deleteCloud() {
-  // 账号删除意图不依赖云初始化或当前令牌；只把传输放在云就绪/身份检查之后。
+  // 只传输已持久化的意图；读失败或不存在都不能凭空创建删除操作。
   if (userScope === 'anon') return
-  setPendingDelete(userScope, true)
-  if (!hasCloud() || !isLogged() || getSessionOpenid() !== userScope) return
+  const operation = getDeleteOperation(userScope, true)
+  if (!operation || !hasCloud() || !isLogged() || getSessionOpenid() !== userScope) return
   // 上下文必须在**入队时**捕获，而不是等队列排到它才捕获：
   // 删除要排在前面的在途上传之后才执行，这期间用户可能已经切到 B 账号。
   // 若在执行时才捕获，这次删除就会拿着 B 的令牌发出，删掉 B 的云端数据；
@@ -785,8 +816,7 @@ function deleteCloud() {
   // ——即「删错账号 + 标记误清」双重后果（评审 P1 4425820628）。
   // 执行与确认都必须绑定发起时的账号。
   const ctx = captureSyncContext()
-  ctx.deleteOperation = getDeleteOperation(ctx.scope)
-  if (!ctx.deleteOperation) return
+  ctx.deleteOperation = operation
   if (pendingDeleteQueued) return
   pendingDeleteQueued = true
   // 与 push 共用一个队列：保证「清空」排在它之前发起的在途上传之后落地，
@@ -1193,8 +1223,15 @@ function clearAiMessages() {
 
 function clearAll() {
   const dataEpoch = Number(load().dataEpoch || 0)
+  let deletion = null
+  if (userScope !== 'anon') {
+    try { deletion = setPendingDelete(userScope, true) } catch (e) {
+      return { ok: false, error: 'PERSIST_DELETE_FAILED' }
+    }
+  }
   state = getDefaultState()
   state.dataEpoch = dataEpoch
+  if (deletion) state.pendingDeleteId = deletion.localResetId
   aiConversationVersion += 1
   // 在途的云端拉取若回来，会把刚清空的档案再并回来
   cloudSyncGeneration += 1
@@ -1202,6 +1239,7 @@ function clearAll() {
   deleteCloud() // 同步删除云端学习档案与作答流水，保证本地与云端一并清空
   persist()
   flush() // 清空当前作用域（不可逆）
+  return { ok: true }
 }
 
 /** 清空指定（或当前）作用域的全部本地数据；用于「安全删除/切换账号」场景 */
