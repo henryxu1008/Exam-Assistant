@@ -96,4 +96,4 @@ Record(派生) { id=questionId, attempts, right, wrong, level, ... } 由 attempt
 - **无损**：旧 `records` 保留，聚合统计不丢；新增 `attempts` 为空（不伪造历史流水）。
 - **回滚**：本地不支持版本降级（降级会丢失 v3 字段）。回滚策略：保留升级前 `exam_quiz_data_v1__<openid>`
   的备份（可经由 `clearScope` 安全删除），代码回滚到 v2 时该备份可恢复为 v2 形态。
-- **对账**：`records[qid].attempts` 应等于 `attempts.filter(questionId==qid).length`；不一致即告警（待 Issue 4 补充断言测试）。
+- **对账**：新事实贡献精确核对；旧聚合只能验证现存事实所证明的计数下界，不能把明细少于历史聚合直接判错。业务身份、确认映射与只读工具见 [ADR 0012](0012-business-idempotency-and-readonly-reconciliation.md)，不伪造缺失历史。

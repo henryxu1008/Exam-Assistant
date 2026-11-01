@@ -6,7 +6,7 @@
 
 ## 背景与目标
 
-PR #10 已实现云开发快照同步，以及 [ADR 0009](0009-sync-integrity-and-resource-permissions.md) 的原子提交、清空代次和分页修订校验。第一阶段持久作答队列与按事实 ID 确认见 [ADR 0010](0010-durable-attempt-outbox.md)，第二阶段作答增量恢复及生命周期触发见 [ADR 0011](0011-incremental-recovery-and-lifecycle-sync.md)。下面的完整目标协议仍待实施：云端权威、业务 idempotency key、
+PR #10 已实现云开发快照同步，以及 [ADR 0009](0009-sync-integrity-and-resource-permissions.md) 的原子提交、清空代次和分页修订校验。第一阶段持久作答队列与按事实 ID 确认见 [ADR 0010](0010-durable-attempt-outbox.md)，第二阶段作答增量恢复及生命周期触发见 [ADR 0011](0011-incremental-recovery-and-lifecycle-sync.md)。第三阶段业务身份、事实计数和只读对账见 [ADR 0012](0012-business-idempotency-and-readonly-reconciliation.md)。下面仍是完整目标协议：云端权威、业务 idempotency key、
 增量同步游标；设备 A 作答设备 B 可见；断网恢复自动补传且不重复；同一题跨设备操作不丢事件；
 切换用户无串号；冲突规则与数据保留政策写入文档。
 

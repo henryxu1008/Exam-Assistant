@@ -46,7 +46,7 @@ function device(server, saved, cloudReady = true) {
         controls.requests.push(request)
         const promise = (async () => {
           if (controls.offline) { opts.fail(new Error('offline')); return }
-          if (opts.data.action === 'update' && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
+          if (opts.data.action === 'commitAttempts' && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
           if (request.action === 'get' && controls.failGet && --controls.failGet === 0) { opts.fail(new Error('injected get transport failure')); return }
           let result = await server.main(request)
           if (request.action === 'get') {
@@ -54,7 +54,7 @@ function device(server, saved, cloudReady = true) {
             if (controls.afterGet) await controls.afterGet(result, request)
             if (controls.changeGetResult) result = controls.changeGetResult(result, request)
           }
-          if (opts.data.action === 'update') {
+          if (opts.data.action === 'commitAttempts') {
             if (controls.updateAckGate) await controls.updateAckGate
             if (controls.loseUpdateAck) { controls.loseUpdateAck = false; opts.fail(new Error('update ACK lost')); return }
             if (controls.changeUpdateResult) result = controls.changeUpdateResult(result, opts.data)
@@ -86,6 +86,7 @@ function device(server, saved, cloudReady = true) {
       if (name === './sync-coordinator.js') return require('../../utils/sync-coordinator.js')
       if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
       if (name === './config.js') return require('../../utils/config.js')
+      if (name === '../shared/attempt-domain.js') return require('../../shared/attempt-domain.js')
       if (name === '../shared/stats-merge.js') return require('../../shared/stats-merge.js')
       throw new Error('Unexpected module ' + name)
     }

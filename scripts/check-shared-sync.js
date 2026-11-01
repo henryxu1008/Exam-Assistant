@@ -21,6 +21,7 @@ const ROOT = path.resolve(__dirname, '..')
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],
+  ['shared/attempt-domain.js', 'cloudfunctions/studySync/attempt-domain.js'],
   // studySync/auth.js 此前也是逐字节一致的副本，却没被登记，
   // 于是「源文件改了、这份漏同步」完全不可见——把登记表与实际一致的情况对齐
   [

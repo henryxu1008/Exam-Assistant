@@ -1,3 +1,4 @@
+const { withCommit } = require('./support/commit-response.js')
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const { freshStore, q } = require('./helpers.js')
@@ -75,7 +76,7 @@ test('离线修改设置后重启，旧云端配置不得覆盖待上传的新�
     const result = opts.data.action === 'get'
       ? { ok: true, stats: old, attempts: [], hasMore: false }
       : { ok: true }
-    opts.success({ result })
+    opts.success({ result: withCommit(opts, result) })
     return Promise.resolve({ result })
   } }
   t.after(() => { store.__clearFlushTimer(); wx.__cloudReady = false; wx.cloud = undefined })
@@ -84,7 +85,7 @@ test('离线修改设置后重启，旧云端配置不得覆盖待上传的新�
   assert.deepEqual(store.getSettings(), persisted.settings)
   assert.equal(store.getCurrentSubject(), otherSubject)
   assert.deepEqual(wx.getStorageSync('exam_quiz_data_v1__o1').settings, persisted.settings)
-  const upload = calls.find((c) => c.data.action === 'update')
+  const upload = calls.find((c) => c.data.action === 'commitAttempts')
   assert.ok(upload)
   assert.deepEqual(upload.data.stats.settings, persisted.settings)
   assert.deepEqual(upload.data.stats.settingsVersions, persisted.settingsVersions)

@@ -18,6 +18,7 @@ const { mergeStats } = require('./stats-merge.js')
 const { findByToken } = require('./auth.js')
 /** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
+const attemptDomain = require('./attempt-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -25,7 +26,7 @@ const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSe
 /** 作答流水允许写入的字段（防止把大对象/无关字段塞进库） */
 const ATTEMPT_FIELDS = [
   'id', 'sessionId', 'questionId', 'questionVersionId',
-  'selected', 'answer', 'score', 'costMs', 'clientOpId', 'createdAt'
+  'selected', 'answer', 'score', 'costMs', 'clientOpId', 'createdAt', 'projection'
 ]
 
 /**
@@ -57,6 +58,12 @@ function sanitizeAttempt(a, openid, dataEpoch) {
   ATTEMPT_FIELDS.forEach((k) => {
     if (a[k] !== undefined) out[k] = a[k]
   })
+  return out
+}
+
+function publicAttempt(attempt) {
+  const out = {}
+  for (const field of ATTEMPT_FIELDS) if (attempt[field] !== undefined) out[field] = attempt[field]
   return out
 }
 
@@ -125,12 +132,108 @@ async function purgeBefore(openid, dataEpoch) {
   await purgeRows(STATS, { kind: 'aiClearReceipt', openid, dataEpoch: db.command.lt(dataEpoch) })
 }
 
+/** 新提交协议：业务地址唯一、事实计数受服务端控制，旧处理器会拒绝此 action。 */
+async function commitAttempts(event, openid) {
+  if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+  if (event.attemptProtocol !== 2) return { ok: false, error: 'BAD_ATTEMPT_PROTOCOL' }
+  const dataEpoch = event.dataEpoch === undefined ? 0 : event.dataEpoch
+  const raw = Array.isArray(event.attempts) ? event.attempts : []
+  if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'BAD_EPOCH' }
+  // 新业务地址读 + 历史 ID 冲突检查 + 写，最多 32*3+2=98 次事务操作。
+  if (raw.length > 32) return { ok: false, error: 'BATCH_TOO_LARGE' }
+  if (raw.some(a => !a || typeof a.id !== 'string' || !a.id) || new Set(raw.map(a => a.id)).size !== raw.length) return { ok: false, error: 'BAD_ATTEMPT' }
+  if (raw.some(a => a.projection !== undefined && !attemptDomain.validProjection(a))) return { ok: false, error: 'BAD_FACT_METADATA' }
+  for (let round = 0; round < 3; round++) {
+    let before, candidates
+    try { before = await readExisting(() => STATS.doc(openid).get()) } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
+    try {
+      const keys = new Map(raw.filter(a => attemptDomain.businessKey(a)).map(a => [attemptDomain.businessKey(a), a]))
+      candidates = new Map(await Promise.all(Array.from(keys, async ([key, a]) => {
+        const filter = { openid, sessionId: a.sessionId, questionId: a.questionId, clientOpId: a.clientOpId,
+          ...(dataEpoch ? { dataEpoch } : {}) }
+        const res = await ATTEMPTS.where(filter).limit(2).get()
+        if (!res || !Array.isArray(res.data)) throw new Error('INVALID_OPERATION_LOOKUP')
+        return [key, res.data]
+      })))
+    } catch (e) { return { ok: false, error: 'READ_ATTEMPTS_FAILED' } }
+    try {
+      const result = await db.runTransaction(async tx => {
+        const ref = tx.collection('studyStats').doc(openid)
+        const existing = await readExisting(() => ref.get())
+        if (epochOf(existing) !== dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
+        if (!sameRevision(before, existing)) return { retry: true }
+        let sequence = sequenceOf(existing)
+        const receipts = [], created = []
+        const fail = code => { const error = new Error(code); error.code = code; throw error }
+        for (const submitted of raw) {
+          const key = attemptDomain.businessKey(submitted)
+          const id = key ? 'op_' + crypto.createHash('sha256').update(JSON.stringify([openid, dataEpoch, key])).digest('hex') : null
+          const clean = sanitizeAttempt(submitted, openid, dataEpoch)
+          const target = tx.collection('attempts').doc(id || clean._id)
+          let accepted = await readExisting(() => target.get())
+          if (!accepted && key) {
+            const found = candidates.get(key) || []
+            if (found.length > 1) fail('LEGACY_OPERATION_CONFLICT')
+            if (found.length === 1) {
+              accepted = await readExisting(() => tx.collection('attempts').doc(found[0]._id).get())
+              if (!accepted) fail('LEGACY_OPERATION_CONFLICT')
+            }
+          }
+          if (accepted) {
+            if (accepted.openid !== openid || epochOf(accepted) !== dataEpoch) fail('OPERATION_CONFLICT')
+            if (key ? !attemptDomain.sameOperation(accepted, submitted)
+              : JSON.stringify(sanitizeAttempt(accepted, openid, dataEpoch)) !== JSON.stringify(clean)) fail('OPERATION_CONFLICT')
+            // 未归属到事实的旧聚合不能凭别名猜测扣减，须先只读对账。
+            if (key && !submitted.projection && accepted.id !== submitted.id && accepted.sourceAttemptId !== submitted.id) fail('LEGACY_OPERATION_CONFLICT')
+          } else {
+            if (id) {
+              const legacyId = sanitizeAttempt({ id }, openid, dataEpoch)._id
+              if (await readExisting(() => tx.collection('attempts').doc(legacyId).get())) fail('ATTEMPT_ID_CONFLICT')
+            }
+            if (sequence >= Number.MAX_SAFE_INTEGER) fail('ATTEMPT_SEQUENCE_EXHAUSTED')
+            accepted = { ...clean, ...(clean.projection ? { projection: { ...clean.projection, confirmed: true } } : {}),
+              ...(id ? { _id: id, id } : {}), sourceAttemptId: submitted.id, serverSequence: ++sequence }
+            await target.set({ data: accepted })
+            created.push(accepted)
+          }
+          receipts.push({ submittedId: submitted.id, attempt: publicAttempt(accepted) })
+        }
+        const incoming = attemptDomain.withoutFactCounts(sanitizeStats(event.stats))
+        const aiStale = (incoming.aiEpoch !== undefined || incoming.aiMessages !== undefined) && Number(incoming.aiEpoch || 0) !== aiEpochOf(existing)
+        if (aiStale) { delete incoming.aiEpoch; delete incoming.aiMessages }
+        const aliases = new Map(receipts.map(r => [r.submittedId, r.attempt]))
+        if (incoming.practiceSession) {
+          for (const marker of Object.values(incoming.practiceSession.submitted || {})) {
+            const fact = aliases.get(marker.attemptId)
+            if (fact) { marker.attemptId = fact.id; marker.score = fact.score; marker.createdAt = fact.createdAt }
+          }
+        }
+        incoming.attempts = receipts.map(r => r.attempt)
+        const merged = mergeStats(existing, incoming)
+        delete merged.attempts
+        for (const fact of created) attemptDomain.addServerCounts(merged, fact)
+        Object.assign(merged, { _id: openid, openid, dataEpoch, attemptProtocol: 2, attemptSequence: sequence,
+          syncRevision: nextRevision(existing), sequenceRevision: nextRevision(existing), sequenceGeneration: nextGeneration(existing),
+          deleted: !event.stats && !receipts.some(r => attemptDomain.validProjection(r.attempt)) && !!(existing && existing.deleted),
+          lastDeleteId: existing && existing.lastDeleteId || null, updatedAt: Date.now() })
+        await ref.set({ data: merged })
+        return { ok: true, dataEpoch, attemptProtocol: 2, acceptedAttemptIds: raw.map(a => a.id), attemptReceipts: receipts,
+          stats: sanitizeStats(merged), aiEpoch: aiEpochOf(merged), aiStale }
+      })
+      if (!result.retry) return result
+    } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT'].includes(e.code) ? e.code : 'TX_FAILED' } }
+  }
+  return { ok: false, error: 'SYNC_RETRY_REQUIRED' }
+}
+
 exports.main = async (event = {}) => {
   if (!event.token) return { ok: false, error: 'NO_TOKEN' }
   const user = await findByToken(USERS, event.token)
   if (!user) return { ok: false, error: 'INVALID_TOKEN' }
   const openid = user.openid
   const action = event.action || 'get'
+
+  if (action === 'commitAttempts') return commitAttempts(event, openid)
 
   if (action === 'get') {
     let stats
@@ -181,7 +284,7 @@ exports.main = async (event = {}) => {
       const after = await readExisting(() => STATS.doc(openid).get())
       if (!sameRevision(stats, after)) return { ok: false, error: 'SNAPSHOT_CHANGED' }
     } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
-    const attempts = list.map(({ _id, openid: _owner, dataEpoch: _epoch, serverSequence: _sequence, ...rest }) => rest)
+    const attempts = list.map(publicAttempt)
     const hasMore = list.length >= limit
     const includeStats = !protocol || (delta ? afterSequence === cursor.sequence : skip === 0)
     return { ok: true, stats: includeStats && stats && !stats.deleted ? sanitizeStats(stats) : null,
@@ -235,6 +338,7 @@ exports.main = async (event = {}) => {
     const raw = Array.isArray(event.attempts) ? event.attempts : []
     if (raw.length > MAX_ATTEMPTS) return { ok: false, error: 'BATCH_TOO_LARGE' }
     if (raw.some((a) => !a || typeof a.id !== 'string' || !a.id)) return { ok: false, error: 'BAD_ATTEMPT' }
+    if (raw.some(a => a.projection !== undefined)) return { ok: false, error: 'ATTEMPT_PROTOCOL_REQUIRED' }
     const attempts = raw.map((a) => sanitizeAttempt(a, openid, dataEpoch))
     try {
       return await db.runTransaction(async (tx) => {
@@ -242,6 +346,7 @@ exports.main = async (event = {}) => {
         const existing = await readExisting(() => ref.get())
         if (epochOf(existing) !== dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
         let attemptSequence = sequenceOf(existing)
+        if (existing && existing.attemptProtocol === 2) return { ok: false, error: 'ATTEMPT_PROTOCOL_REQUIRED' }
         const incoming = sanitizeStats(event.stats)
         const aiStale = (incoming.aiEpoch !== undefined || incoming.aiMessages !== undefined) &&
           Number(incoming.aiEpoch || 0) !== aiEpochOf(existing)
@@ -301,7 +406,7 @@ exports.main = async (event = {}) => {
         if (event.dataEpoch !== current) return { ok: false, error: 'STALE_EPOCH', dataEpoch: current }
         await ref.set({ data: { _id: openid, openid, dataEpoch: current + 1,
           syncRevision: nextRevision(existing), sequenceRevision: nextRevision(existing),
-          sequenceGeneration: 0, attemptSequence: 0, deleted: true, lastDeleteId: event.deleteId, updatedAt: Date.now() } })
+          sequenceGeneration: 0, attemptSequence: 0, attemptProtocol: existing && existing.attemptProtocol || 0, deleted: true, lastDeleteId: event.deleteId, updatedAt: Date.now() } })
         return { ok: true, dataEpoch: current + 1 }
       })
     } catch (e) { return { ok: false, error: 'DELETE_STATS_FAILED' } }

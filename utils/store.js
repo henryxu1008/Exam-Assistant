@@ -8,6 +8,7 @@ const bank = require('./questions.js')
 const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
 const { createSyncCoordinator } = require('./sync-coordinator.js')
+const attemptDomain = require('../shared/attempt-domain.js')
 
 /**
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
@@ -515,6 +516,7 @@ function pullFromCloud(onDone, options = {}) {
     try { attemptOutbox.ensure(base) } catch (e) { done(false); return }
     const needsPush = !reset && (dirty || getPendingPush(ctx.scope) || attemptOutbox.pending(base).length ||
       (!cursor && hasLocalSyncData(before)))
+    attemptDomain.resolveRestored(base, allAttempts)
     const localOutbox = base.attemptOutbox
     const local = aiEpoch !== undefined && aiEpoch !== Number(base.aiEpoch || 0)
       ? Object.assign({}, base, { aiEpoch, aiMessages: [] }) : base
@@ -753,6 +755,9 @@ function syncPersistedState() {
 }
 
 const queuedPushes = new Set()
+// 只服务于本进程已经捕获的旧快照；磁盘上的事实/标记在确认检查点中已归一化。
+const confirmedAliases = new Map()
+let lastPushFailure = null
 
 function pushToCloud() {
   if (!hasCloud() || !isLogged() || !state) return
@@ -764,8 +769,8 @@ function pushToCloud() {
     return
   }
   const ctx = captureSyncContext()
-  const keepPending = () => {
-    if (!isStaleContext(ctx)) { setPendingPush(ctx.scope, true); dirty = true }
+  const keepPending = (error = 'SYNC_WRITE_FAILED') => {
+    if (!isStaleContext(ctx)) { lastPushFailure = { ctx, error }; setPendingPush(ctx.scope, true); dirty = true }
   }
   let snapshot
   try {
@@ -778,6 +783,18 @@ function pushToCloud() {
     settingsVersions: settingsFieldVersions(snapshot), practiceSession: snapshot.practiceSession,
     aiMessages: snapshot.aiMessages, aiEpoch: snapshot.aiEpoch, version: snapshot.version
   }
+  const payloadForSend = () => {
+    const normalized = JSON.parse(JSON.stringify(snapshot))
+    for (const fact of (normalized.attempts || []).slice()) {
+      const accepted = confirmedAliases.get(JSON.stringify([ctx.gen, ctx.scope, ctx.token, fact.id]))
+      if (accepted && attemptDomain.sameOperation(fact, accepted)) attemptDomain.resolveAttempt(normalized, fact, accepted)
+    }
+    const pendingIds = new Set(attemptOutbox.pending(state).map(a => a.id))
+    attemptDomain.resolveRestored(normalized, state.attempts.filter(a => !pendingIds.has(a.id)))
+    return { records: normalized.records, daily: normalized.daily, settings: normalized.settings,
+      settingsVersions: settingsFieldVersions(normalized), practiceSession: normalized.practiceSession,
+      aiMessages: normalized.aiMessages, aiEpoch: normalized.aiEpoch, version: normalized.version }
+  }
   const operations = attemptOutbox.pending(snapshot)
   const signature = JSON.stringify([ctx, payload, operations.map(a => a.id)])
   if (queuedPushes.has(signature)) return
@@ -786,10 +803,10 @@ function pushToCloud() {
     try {
       if (isStaleContext(ctx)) return
       // 排队期间前一请求可能已确认其中部分 ID；不依赖流水数组的位置。
-      const currentIds = new Set(attemptOutbox.pending(state).map(a => a.id))
-      const unsent = operations.filter(a => currentIds.has(a.id))
+      const currentOperations = new Map(attemptOutbox.pending(state).map(a => [a.id, a]))
+      const unsent = operations.filter(a => currentOperations.has(a.id) && attemptDomain.canonical(a) === attemptDomain.canonical(currentOperations.get(a.id)))
       const batches = []
-      for (let i = 0; i < unsent.length; i += 48) batches.push(unsent.slice(i, i + 48))
+      for (let i = 0; i < unsent.length; i += 32) batches.push(unsent.slice(i, i + 32))
       if (!batches.length) batches.push([])
       for (let index = 0; index < batches.length; index++) {
         if (isStaleContext(ctx)) return
@@ -797,23 +814,32 @@ function pushToCloud() {
         const result = await new Promise(resolve => {
           try {
             callCloud({ name: config.functions.studySync,
-              data: { token: ctx.token, action: 'update', dataEpoch: ctx.dataEpoch,
-                ...(index === batches.length - 1 ? { stats: payload } : {}), attempts: sent },
+              data: { token: ctx.token, action: 'commitAttempts', attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
+                ...(index === batches.length - 1 ? { stats: payloadForSend() } : {}), attempts: sent },
               success: res => resolve(res && res.result), fail: () => resolve(null) })
           } catch (e) { resolve(null) }
         })
         if (isStaleContext(ctx)) return
         const accepted = attemptOutbox.acknowledged(result, sent, ctx.dataEpoch)
-        if (accepted === null) {
-          keepPending()
+        const receipts = accepted === null ? null : attemptDomain.validateReceipts(result, sent, accepted, state)
+        if (receipts === null) {
+          keepPending(result && result.error || (result ? 'INVALID_ATTEMPT_ACK' : 'NETWORK_ERROR'))
           if (result && result.error === 'STALE_EPOCH') { bootPulled = false; pullFromCloud() }
           return
         }
-        const next = JSON.parse(JSON.stringify(state))
+        let next = JSON.parse(JSON.stringify(state))
+        for (const receipt of receipts) attemptDomain.resolveAttempt(next, sent.find(a => a.id === receipt.submittedId), receipt.attempt)
+        const localOutbox = next.attemptOutbox
+        next = mergeStats(next, { records: result.stats.records, daily: result.stats.daily })
+        next.attemptOutbox = localOutbox
         attemptOutbox.remove(next, accepted)
-        try { wx.setStorageSync(scopeKey(), next) } catch (e) { keepPending(); return }
+        try { wx.setStorageSync(scopeKey(), next) } catch (e) { keepPending('PERSIST_ACK_FAILED'); return }
         state = next
-        if (accepted.length !== sent.length) { keepPending(); return }
+        for (const receipt of receipts) confirmedAliases.set(JSON.stringify([ctx.gen, ctx.scope, ctx.token, receipt.submittedId]), receipt.attempt)
+        syncRestoredListeners.forEach(listener => {
+          try { listener() } catch (e) { console.error('[store] 提交确认通知失败', e) }
+        })
+        if (accepted.length !== sent.length) { keepPending('PARTIAL_ACK'); return }
         if (result.aiStale && Number.isSafeInteger(result.aiEpoch) &&
           Number(state.aiEpoch || 0) === ctx.aiEpoch && !(state.aiClearQueue || []).length) {
           state.aiMessages = []
@@ -825,8 +851,8 @@ function pushToCloud() {
         }
       }
       if (attemptOutbox.pending(state).length) keepPending()
-      else if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
-    } catch (e) { keepPending() } finally { queuedPushes.delete(signature) }
+      else if (!getPendingDelete(ctx.scope)) { setPendingPush(ctx.scope, false); lastPushFailure = null }
+    } catch (e) { keepPending() } finally { queuedPushes.delete(signature); if (!queuedPushes.size) confirmedAliases.clear() }
   })
 }
 
@@ -841,6 +867,10 @@ const runSync = createSyncCoordinator({
       const tail = cloudWriteChain
       await tail
       if (tail === cloudWriteChain) break
+    }
+    const failure = lastPushFailure && !isStaleContext(lastPushFailure.ctx) ? lastPushFailure.error : null
+    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure)) {
+      throw Object.assign(new Error(failure), { code: failure, retryable: false })
     }
     return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&
       !attemptOutbox.pending(state).length && !getPendingPush(userScope)
@@ -1011,12 +1041,12 @@ function recordAnswer(question, isCorrect, costMs) {
   return result
 }
 
-function recordAnswerInto(s, question, isCorrect, costMs) {
+function recordAnswerInto(s, question, isCorrect, costMs, attempt) {
   if (!question || !question.id) {
     throw new TypeError('recordAnswer: question 非法')
   }
-  const now = Date.now()
-  const key = todayKey()
+  const now = attempt ? attempt.createdAt : Date.now()
+  const key = todayKey(new Date(now))
 
   const prev = s.records[question.id]
   const r = prev || {
@@ -1041,13 +1071,18 @@ function recordAnswerInto(s, question, isCorrect, costMs) {
   const changedFields = ['lastAt', 'streak', 'level', 'rightDays', 'nextReviewAt']
 
   r.answerBy = Object.assign({}, recordCountsBy(r))
-  const writer = getWriterId()
-  const own = Object.assign({ attempts: 0, right: 0, wrong: 0 }, r.answerBy[writer])
-  own.attempts += 1
-  if (isCorrect) own.right += 1
-  else own.wrong += 1
-  r.answerBy[writer] = own
-  sumRecordCounts(r)
+  if (attempt) {
+    s.records[question.id] = r
+    attemptDomain.projectCounts(s, attempt)
+  } else {
+    const writer = getWriterId()
+    const own = Object.assign({ attempts: 0, right: 0, wrong: 0 }, r.answerBy[writer])
+    own.attempts += 1
+    if (isCorrect) own.right += 1
+    else own.wrong += 1
+    r.answerBy[writer] = own
+    sumRecordCounts(r)
+  }
   r.lastAt = now
   if (isCorrect) {
     r.streak = (Number(r.streak) || 0) + 1
@@ -1072,6 +1107,8 @@ function recordAnswerInto(s, question, isCorrect, costMs) {
   r.nextReviewAt = now + REVIEW_INTERVALS[r.level] * DAY
   advanceRecordFields(r, changedFields)
   s.records[question.id] = r
+
+  if (attempt) return { record: r, today: s.daily[attempt.projection.date] }
 
   const d = s.daily[key] || {
     date: key,
@@ -1426,16 +1463,18 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
     selected: Array.isArray(selected) ? selected.slice() : selected,
     answer: question.answer,
     score: isCorrect ? 1 : 0,
-    costMs: costMs || 0,
+    costMs: Number.isSafeInteger(costMs) ? Math.max(0, costMs) : 0,
     clientOpId: opId,
     createdAt: Date.now()
   }
-  // 不可变流水：仅追加
+  const projection = { version: 1, subject: question.subject, chapter: question.chapter, date: todayKey(new Date(attempt.createdAt)) }
+  if (attemptDomain.validProjection({ ...attempt, projection })) attempt.projection = projection
+  // 未确认流水本地 ID 在确认后收敛为服务端业务 ID；已确认事实不改写。
   if (!s.attempts) s.attempts = []
   s.attempts.push(attempt)
 
   // 派生聚合统计（保持与旧 recordAnswer 一致的口径）
-  const agg = recordAnswerInto(s, question, isCorrect, costMs)
+  const agg = recordAnswerInto(s, question, isCorrect, attempt.costMs, attempt.projection ? attempt : undefined)
 
   // 标记本题本会话已提交
   if (!s.practiceSession) s.practiceSession = null

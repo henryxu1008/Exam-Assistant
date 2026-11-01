@@ -19,10 +19,7 @@ const DATA_KEY = 'exam_quiz_data_v1'
 const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
 
 /** 正常服务端响应：事务提交后明确返回本次确认的流水 ID。 */
-function withAck(opts, result) {
-  return result && result.ok && opts.data.action === 'update'
-    ? Object.assign({ dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }, result) : result
-}
+const { withCommit: withAck } = require('./support/commit-response.js')
 
 /** 立即回包：success 同步触发，result 由 handler 决定 */
 function mockCloud(handler) {
@@ -99,7 +96,7 @@ test('上传时 attempts 作为顶层字段发送，而非塞进 stats', async (
   store.flush()
   await tick() // 云端写操作在队列中执行
 
-  const update = calls.filter((c) => c.data && c.data.action === 'update').pop()
+  const update = calls.filter((c) => c.data && c.data.action === 'commitAttempts').pop()
   assert.ok(update, '应发起一次 update')
   assert.ok(Array.isArray(update.data.attempts), 'attempts 必须是顶层数组')
   assert.strictEqual(update.data.attempts.length, 1)
@@ -128,7 +125,7 @@ test('云函数返回 ok:false 时保留待传作答', async () => {
   store.flush()
   await tick()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 2)
   assert.strictEqual(updates[0].data.attempts.length, 1, '首次尝试应带上未同步的作答')
   assert.strictEqual(
@@ -155,7 +152,7 @@ test('明确确认后作答出队，后续只发送新增作答', async () => {
   store.flush()
   await tick()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 2)
   assert.strictEqual(updates[0].data.attempts.length, 1)
   assert.strictEqual(updates[1].data.attempts.length, 1, '第二条只需增量上传新增部分')
@@ -177,7 +174,7 @@ test('anon 作用域下不上传学习档案（防止空档案覆盖账号备份
   store.recordAnswer(q('x1'), true, 100)
   store.flush()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 0, '作用域与会话身份不一致时必须拒绝上传')
 })
 
@@ -193,7 +190,7 @@ test('绑定到账号作用域后可正常上传', async () => {
   store.flush()
   await tick()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 1, '作用域匹配后应允许上传')
 })
 
@@ -211,7 +208,7 @@ test('切换到另一个账号后，旧账号数据不会以新账号身份上�
   login('o2', 'tokB')
   store.flush()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 0, 'A 的数据不得以 B 的令牌上传')
 })
 
@@ -228,7 +225,7 @@ test('登出后（会话清空）不再上传', () => {
   global.wx.setStorageSync(SESSION_KEY, { logged: false, token: '', openid: '' })
   store.flush()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 0, '会话已清空时不应上传')
 })
 
@@ -289,7 +286,7 @@ test('冷启动先绑定作用域再 load：数据落在账号命名空间且可
   store.flush()
   await tick()
 
-  const updates = calls.filter((c) => c.data && c.data.action === 'update')
+  const updates = calls.filter((c) => c.data && c.data.action === 'commitAttempts')
   assert.strictEqual(updates.length, 1, '绑定后应允许上传')
   assert.strictEqual(updates[0].data.token, 'tok')
   assert.ok(
@@ -416,7 +413,7 @@ test('A 的上传确认不会移除 B 的待传作答', async () => {
   global.wx.__cloudReady = true
   global.wx.cloud = {
     callFunction: (opts) => {
-      const isUpdate = opts.data && opts.data.action === 'update'
+      const isUpdate = opts.data && opts.data.action === 'commitAttempts'
       if (isUpdate) {
         // 只记录调用、不自动回调，模拟「上传在途」；稍后手动触发其 success
         pendingUpdate = opts
@@ -459,7 +456,7 @@ test('A 的上传确认不会移除 B 的待传作答', async () => {
   store.flush()
   await tick()
 
-  const update = calls.filter((c) => c.data && c.data.action === 'update').pop()
+  const update = calls.filter((c) => c.data && c.data.action === 'commitAttempts').pop()
   assert.ok(update, '应发起一次上传')
   assert.ok(
     (update.data.attempts || []).some((a) => a.questionId === 'y1'),
@@ -480,8 +477,8 @@ test('清空时若已有上传在途，删除请求仍排在其后发出', async
   global.wx.cloud = {
     callFunction: (opts) => {
       const action = opts.data && opts.data.action
-      if (action === 'update') {
-        actions.push('update') // 发出上传，回包挂起
+      if (action === 'commitAttempts') {
+        actions.push('commitAttempts') // 发出上传，回包挂起
         pending.push(opts)
         return new Promise(() => {})
       }
@@ -499,23 +496,23 @@ test('清空时若已有上传在途，删除请求仍排在其后发出', async
   store.recordAnswer(q('x1'), true, 100)
   store.flush()
   await tick()
-  assert.deepEqual(actions, ['get', 'update'], '上传应已发出但尚未回包')
+  assert.deepEqual(actions, ['get', 'commitAttempts'], '上传应已发出但尚未回包')
 
   // 2) 在途期间清空：删除请求必须排在上传之后
   store.clearAll()
   await tick()
-  assert.deepEqual(actions, ['get', 'update'], '删除不得趁上传在途抢先发出')
+  assert.deepEqual(actions, ['get', 'commitAttempts'], '删除不得趁上传在途抢先发出')
 
   // 3) 上传回包到达后，删除才发出（其后是清空后那次空档案上传）
   pending.forEach((opts) => opts.success({ result: { ok: true } }))
   await tick()
 
-  const firstUpdate = actions.indexOf('update')
+  const firstUpdate = actions.indexOf('commitAttempts')
   const del = actions.indexOf('delete')
   assert.ok(del > firstUpdate, '删除必须排在在途上传之后，否则刚清空的数据会被写回')
   assert.strictEqual(
     actions[actions.length - 1],
-    'update',
+    'commitAttempts',
     '清空后的空档案上传应排在删除之后'
   )
 })
@@ -561,7 +558,7 @@ test('清空时删除失败会保留意图，恢复后先补发删除再上传',
   // 删除未确认前不得上传：update 是合并而非整doc覆盖，
   // 空快照删不掉服务端已有数据，此时上传等于把刚清空的内容又并回去
   assert.equal(
-    calls.filter((c) => c.data && c.data.action === 'update').length,
+    calls.filter((c) => c.data && c.data.action === 'commitAttempts').length,
     0,
     '删除未确认前不得上传'
   )
@@ -580,7 +577,7 @@ test('清空时删除失败会保留意图，恢复后先补发删除再上传',
     '恢复后应重试删除'
   )
   assert.ok(
-    actions.lastIndexOf('delete') < actions.indexOf('update'),
+    actions.lastIndexOf('delete') < actions.indexOf('commitAttempts'),
     '上传必须排在删除确认之后'
   )
 })
@@ -649,7 +646,7 @@ test('清空入队后切换账号，删除仍绑定发起时的账号', async ()
       calls.push(opts)
       const action = opts.data && opts.data.action
       // 让上传停留在在途状态，制造「删除排在它之后」的窗口
-      if (action === 'update') {
+      if (action === 'commitAttempts') {
         pending.push(opts)
         return new Promise(() => {})
       }
@@ -710,7 +707,7 @@ test('上传失败后，无需新的本地变更也会再次重试上传', async
     callFunction: (opts) => {
       calls.push(opts)
       const action = opts.data && opts.data.action
-      if (action === 'update' && failUpload) {
+      if (action === 'commitAttempts' && failUpload) {
         if (opts.fail) opts.fail(new Error('offline'))
         return Promise.reject(new Error('offline'))
       }
@@ -730,7 +727,7 @@ test('上传失败后，无需新的本地变更也会再次重试上传', async
   await tick()
 
   assert.equal(
-    calls.filter((c) => c.data && c.data.action === 'update').length,
+    calls.filter((c) => c.data && c.data.action === 'commitAttempts').length,
     1,
     '应发起一次上传'
   )
@@ -743,7 +740,7 @@ test('上传失败后，无需新的本地变更也会再次重试上传', async
   await tick()
 
   assert.ok(
-    calls.filter((c) => c.data && c.data.action === 'update').length >= 2,
+    calls.filter((c) => c.data && c.data.action === 'commitAttempts').length >= 2,
     '上传失败后再次 flush 必须重试'
   )
 })
@@ -761,7 +758,7 @@ test('应用层拒绝上传也保留待传状态，无新编辑重试及重启�
   assert.strictEqual(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), true)
   store.flush()
   await tick()
-  assert.strictEqual(calls.filter((c) => c.data.action === 'update').length, 2, '没有新编辑也要重试')
+  assert.strictEqual(calls.filter((c) => c.data.action === 'commitAttempts').length, 2, '没有新编辑也要重试')
 
   const data = wx.getStorageSync('exam_quiz_data_v1__o1')
   store.__clearFlushTimer()
@@ -776,7 +773,7 @@ test('应用层拒绝上传也保留待传状态，无新编辑重试及重启�
     : { ok: true })
   store.load()
   await tick()
-  const upload = resumed.find((c) => c.data.action === 'update')
+  const upload = resumed.find((c) => c.data.action === 'commitAttempts')
   assert.ok(upload, '云端无快照时也必须补传本地待上传的数据')
   assert.strictEqual(upload.data.attempts[0].questionId, 'retry-q')
   assert.strictEqual(wx.getStorageSync('exam_quiz_pending_push_v1__o1'), '')
@@ -897,16 +894,16 @@ test('大量离线流水逐批按 ID 确认，后续失败只重试剩余批次'
   await tick()
   assert.equal(calls.length, 2)
   assert.equal(calls[0].data.stats, undefined)
-  assert.equal(calls[0].data.attempts.length, 48)
-  assert.equal(store.load().attemptOutbox.pending.length, 145)
+  assert.equal(calls[0].data.attempts.length, 32)
+  assert.equal(store.load().attemptOutbox.pending.length, 161)
   rejectSecond = false
   store.flush()
   await tick()
   const retried = calls.slice(2)
-  assert.deepEqual(retried.map(c => c.data.attempts.length), [48, 48, 48, 1])
+  assert.deepEqual(retried.map(c => c.data.attempts.length), [32, 32, 32, 32, 32, 1])
   assert.equal(retried[0].data.stats, undefined)
   assert.equal(retried[1].data.stats, undefined)
-  assert.equal(Object.keys(retried[3].data.stats.records).length, 193)
+  assert.equal(Object.keys(retried[5].data.stats.records).length, 193)
   assert.equal(store.load().attemptOutbox.pending.length, 0)
   assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), '')
 })
@@ -949,7 +946,7 @@ test('旧设备收到 STALE_EPOCH 后采用服务端新代次，不合并或补�
   assert.ok(store.getRecord('fresh'))
   assert.equal(store.load().dataEpoch, 3)
   assert.equal(store.load().attemptOutbox.pending.length, 0)
-  assert.equal(calls.filter(c => c.data.action === 'update' && c.data.dataEpoch === 3).length, 0, '纯恢复无需回声上传')
+  assert.equal(calls.filter(c => c.data.action === 'commitAttempts' && c.data.dataEpoch === 3).length, 0, '纯恢复无需回声上传')
 })
 
 test('清空操作 ID 持久化，重启重试使用同一 ID 并在确认后携带新代次上传', async () => {
@@ -979,7 +976,7 @@ test('清空操作 ID 持久化，重启重试使用同一 ID 并在确认后携
   const reset = resumed.find(c => c.data.action === 'delete').data
   assert.equal(reset.deleteId, original.deleteId)
   assert.equal(reset.dataEpoch, 2)
-  const upload = resumed.find(c => c.data.action === 'update').data
+  const upload = resumed.find(c => c.data.action === 'commitAttempts').data
   assert.equal(upload.dataEpoch, 3)
   assert.equal(upload.attempts[0].questionId, 'after-reset')
   assert.equal(wx.getStorageSync('exam_quiz_pending_delete_v1__o1'), '')
@@ -1001,7 +998,7 @@ test('恢复分页修订号变化时整批丢弃，不能发布部分恢复', as
   assert.equal(done, false)
   assert.equal(store.getRecord('partial'), null)
   assert.equal(calls[1].data.syncRevision, 10)
-  assert.equal(calls.filter(c => c.data.action === 'update').length, 0)
+  assert.equal(calls.filter(c => c.data.action === 'commitAttempts').length, 0)
 })
 
 test('旧布尔清空标记升级为持久操作，下一次清空生成新 ID', async () => {
@@ -1043,5 +1040,5 @@ test('写盘失败恢复后，无新编辑也可提交先前待保存的设置',
   const calls = mockCloud(() => ({ ok: true }))
   store.flush()
   await tick()
-  assert.equal(calls.find(c => c.data.action === 'update').data.stats.settings.dailyGoal, 50)
+  assert.equal(calls.find(c => c.data.action === 'commitAttempts').data.stats.settings.dailyGoal, 50)
 })

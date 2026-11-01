@@ -24,7 +24,10 @@ function createSyncCoordinator({ ready, context, isCurrent, push, pull, wait = m
               }
             }
           }
-        } catch (e) { /* 本轮失败，下次有界重试仍读取同一持久队列/游标。 */ }
+        } catch (e) {
+          if (e && e.retryable === false) return { ok: false, error: e.code, attempts: index + 1 }
+          // 本轮失败，下次有界重试仍读取同一持久队列/游标。
+        }
       }
       return { ok: false, error: 'SYNC_RETRY_EXHAUSTED', attempts: 3 }
     }).finally(() => { if (active === run) active = null })
