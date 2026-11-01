@@ -20,6 +20,7 @@ const ROOT = path.resolve(__dirname, '..')
 
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
+  ['shared/question-domain.js', 'cloudfunctions/bankSync/question-domain.js', 'cloudfunctions/studySync/question-domain.js'],
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],
   ['shared/attempt-domain.js', 'cloudfunctions/studySync/attempt-domain.js'],
   // studySync/auth.js 此前也是逐字节一致的副本，却没被登记，

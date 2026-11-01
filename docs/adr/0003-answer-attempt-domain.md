@@ -18,7 +18,7 @@
    每题绑定 `attemptId`，以 `clientOpId` 实现同一次提交的重试幂等。
 3. **迁移 v2→v3**：新增 `attempts[]` 与 `practiceSession` 字段；旧聚合 `records` 保留为派生来源。
    不可变流水无法由聚合反推，明确**不伪造历史**作答。迁移幂等：已为 v3 的数据再次加载不再迁移、不重复计数。
-4. **题目版本占位**：`questionVersionId` 暂用 `'v1'`，待 Issue 5 引入 `QuestionVersion` 后填充，
+4. **题目版本**：新作答使用 ADR 0013 的内容 versionId 并保存原题快照；旧 `'v1'` 记录保留未知，
    届时跨版本题目可追溯。
 
 ### 练习页面与仓储状态衔接
@@ -53,7 +53,7 @@ Record(派生) { id=questionId, attempts, right, wrong, level, ... } 由 attempt
 | --- | --- | --- |
 | AnswerAttempt | `id` | 唯一（主键），`newId('at')` |
 | AnswerAttempt | `(sessionId, questionId, clientOpId)` | 业务幂等键：同一会话同题同 clientOpId 仅落库一次 |
-| AnswerAttempt | `questionVersionId` | 外键（未来），当前占位 `'v1'` |
+| AnswerAttempt | `questionVersionId` | 新作答使用不可变内容版本及快照（ADR 0013）；旧 `'v1'` 不自动映射 |
 | PracticeSession | `id` | 唯一 |
 | PracticeSession | `submitted[qid]` | `{ attemptId, clientOpId }` 只读回看依据 |
 

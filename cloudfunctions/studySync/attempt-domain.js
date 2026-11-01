@@ -1,5 +1,6 @@
 /** 作答业务身份、事实计数与确认收敛；纯函数/草稿操作，不访问存储或网络。 */
 const { recordCountsBy, sumRecordCounts, sumCounter, counterBy, recomputeSessionStats } = require('./stats-merge.js')
+const questionDomain = require('./question-domain.js')
 const PREFIX = '__fact__'
 const SERVER_KEY = '__server_facts_v1__'
 const copy = value => JSON.parse(JSON.stringify(value))
@@ -181,6 +182,7 @@ function validateReceipts(result, sent, acceptedIds, snapshot = {}) {
     const fact = receipt && receipt.attempt, submitted = receipt && expected.get(receipt.submittedId)
     if (!submitted || (waiting && canonical(waiting.get(receipt.submittedId)) !== canonical(submitted)) || !ids.has(receipt.submittedId) || seen.has(receipt.submittedId) || !fact || typeof fact.id !== 'string' || !fact.id ||
       businessKey(fact) !== businessKey(submitted) || !sameOperation(fact, submitted) ||
+      (submitted.questionSnapshot && !questionDomain.attemptQuestion(fact)) ||
       (fact.projection !== undefined && (!validProjection(fact) || fact.projection.confirmed !== true)) ||
       (known.has(fact.id) && !sameOperation(known.get(fact.id), fact)) ||
       (!businessKey(submitted) && fact.id !== submitted.id) ||

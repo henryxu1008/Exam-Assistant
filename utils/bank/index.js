@@ -8,9 +8,9 @@
  *
  * 题库上云（动态更新题目、不发版）：
  *  - 默认数据源来自静态 manifest + 分片（离线 / 控制台未配置时的兜底）。
- *  - 启动后由 app.js 调用 loadCloudBank() 从 bankSync 拉取云端题库，整体替换 source。
+ *  - 启动后调用 getPublished，仅接受校验通过并已持久缓存的发布快照。
  *  - pushStaticBankToCloud() 供管理员显式导入内置题库；权限由服务端校验，不自动执行。
- *  - 拉到的云端题库会缓存到本地存储，下次启动即使断网也用得上一次云端版本。
+ *  - 内容哈希固定题目与发布身份；会话与作答各自保留原题快照，离线可追溯。
  *  - 所有查询函数只读 `source`，因此切换数据源对外完全透明。
  *
  * 题目字段见 manifest.js 顶部说明。
@@ -18,6 +18,7 @@
 
 const manifest = require('./manifest.js')
 const config = require('../config.js')
+const domain = require('../../shared/question-domain.js')
 
 const cache = {}
 function loadSubject(key) {
@@ -34,17 +35,17 @@ function buildStaticSource() {
   manifest.subjects.forEach((s) => {
     questions[s.key] = loadSubject(s.key)
   })
-  return { manifest: manifest, questions: questions }
+  return domain.buildRelease({ manifest: manifest, questions: questions })
 }
 
 // 当前数据源：先尝试用上一次缓存的云端题库，否则用静态兜底
 let source = buildStaticSource()
 
-const CLOUD_BANK_KEY = 'exam_quiz_bank_cloud_v1'
+const CLOUD_BANK_KEY = 'exam_quiz_bank_published_v2'
 function loadPersistedCloudBank() {
   try {
     const raw = wx.getStorageSync(CLOUD_BANK_KEY)
-    if (raw && raw.manifest && raw.questions) return raw
+    if (domain.validRelease(raw) && Number.isSafeInteger(raw.publicationRevision) && raw.publicationRevision > 0) return raw
   } catch (e) {
     /* ignore */
   }
@@ -66,14 +67,15 @@ function index() {
 function allQuestions() {
   let out = []
   source.manifest.subjects.forEach((s) => {
-    out = out.concat(source.questions[s.key] || [])
+    out = out.concat((source.questions[s.key] || []).map(q => JSON.parse(JSON.stringify({ ...q, bankReleaseId: source.releaseId }))))
   })
   return out
 }
 
 function findQuestion(id) {
   if (!id) return null
-  return index().get(id) || null
+  const q = index().get(id)
+  return q ? domain.snapshotQuestion(q) : null
 }
 
 function getAllQuestions() {
@@ -214,14 +216,13 @@ function judge(type, selected, answer) {
 
 /** 用云端题库整体替换数据源（结构须为 {manifest, questions}）；成功返回 true */
 function swapSource(bank) {
-  if (!bank || !bank.manifest || !bank.questions) return false
-  source = bank
+  if (!domain.validRelease(bank) || !Number.isSafeInteger(bank.publicationRevision) || bank.publicationRevision < 1 ||
+      bank.publicationRevision < (source.publicationRevision || 0) ||
+      (bank.publicationRevision === source.publicationRevision && bank.releaseId !== source.releaseId)) return false
+  const next = { ...domain.buildRelease(bank), publicationRevision: bank.publicationRevision }
+  try { wx.setStorageSync(CLOUD_BANK_KEY, next) } catch (e) { return false }
+  source = next
   _index = null
-  try {
-    wx.setStorageSync(CLOUD_BANK_KEY, bank)
-  } catch (e) {
-    /* ignore */
-  }
   return true
 }
 
@@ -236,7 +237,7 @@ function hasCloud() {
 async function loadCloudBank() {
   if (!hasCloud()) return false
   try {
-    const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'get' } })
+    const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getPublished' } })
     const r = res && res.result
     if (r && r.ok && r.bank) return swapSource(r.bank)
   } catch (e) {
@@ -312,6 +313,8 @@ const api = {
   judge,
   TYPE_MAP,
   loadCloudBank,
+  snapshotQuestion: domain.snapshotQuestion,
+  resolveAttemptQuestion: domain.attemptQuestion,
   pushStaticBankToCloud
 }
 

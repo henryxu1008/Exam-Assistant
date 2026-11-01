@@ -1,7 +1,7 @@
 const domain = require('../../shared/attempt-domain.js')
 /** 正常新提交协议的传输替身；非法确认测试直接使用真实服务或原始响应。 */
 function withCommit(opts, result) {
-  if (!result || !result.ok || opts.data.action !== 'commitAttempts') return result
+  if (!result || !result.ok || !['commitAttempts', 'commitVersionedAttempts'].includes(opts.data.action)) return result
   const attempts = opts.data.attempts || []
   const stats = JSON.parse(JSON.stringify(result.stats || { records: (opts.data.stats || {}).records || {}, daily: (opts.data.stats || {}).daily || {} }))
   const receipts = attempts.map(a => ({ submittedId: a.id, attempt: a.projection ? { ...a, projection: { ...a.projection, confirmed: true } } : a }))

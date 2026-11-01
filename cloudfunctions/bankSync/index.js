@@ -1,24 +1,9 @@
 /**
- * 云函数 bankSync
- * 入参：{ action: 'get' | 'set', token?, bank?, force? }
- * 出参：{ ok, bank? }
- *
- * action=get：返回云端题库（questions 集合 _id='bank' 文档）；不存在返回 { ok:true, bank:null }。
- *   ——题库是全体用户共享的公开内容，读取不需要身份。
- *
- * action=set：写入/覆盖云端题库。题库内容会下发给所有用户，属于高权限写操作，
- *   必须满足以下全部条件，否则拒绝（评审 P1 4422245843 同类的服务端鉴权）：
- *   1) 调用方须持有有效登录令牌或管理员密钥——拒绝匿名直调；
- *   2) 首次初始化和后续覆盖都必须为管理员；
- *   3) 云端已有题库时：仅管理员可覆盖，且必须显式 force=true。
- *   4) 「不存在才写」的判定与写入放在同一个事务里，避免并发重复/互相覆盖。
- *
- * 云端题库结构：{ _id:'bank', manifest:{subjects:[...]}, questions:{ <key>: [题目...] } }
- * 与 utils/bank 的静态结构保持一致，前端拉到后整体替换数据源，无需改动查询逻辑。
- *
- * 依赖集合：users（校验令牌）、questions（题库）、appConfig（管理员名单，可选）。
+ * Public: get (legacy mirror), getPublished, getVersion(releaseId, versionId).
+ * Admin: publish(bank, reviewed:true, expectedRevision); immutable releases + atomic activation audit.
+ * Legacy set stays admin-only and is rejected once a versioned release is activated.
+ * All documents use the existing questions collection; reads never interpret access failure as absence.
  */
-
 const cloud = require('wx-server-sdk')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -31,25 +16,14 @@ const CONFIG = db.collection('appConfig')
 /** 令牌校验 + 管理员判定；部署副本随本函数一起上传 */
 const { findByToken, verifyAdminSecret, getAdminOpenids } = require('./auth.js')
 /** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
-const { isNotFound, readOptionalDoc } = require('./db-error.js')
+const { readOptionalDoc } = require('./db-error.js')
 
 /** 题库写操作允许的顶层字段（其余一律丢弃，防止写入任意字段） */
 const BANK_FIELDS = ['manifest', 'questions']
+const domain = require('./question-domain.js')
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
 const ADMIN_ACTOR_ID = 'admin'
-
-/**
- * 题库文档是否已存在（不存在才允许一次性初始化）。
- *
- * 只有「确认不存在」才返回 false。读失败必须向上抛出：
- * 这里 false 会让调用方跳过 force + 管理员两道校验直接覆盖题库，
- * 于是一次读超时就能让任何人冲掉运营已维护的题库
- * （评审 P2 4430849974 同类，本函数未单独编号但后果同等）。
- */
-async function bankExists() {
-  return !!(await readOptionalDoc(() => BANK.doc('bank').get()))
-}
 
 function sanitizeBank(payload) {
   const src = payload && typeof payload === 'object' ? payload : {}
@@ -60,68 +34,90 @@ function sanitizeBank(payload) {
   return out
 }
 
-exports.main = async (event) => {
+async function adminActor(event) {
+  const admin = verifyAdminSecret(event)
+  const provided = event.adminSecret !== undefined && event.adminSecret !== null && event.adminSecret !== ''
+  if (provided && !admin.ok) return { error: 'NOT_ADMIN' }
+  const user = admin.ok ? null : await findByToken(USERS, event.token)
+  if (!admin.ok && !user) return { error: event.token ? 'INVALID_TOKEN' : 'NO_TOKEN' }
+  if (!admin.ok && (await getAdminOpenids(CONFIG)).indexOf(user.openid) === -1) return { error: 'NOT_ADMIN' }
+  return { id: admin.ok ? ADMIN_ACTOR_ID : user.openid }
+}
+
+async function publish(event, actor) {
+  if (event.reviewed !== true) return { ok: false, error: 'REVIEW_REQUIRED' }
+  if (!Number.isSafeInteger(event.expectedRevision) || event.expectedRevision < 0) return { ok: false, error: 'BAD_REVISION' }
+  let bank
+  try { bank = domain.buildRelease(event.bank) } catch (e) { return { ok: false, error: e.code || 'BAD_BANK' } }
+  if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+  try {
+    return await db.runTransaction(async tx => {
+      const collection = tx.collection('questions'), ref = collection.doc('bank')
+      const current = await readOptionalDoc(() => ref.get())
+      const revision = current && current.publicationRevision || 0
+      if (revision !== event.expectedRevision) return { ok: false, error: 'STALE_PUBLICATION', publicationRevision: revision }
+      if (!Number.isSafeInteger(revision + 1)) return { ok: false, error: 'BAD_REVISION' }
+      const releaseRef = collection.doc(bank.releaseId)
+      const existing = await readOptionalDoc(() => releaseRef.get())
+      if (existing && (existing.kind !== 'questionBankRelease' || !domain.validRelease(existing.bank) ||
+          domain.canonical(existing.bank) !== domain.canonical(bank))) return { ok: false, error: 'RELEASE_CONFLICT' }
+      // The first publication archives the exact legacy bank. Never infer v1 attempt versions from it.
+      if (current && current.schemaVersion !== 2) {
+        const backupRef = collection.doc('bank_legacy_backup')
+        const backup = await readOptionalDoc(() => backupRef.get())
+        if (backup) return { ok: false, error: 'LEGACY_BACKUP_EXISTS' }
+        await backupRef.set({ data: { kind: 'legacyBankBackup', bank: current, archivedAt: Date.now(), archivedBy: actor } })
+      }
+      if (!existing) await releaseRef.set({ data: { kind: 'questionBankRelease', bank, publishedAt: Date.now(), publishedBy: actor } })
+      const next = revision + 1
+      await collection.doc('bank_publication_' + next).set({ data: { kind: 'bankPublication', publicationRevision: next,
+        releaseId: bank.releaseId, previousReleaseId: current && current.releaseId || null, at: Date.now(), by: actor } })
+      // Compatibility mirror for older readers; older set writers are rejected after this transaction.
+      await ref.set({ data: { _id: 'bank', ...bank, publicationRevision: next, updatedAt: Date.now(), updatedBy: actor } })
+      return { ok: true, releaseId: bank.releaseId, publicationRevision: next }
+    })
+  } catch (e) { return { ok: false, error: 'PUBLISH_FAILED' } }
+}
+
+exports.main = async (event = {}) => {
   const action = event.action || 'get'
-
-  if (action === 'get') {
+  if (action === 'get' || action === 'getPublished') {
     try {
-      const res = await BANK.doc('bank').get()
-      return { ok: true, bank: res.data || null }
-    } catch (e) {
-      // 只有「确认不存在」才是尚未种子化；读失败必须报错，
-      // 否则端上会把「读不到题库」当成「云端没有题库」
-      if (!isNotFound(e)) return { ok: false, error: 'READ_BANK_FAILED' }
-      return { ok: true, bank: null }
-    }
+      const bank = await readOptionalDoc(() => BANK.doc('bank').get())
+      if (action === 'getPublished') {
+        if (!bank || bank.schemaVersion !== 2) return { ok: true, bank: null, publicationRevision: 0 }
+        if (!domain.validRelease(bank)) return { ok: false, error: 'INVALID_RELEASE' }
+      }
+      return { ok: true, bank, publicationRevision: bank && bank.publicationRevision || 0 }
+    } catch (e) { return { ok: false, error: 'READ_BANK_FAILED' } }
   }
+  if (action === 'getVersion') {
+    if (!/^qb_[a-f0-9]{64}$/.test(event.releaseId || '') || !/^qv_[a-f0-9]{64}$/.test(event.versionId || '')) return { ok: false, error: 'BAD_VERSION_QUERY' }
+    try {
+      const release = await readOptionalDoc(() => BANK.doc(event.releaseId).get())
+      if (!release) return { ok: true, question: null }
+      if (release.kind !== 'questionBankRelease' || !domain.validRelease(release.bank) || release.bank.releaseId !== event.releaseId) return { ok: false, error: 'INVALID_RELEASE' }
+      const question = Object.values(release.bank.questions).flat().find(q => q.versionId === event.versionId)
+      return { ok: true, question: question ? { ...question, bankReleaseId: event.releaseId } : null }
+    } catch (e) { return { ok: false, error: 'READ_VERSION_FAILED' } }
+  }
+  if (action !== 'set' && action !== 'publish') return { ok: false, error: 'BAD_ACTION' }
+  if (action === 'set' && (!event.bank || !event.bank.manifest || !event.bank.questions)) return { ok: false, error: 'BAD_BANK' }
+  let actor
+  try { actor = await adminActor(event) } catch (e) { return { ok: false, error: 'READ_AUTH_FAILED' } }
+  if (actor.error) return { ok: false, error: actor.error }
+  if (action === 'publish') return publish(event, actor.id)
 
-  if (action === 'set') {
-    const bank = sanitizeBank(event.bank)
-    if (!bank.manifest || !bank.questions) return { ok: false, error: 'BAD_BANK' }
-
-    // 身份判定（两条途径二选一，任一成立即可写入）：
-    //   - 管理员密钥：控制台运行/运维脚本没有登录身份，只能用它；
-    //   - 有效登录令牌：端上调用，再按管理员名单判定是否可覆盖既有题库。
-    const admin = verifyAdminSecret(event)
-    const providedSecret = event.adminSecret !== undefined && event.adminSecret !== null && event.adminSecret !== ''
-    // 显式带了密钥却不对：直接判定无权限，不回退到令牌路径
-    if (providedSecret && !admin.ok) return { ok: false, error: 'NOT_ADMIN' }
-    const user = admin.ok ? null : await findByToken(USERS, event.token)
-    if (!admin.ok && !user) {
-      return { ok: false, error: event.token ? 'INVALID_TOKEN' : 'NO_TOKEN' }
-    }
-    const isAdmin = admin.ok || (await getAdminOpenids(CONFIG)).indexOf(user.openid) !== -1
-    if (!isAdmin) return { ok: false, error: 'NOT_ADMIN' }
-    const actorId = admin.ok ? ADMIN_ACTOR_ID : user.openid
-
-    const data = Object.assign({ _id: 'bank', updatedAt: Date.now(), updatedBy: actorId }, bank)
-    const exists = await bankExists()
-
-    // 覆盖运营已维护的题库：必须显式 force，且调用方具备管理员身份
-    if (exists) {
-      if (event.force !== true) return { ok: false, error: 'BANK_EXISTS' }
-      await BANK.doc('bank').set({ data: data })
-      return { ok: true }
-    }
-
-    // 一次性初始化：判定与写入放进同一事务，
-    // 并发的多个客户端同时首次种入时，后到的会在事务内看到文档已存在而被拒绝。
-    const write = async (tx) => {
+  // Legacy compatibility stays transactional with publish, so an old force writer cannot erase a release.
+  if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+  try {
+    return await db.runTransaction(async tx => {
       const ref = tx.collection('questions').doc('bank')
       const existing = await readOptionalDoc(() => ref.get())
-      if (existing) return { ok: false, error: 'BANK_EXISTS' }
-      await ref.set({ data: data })
+      if (existing && existing.schemaVersion === 2) return { ok: false, error: 'PUBLICATION_REQUIRED' }
+      if (existing && event.force !== true) return { ok: false, error: 'BANK_EXISTS' }
+      await ref.set({ data: { _id: 'bank', updatedAt: Date.now(), updatedBy: actor.id, ...sanitizeBank(event.bank) } })
       return { ok: true }
-    }
-
-    // 一次性写入的权限边界依赖原子判定；无事务时不能降级成有竞争窗口的复查。
-    if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
-    try {
-      return await db.runTransaction(write)
-    } catch (e) {
-      return { ok: false, error: 'TX_FAILED' }
-    }
-  }
-
-  return { ok: false, error: 'BAD_ACTION' }
+    })
+  } catch (e) { return { ok: false, error: 'TX_FAILED' } }
 }
