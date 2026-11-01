@@ -2,7 +2,7 @@
  * 云端同步一致性回归测试（PR #10 评审发现）
  *
  * 覆盖四条 P1：
- *  1) attempts 必须作为顶层字段发送，且仅在应用层 ok:true 时推进光标；
+ *  1) attempts 必须作为顶层字段发送，且仅在应用层明确确认 ID 后出队；
  *  2) 作用域与会话身份不一致时禁止上传，避免匿名态空档案覆盖账号备份；
  *  3) 拉取发起后账号若已切换 / 登出，回包（含每个分页）一律丢弃；
  *  4) 题库种子上传需要登录令牌（云端鉴权）。
@@ -18,6 +18,12 @@ const SESSION_KEY = 'exam_quiz_session_v1'
 const DATA_KEY = 'exam_quiz_data_v1'
 const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
 
+/** 正常服务端响应：事务提交后明确返回本次确认的流水 ID。 */
+function withAck(opts, result) {
+  return result && result.ok && opts.data.action === 'update'
+    ? Object.assign({ dataEpoch: opts.data.dataEpoch || 0, acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id) }, result) : result
+}
+
 /** 立即回包：success 同步触发，result 由 handler 决定 */
 function mockCloud(handler) {
   const calls = []
@@ -25,7 +31,7 @@ function mockCloud(handler) {
   global.wx.cloud = {
     callFunction: (opts) => {
       calls.push(opts)
-      const result = handler ? handler(opts, calls.length - 1) : { ok: true }
+      const result = withAck(opts, handler ? handler(opts, calls.length - 1) : { ok: true })
       // store 以 success/fail 回调方式调用（非 .then），mock 需触发 success
       if (opts && typeof opts.success === 'function') opts.success({ result })
       return Promise.resolve({ result })
@@ -52,7 +58,7 @@ function mockDeferred() {
     /** 触发第 index 次调用的 success 回包 */
     resolve(index, result) {
       const opts = calls[index]
-      if (opts && typeof opts.success === 'function') opts.success({ result })
+      if (opts && typeof opts.success === 'function') opts.success({ result: withAck(opts, result) })
     }
   }
 }
@@ -77,7 +83,7 @@ function freshUser() {
 }
 
 /* ------------------------------------------------------------------ *
- * 1) attempts 顶层字段 + 光标推进条件
+ * 1) attempts 顶层字段 + 明确确认条件
  * ------------------------------------------------------------------ */
 
 test('上传时 attempts 作为顶层字段发送，而非塞进 stats', async () => {
@@ -102,7 +108,7 @@ test('上传时 attempts 作为顶层字段发送，而非塞进 stats', async (
   assert.strictEqual(update.data.stats.attempts, undefined)
 })
 
-test('云函数返回 ok:false 时不推进上传光标', async () => {
+test('云函数返回 ok:false 时保留待传作答', async () => {
   freshStore()
   let failNext = true
   const calls = mockCloud(() => (failNext ? { ok: false, error: 'BOOM' } : { ok: true }))
@@ -113,7 +119,7 @@ test('云函数返回 ok:false 时不推进上传光标', async () => {
   store.load()
   store.submitAttempt(q('x1'), ['A'], true, 100, 'op-1')
 
-  // 第一次上传应用层失败 -> 光标不动
+  // 第一次上传应用层失败 -> 作答保留在队列
   store.flush()
   await tick()
   // 第二次成功 -> 应把之前那条一起补传
@@ -128,12 +134,12 @@ test('云函数返回 ok:false 时不推进上传光标', async () => {
   assert.strictEqual(
     updates[1].data.attempts.length,
     1,
-    '失败后重试必须补传同一条，说明光标未被错误推进'
+    '失败后重试必须补传同一条，说明待传作答未被错误移除'
   )
   assert.strictEqual(updates[1].data.attempts[0].questionId, 'x1')
 })
 
-test('上传成功后光标推进，后续只增量上传新增作答', async () => {
+test('明确确认后作答出队，后续只发送新增作答', async () => {
   freshStore()
   const calls = mockCloud(() => ({ ok: true }))
   login('o1', 'tok')
@@ -404,7 +410,7 @@ test('分页拉取全程复用发起时的令牌快照', async () => {
  * 3b) 上传确认必须落回发起时的作用域（评审 P1 4422245827）
  * ------------------------------------------------------------------ */
 
-test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永久跳过）', async () => {
+test('A 的上传确认不会移除 B 的待传作答', async () => {
   const store = freshStore()
   let pendingUpdate = null
   global.wx.__cloudReady = true
@@ -417,7 +423,7 @@ test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永
         return new Promise(() => {})
       }
       const result = { ok: true, attempts: [], hasMore: false, nextSkip: null }
-      if (opts && opts.success) opts.success({ result })
+      if (opts && opts.success) opts.success({ result: withAck(opts, result) })
       return Promise.resolve({ result: { ok: true } })
     }
   }
@@ -437,10 +443,10 @@ test('A 的上传确认不会推进 B 的光标（否则 B 的首条作答被永
   assert.ok(pendingUpdate, '应捕获到 A 的在途上传')
 
   // A 的上传此刻才确认：手动触发它发起时绑定的 success 回调
-  pendingUpdate.success({ result: { ok: true } })
+  pendingUpdate.success({ result: withAck(pendingUpdate, { ok: true }) })
   await tick()
 
-  // B 的第一条作答必须仍被上传：若光标被 A 的确认污染，这里会是空数组
+  // B 的第一条作答必须仍被上传：若队列被 A 的确认污染，这里会是空数组
   const calls = []
   global.wx.cloud = {
     callFunction: (opts) => {
@@ -877,7 +883,7 @@ test('云端合并结果会写入本地存储（而非只留在内存）', async
   assert.deepStrictEqual(persisted.attempts.map((a) => a.id), ['a-cloud'])
 })
 
-test('大量离线流水分批补传，只有最后一批发布完整档案；失败不推进总游标', async () => {
+test('大量离线流水逐批按 ID 确认，后续失败只重试剩余批次', async () => {
   wx.__cloudReady = false
   const store = freshStore()
   login('o1', 'tok')
@@ -892,16 +898,17 @@ test('大量离线流水分批补传，只有最后一批发布完整档案；�
   assert.equal(calls.length, 2)
   assert.equal(calls[0].data.stats, undefined)
   assert.equal(calls[0].data.attempts.length, 48)
-  assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), '')
+  assert.equal(store.load().attemptOutbox.pending.length, 145)
   rejectSecond = false
   store.flush()
   await tick()
   const retried = calls.slice(2)
-  assert.deepEqual(retried.map(c => c.data.attempts.length), [48, 48, 48, 48, 1])
+  assert.deepEqual(retried.map(c => c.data.attempts.length), [48, 48, 48, 1])
   assert.equal(retried[0].data.stats, undefined)
   assert.equal(retried[1].data.stats, undefined)
-  assert.equal(Object.keys(retried[4].data.stats.records).length, 193)
-  assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), 193)
+  assert.equal(Object.keys(retried[3].data.stats.records).length, 193)
+  assert.equal(store.load().attemptOutbox.pending.length, 0)
+  assert.equal(wx.getStorageSync('exam_quiz_attempt_cursor_v1__o1'), '')
 })
 
 test('排队上传的档案快照不混入发起后尚未携带的作答', async () => {
@@ -921,7 +928,7 @@ test('排队上传的档案快照不混入发起后尚未携带的作答', async
   deferred.resolve(0, { ok: true })
   await tick()
   assert.ok(deferred.calls[1].data.stats.records.later)
-  assert.equal(deferred.calls[1].data.attempts.length, 2)
+  assert.equal(deferred.calls[1].data.attempts.length, 1)
   deferred.resolve(1, { ok: true })
 })
 
@@ -944,7 +951,7 @@ test('旧设备收到 STALE_EPOCH 后采用服务端新代次，不合并或补�
   const last = calls.filter(c => c.data.action === 'update').pop().data
   assert.equal(last.dataEpoch, 3)
   assert.equal(last.stats.records.deleted, undefined)
-  assert.deepEqual(last.attempts.map(a => a.id), ['fresh-a'])
+  assert.deepEqual(last.attempts.map(a => a.id), [], '恢复的远端流水无需重新进入本地待传队列')
 })
 
 test('清空操作 ID 持久化，重启重试使用同一 ID 并在确认后携带新代次上传', async () => {
@@ -1020,14 +1027,23 @@ test('旧布尔清空标记升级为持久操作，下一次清空生成新 ID',
   assert.equal(store.load().dataEpoch, 2)
 })
 
-test('写盘成功回调晚于本地作用域清理时，不读取已失效的 AI 清空队列', (t) => {
+test('写盘失败恢复后，无新编辑也可提交先前待保存的设置', async (t) => {
   wx.__cloudReady = false
   const store = freshStore()
+  login('o1', 'tok')
   store.setUserScope('o1')
-  let done
-  t.mock.method(wx, 'setStorage', opts => { done = opts.success })
-  store.pushAiMessage({ time: 1, role: 'user', text: 'local' })
+  store.load()
+  const original = wx.setStorageSync
+  let unavailable = true
+  t.mock.method(wx, 'setStorageSync', (key, data) => {
+    if (unavailable && key === 'exam_quiz_data_v1__o1') throw new Error('storage full')
+    return original(key, data)
+  })
+  store.saveSettings({ dailyGoal: 50 })
   store.flush()
-  store.clearScope('o1')
-  assert.doesNotThrow(() => done())
+  unavailable = false
+  const calls = mockCloud(() => ({ ok: true }))
+  store.flush()
+  await tick()
+  assert.equal(calls.find(c => c.data.action === 'update').data.stats.settings.dailyGoal, 50)
 })

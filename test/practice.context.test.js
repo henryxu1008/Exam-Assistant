@@ -308,3 +308,35 @@ for (const action of ['onStop', '_finish']) {
     assert.equal(page.data.question.id, questions[1].id)
   })
 }
+
+
+test('本地保存失败时保留所选答案且不锁题，恢复存储后可重试一次', (t) => {
+  const page = start('single')
+  store.saveSettings({ autoNext: false })
+  store.flush()
+  const q = page.data.question
+  const selected = q.answer.slice()
+  page.setData({ selected, showExplain: false })
+  let fail = true
+  const write = wx.setStorageSync
+  const toasts = []
+  t.mock.method(wx, 'showToast', value => toasts.push(value.title))
+  t.mock.method(wx, 'setStorageSync', (key, value) => {
+    if (fail && key.startsWith('exam_quiz_data_v1__')) throw new Error('storage full')
+    write(key, value)
+  })
+  page.onSubmit()
+  assert.equal(page.data.submitted, false)
+  assert.equal(page.data.showExplain, false)
+  assert.deepEqual(page.data.selected, selected)
+  assert.equal(store.getPracticeSession().submitted[q.id], undefined)
+  assert.equal(store.getAttempts().length, 0)
+  assert.ok(toasts.includes('保存失败，请重试'))
+  fail = false
+  page.onSubmit()
+  assert.equal(page.data.submitted, true)
+  assert.equal(page.data.sessionTotal, 1)
+  assert.equal(store.getRecord(q.id).attempts, 1)
+  page.onSubmit()
+  assert.equal(store.getAttempts().length, 1)
+})

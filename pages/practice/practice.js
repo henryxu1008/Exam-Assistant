@@ -410,7 +410,11 @@ Page({
     const session = store.getPracticeSession()
     const clientOpId = session ? `${this._sessionId}:${q.id}` : undefined
     const res = store.submitAttempt(q, selected, correct, cost, clientOpId, this._practiceContext)
-    if (!res.ok) { this._showPractice(); return }
+    if (!res.ok) {
+      if (res.error === 'PERSIST_ATTEMPT_FAILED') wx.showToast({ title: '保存失败，请重试', icon: 'none' })
+      else this._showPractice()
+      return
+    }
 
     // 统计以持久化会话为准（store 已在提交时同步 sessionCorrect/sessionTotal/errorIds），
     // 保证「重进页面恢复会话」时进度与实时一致（评审 P2）

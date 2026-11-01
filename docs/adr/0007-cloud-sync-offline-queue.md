@@ -1,16 +1,16 @@
 # ADR 0007：学习记录云端同步、离线队列与多设备一致性（Issue 7）
 
-- 状态：Proposed
+- 状态：Partially implemented；完整目标协议仍 Proposed
 - 关联：Issue 7（依赖 Issue 1、3、6）
 - 范围：`utils/store.js`、`utils/user.js`；新增 sync API（后端见 ADR 0006）
 
 ## 背景与目标
 
-PR #10 已实现云开发快照同步，以及 [ADR 0009](0009-sync-integrity-and-resource-permissions.md) 的原子提交、清空代次和分页修订校验。下面的目标协议仍待实施：云端权威、离线提交队列、idempotency key、
+PR #10 已实现云开发快照同步，以及 [ADR 0009](0009-sync-integrity-and-resource-permissions.md) 的原子提交、清空代次和分页修订校验。第一阶段持久作答队列与按事实 ID 确认见 [ADR 0010](0010-durable-attempt-outbox.md)。下面的完整目标协议仍待实施：云端权威、业务 idempotency key、
 增量同步游标；设备 A 作答设备 B 可见；断网恢复自动补传且不重复；同一题跨设备操作不丢事件；
 切换用户无串号；冲突规则与数据保留政策写入文档。
 
-## 决策
+## 目标决策（后续协议，当前云函数契约见 ADR 0010）
 
 1. **边界**：本地缓存为「待同步来源」，云端为「权威」。每个 `AnswerAttempt`（Issue 3）带 `clientOpId`
    作为 `idempotency key`，云端按 `(userId, clientOpId)` 去重。
