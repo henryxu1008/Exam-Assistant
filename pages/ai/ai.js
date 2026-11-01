@@ -95,6 +95,8 @@ Page({
   },
 
   send(text, context) {
+    // 版本被判定为过低时阻断发送（守卫为可选方法，缺失时不影响原有流程）
+    if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return
     if (!user.requireLogin()) return
     this._syncConversation()
     const content = String(text || '').trim()
@@ -197,7 +199,7 @@ Page({
     const self = this
     wx.showModal({
       title: '清空对话',
-      content: '将删除本机保存的全部对话记录',
+      content: '将删除云端保存的全部对话记录',
       confirmText: '清空',
       confirmColor: '#e5484d',
       success(res) {

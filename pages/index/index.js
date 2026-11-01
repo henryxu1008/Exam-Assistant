@@ -30,21 +30,50 @@ Page({
     currentSubject: '',
     weakPreview: [],
     dateText: '',
-    userName: ''
+    userName: '',
+    notice: ''
   },
 
   onLoad() {
     this.setData({
       dateText: this._buildDateText()
     })
+    this._unsubscribeConfig = app.onRuntimeConfigChange(() => this._requestRefresh())
   },
 
   onShow() {
-    user.requireLogin(() => this.refresh())
+    this._visible = true
+    this._requestRefresh()
+  },
+
+  onHide() {
+    this._visible = false
+    this._refreshGeneration = (this._refreshGeneration || 0) + 1
+    this._refreshWaiting = false
+  },
+
+  onUnload() {
+    this.onHide()
+    if (this._unsubscribeConfig) this._unsubscribeConfig()
+  },
+
+  /** 配置与认证可任意顺序返回；同一轮等待只注册一次初始化回调。 */
+  _requestRefresh() {
+    if (!this._visible || this._refreshWaiting) return
+    const generation = this._refreshGeneration || 0
+    this._refreshWaiting = true
+    let completed = false
+    const allowed = user.requireLogin(() => {
+      completed = true
+      if (generation !== (this._refreshGeneration || 0)) return
+      this._refreshWaiting = false
+      if (this._visible && !user.isVersionBlocked()) this.refresh()
+    })
+    if (!allowed && !completed && (app.globalData.sessionReady !== false || user.isVersionBlocked())) this._refreshWaiting = false
   },
 
   onPullDownRefresh() {
-    user.requireLogin(() => this.refresh())
+    this._requestRefresh()
     wx.stopPullDownRefresh()
   },
 
@@ -61,6 +90,12 @@ Page({
     const goal = store.getSettings().dailyGoal
     const goalPercent = Math.min(100, Math.round((overview.todayTotal / goal) * 100))
 
+    const cfg = (app.globalData && app.globalData.config) || {}
+    const notice = cfg.noticeEnabled && cfg.notice ? cfg.notice : ''
+    // 功能开关：aiAdvice 缺省视为开启，保持既有行为；运营在 appConfig.runtime.features 置 false 可关闭
+    const features = (cfg.features && typeof cfg.features === 'object') ? cfg.features : {}
+    const showAiAdvice = features.aiAdvice !== false
+
     this.setData({
       greeting,
       overview,
@@ -71,7 +106,9 @@ Page({
       subjects: this._buildSubjects(),
       currentSubject: store.getCurrentSubject(),
       weakPreview: analytics.weakPoints(3),
-      userName: user.isLogged() ? user.displayName() : ''
+      userName: user.isLogged() ? user.displayName() : '',
+      notice,
+      showAiAdvice
     })
   },
 

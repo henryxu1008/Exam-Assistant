@@ -52,6 +52,9 @@ Page({
       chapter: options && options.chapter ? decodeURIComponent(options.chapter) : '',
       ids: null
     }
+    this._unsubscribePractice = store.onPracticeRestored(() => {
+      if (this._params && this._scope === store.getUserScope()) this._restoreSession(store.getPracticeSession())
+    })
   },
 
   onShow() {
@@ -77,6 +80,8 @@ Page({
     const subjectChanged = saved.subject !== subject
     const persisted = store.getPracticeSession()
     const sessionChanged = this._sessionId && (!persisted || persisted.id !== this._sessionId)
+    const contextChanged = this._practiceContext && !store.isPracticeContextCurrent(this._practiceContext)
+    if (!scopeChanged && !subjectChanged && (sessionChanged || contextChanged) && this._restoreSession(persisted)) return
 
     // 自动重建共用一处参数归一化，避免切账号/清空会话提前返回，漏掉同时发生的换科。
     // 仍在同一科目时保留章节/单题意图；换科后清除所有旧题集约束，专项模式退回整科。
@@ -114,6 +119,38 @@ Page({
 
   onUnload() {
     if (this._timer) clearTimeout(this._timer)
+    if (this._unsubscribePractice) this._unsubscribePractice()
+  },
+
+  /** 云端恢复与页面重建共用同一处绑定；恢复本身不改写会话进度。 */
+  _restoreSession(session) {
+    if (!session || session.subject !== store.getCurrentSubject()) return false
+    const queue = (session.questionIds || []).map((id) => bank.findQuestion(id)).filter(Boolean)
+    if (!queue.length) return false
+    const params = session.params || {}
+    const mode = MODE_TITLES[session.mode] ? session.mode : 'all'
+    this._params = { mode, subject: session.subject, chapter: params.chapter || '', ids: params.ids || null, fresh: false }
+    this._scope = store.getUserScope()
+    this._sessionId = session.id
+    this._practiceContext = store.getPracticeContext()
+    this.setData({
+      mode, subject: session.subject, chapter: this._params.chapter, modeTitle: MODE_TITLES[mode],
+      queue, total: queue.length, question: null, finished: false, summary: null,
+      sessionCorrect: session.sessionCorrect || 0, sessionTotal: session.sessionTotal || 0,
+      errorIds: session.errorIds || [], emptyTip: ''
+    })
+    this._load(Math.min(session.currentIndex || 0, queue.length - 1), false)
+    if (session.status === 'completed') this._finish()
+    return true
+  },
+
+  /** 所有会话写操作先验证发起页面的上下文；重绑定后也不重放旧交互。 */
+  _ensurePracticeContext() {
+    if (!this._practiceContext || store.isPracticeContextCurrent(this._practiceContext)) return true
+    if (this._timer) clearTimeout(this._timer)
+    this._timer = null
+    this._showPractice()
+    return false
   },
 
   /* ---------------- 初始化 ---------------- */
@@ -140,29 +177,8 @@ Page({
     const existing = store.getPracticeSession()
     if (!fresh && existing && existing.status === 'in_progress' && existing.params &&
         existing.params.mode === mode && existing.params.subject === subject &&
-        existing.params.chapter === chapter && existing.params.ids === ids) {
-      const queue = (existing.questionIds || []).map((id) => bank.findQuestion(id)).filter(Boolean)
-      if (queue.length) {
-        this.setData({
-          mode,
-          subject,
-          chapter,
-          modeTitle: MODE_TITLES[mode],
-          queue,
-          total: queue.length,
-          question: null,
-          finished: false,
-          summary: null,
-          sessionCorrect: existing.sessionCorrect || 0,
-          sessionTotal: existing.sessionTotal || 0,
-          errorIds: existing.errorIds || [],
-          emptyTip: ''
-        })
-        this._sessionId = existing.id
-        const startIdx = Math.min(existing.currentIndex || 0, queue.length - 1)
-        this._load(startIdx)
-        return
-      }
+        existing.params.chapter === chapter && JSON.stringify(existing.params.ids) === JSON.stringify(ids)) {
+      if (this._restoreSession(existing)) return
     }
 
     wx.setNavigationBarTitle({ title: MODE_TITLES[mode] })
@@ -181,6 +197,7 @@ Page({
         emptyTip: this._emptyTip(mode)
         })
         this._sessionId = null
+        this._practiceContext = null
         return
         }
     this.setData({
@@ -205,6 +222,8 @@ Page({
       params: snapshot
     })
     this._sessionId = session.id
+    this._scope = store.getUserScope()
+    this._practiceContext = store.getPracticeContext()
     this._load(0)
   },
 
@@ -242,7 +261,8 @@ Page({
     return list.slice(0, 60)
   },
 
-  _load(idx) {
+  _load(idx, persistProgress = true) {
+    if (!this._ensurePracticeContext()) return
     const queue = this.data.queue
     if (!queue[idx]) return
     // 切换题目时清除挂起的「自动下一题」定时器，避免回看上一题时残留定时器
@@ -278,8 +298,8 @@ Page({
     })
     this._startAt = Date.now()
     // 记录当前进度，便于 app 重启后恢复未完成会话
-    if (store.getPracticeSession()) {
-      store.updatePracticeSession({ currentIndex: idx })
+    if (persistProgress && store.getPracticeSession()) {
+      store.updatePracticeSession({ currentIndex: idx }, this._practiceContext)
     }
   },
 
@@ -287,6 +307,7 @@ Page({
 
   /** 选项点击：单选互斥，多选/不定项可多选，排序按点击顺序入列 */
   onSelect(e) {
+    if (!this._ensurePracticeContext()) return
     if (this.data.submitted) return
     const key = e.detail.key
     const q = this.data.question
@@ -309,6 +330,7 @@ Page({
 
   /** 填空输入 */
   onFill(e) {
+    if (!this._ensurePracticeContext()) return
     if (this.data.submitted) return
     const q = this.data.question
     const index = e.detail.index
@@ -320,6 +342,7 @@ Page({
 
   /** 排序调整：上移 / 下移 / 移除 / 清空 */
   onSort(e) {
+    if (!this._ensurePracticeContext()) return
     if (this.data.submitted) return
     const q = this.data.question
     if (!q) return
@@ -369,6 +392,7 @@ Page({
 
   onSubmit() {
     if (!user.requireLogin()) return
+    if (!this._ensurePracticeContext()) return
     const q = this.data.question
     if (!q || this.data.submitted) return
     const selected = this.data.selected.slice()
@@ -384,8 +408,9 @@ Page({
 
     // 幂等提交：同一次会话内同一题用同一 clientOpId，重复点击只落库一次（不重复计数）
     const session = store.getPracticeSession()
-    const clientOpId = session ? `${session.id}:${q.id}` : undefined
-    const res = store.submitAttempt(q, selected, correct, cost, clientOpId)
+    const clientOpId = session ? `${this._sessionId}:${q.id}` : undefined
+    const res = store.submitAttempt(q, selected, correct, cost, clientOpId, this._practiceContext)
+    if (!res.ok) { this._showPractice(); return }
 
     // 统计以持久化会话为准（store 已在提交时同步 sessionCorrect/sessionTotal/errorIds），
     // 保证「重进页面恢复会话」时进度与实时一致（评审 P2）
@@ -403,8 +428,9 @@ Page({
     if (store.getSettings().autoNext && correct && !res.dup) {
       if (this._timer) clearTimeout(this._timer)
       const self = this
+      const context = this._practiceContext
       this._timer = setTimeout(() => {
-        if (self.data.submitted) self.onNext()
+        if ((!context || store.isPracticeContextCurrent(context)) && self._practiceContext === context && self.data.submitted) self.onNext()
       }, 1200)
     }
   },
@@ -414,6 +440,7 @@ Page({
   },
 
   onNext() {
+    if (!this._ensurePracticeContext()) return
     if (this._timer) clearTimeout(this._timer)
     if (this.data.idx + 1 >= this.data.queue.length) {
       this._finish()
@@ -438,14 +465,16 @@ Page({
 
   /* 进入后台/暂停：持久化当前进度到会话，便于恢复（Issue 2） */
   onStop() {
+    if (!this._ensurePracticeContext()) return
     if (store.getPracticeSession()) {
-      store.updatePracticeSession({ currentIndex: this.data.idx, status: 'in_progress' })
+      store.updatePracticeSession({ currentIndex: this.data.idx }, this._practiceContext)
     }
     store.flush()
   },
 
   /** 相似题加入队列 */
   onAddSimilar(e) {
+    if (!this._ensurePracticeContext()) return
     const id = e.currentTarget.dataset.id
     const target = bank.findQuestion(id)
     if (!target) return
@@ -455,6 +484,7 @@ Page({
       return
     }
     queue.splice(this.data.idx + 1, 0, target)
+    if (!store.updatePracticeSession({ questionIds: queue.map((q) => q.id) }, this._practiceContext)) return
     this.setData({ queue, total: queue.length, showAi: false })
     wx.showToast({ title: '已加入队列', icon: 'none' })
   },
@@ -471,10 +501,15 @@ Page({
   },
 
   _finish() {
+    if (!this._ensurePracticeContext()) return
     // 统计以持久化会话为准，避免与实时页内计数偏差（评审 P2）
     const sess = store.getPracticeSession()
-    const sessionTotal = (sess && sess.sessionTotal) || this.data.sessionTotal
-    const sessionCorrect = (sess && sess.sessionCorrect) || this.data.sessionCorrect
+    if (sess && sess.statsComplete === false) {
+      wx.showToast({ title: '作答记录尚未恢复完整，请稍后重试', icon: 'none' })
+      return
+    }
+    const sessionTotal = sess ? (sess.sessionTotal || 0) : this.data.sessionTotal
+    const sessionCorrect = sess ? (sess.sessionCorrect || 0) : this.data.sessionCorrect
     const errorIds = (sess && sess.errorIds) || this.data.errorIds
     const rate = sessionTotal ? Math.round((sessionCorrect / sessionTotal) * 100) : 0
     const wrongList = errorIds
@@ -490,7 +525,7 @@ Page({
       summary: { total: sessionTotal, correct: sessionCorrect, rate, comment, wrongList }
     })
     // 标记本轮已完成，使「重建页面恢复会话」的守卫排除已完成轮次（评审 P2）
-    if (store.getPracticeSession()) store.completePracticeSession()
+    if (sess && sess.status !== 'completed') store.completePracticeSession(this._practiceContext)
   },
 
   restart() {

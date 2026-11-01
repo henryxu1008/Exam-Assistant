@@ -71,6 +71,7 @@ function initCloud() {
     const opts = { traceUser: true }
     if (config.cloudEnv) opts.env = config.cloudEnv
     wx.cloud.init(opts)
+    wx.__cloudReady = true // 标记云已初始化，供 store 等模块判断是否可安全调用云 API
     return true
   } catch (e) {
     return false // 已初始化
@@ -204,6 +205,22 @@ function ensureSession() {
 }
 
 /**
+ * 同步把数据作用域绑定到本地缓存会话对应的账号（不涉及网络，可安全在启动早期调用）。
+ *
+ * 必须在 store.load() 之前调用：冷启动且本地已有登录缓存时，若先以 anon 作用域加载，
+ * 随后 ensureSession() 才切到缓存账号，切换前那次上传会把匿名态的空档案当作该账号的
+ * 档案整doc覆盖到云端——在新设备上等于先毁掉正要恢复的那份备份（评审 P1）。
+ *
+ * 注意：ensureSession() 内部也会绑定一次，这里是为覆盖「load 早于会话校验」的窗口；
+ * 两者作用域一致时 setUserScope 会直接返回，不会重复迁移或重置内存态。
+ * @returns {String} 绑定后的作用域（openid 或 'anon'）
+ */
+function bindStoredScope() {
+  const cur = load()
+  return store.setUserScope(cur.logged && cur.openid ? cur.openid : 'anon')
+}
+
+/**
  * 更新资料
  * @param {Object} patch {nickName, avatarUrl, exam}
  */
@@ -257,6 +274,104 @@ function displayName() {
   return p.logged ? p.nickName || '' : ''
 }
 
+/**
+ * 拉取目标考试可选项：优先取云端 appConfig 配置，失败（无云环境 / 配置缺失）时返回空数组，
+ * 由调用方退回 utils/config.js 的本地兜底列表。
+ * @returns {Promise<string[]>}
+ */
+function getExamOptions() {
+  if (!hasCloud()) return Promise.resolve([])
+  return call(config.functions.profile, { action: 'examOptions' })
+    .then((r) => (r && Array.isArray(r.examOptions) ? r.examOptions : []))
+    .catch(() => [])
+}
+
+/**
+ * 拉取运营配置（公告 / 功能开关 / 强制更新等）：取自云端 appConfig.runtime。
+ *
+ * 「拿不到配置」与「配置里没有限制」是两件事，必须用不同的值区分：
+ *  - 拉取成功且没有任何限制 → {}（空对象，表示确实没有限制）
+ *  - 无云环境 / 拉取失败     → null（表示「不知道」）
+ *
+ * 若两者都返回 {}，调用方就会把「不知道」当成「没有限制」：
+ * 一个此前被判定为版本过低的用户，只要离线重启一次就会失去阻断态，
+ * 继续正常使用本应被拒绝的版本（评审 P2 4429855406）。
+ *
+ * @returns {Promise<Object|null>} null 表示配置不可用
+ */
+function getRuntimeConfig() {
+  if (!hasCloud()) return Promise.resolve(null)
+  return call(config.functions.profile, { action: 'config' })
+    .then((r) => (r && r.config && typeof r.config === 'object' ? r.config : {}))
+    .catch(() => null)
+}
+
+/** 本地已同意的隐私政策版本号（云端 privacyVersion 变更时据此提示重新查看） */
+const PRIVACY_ACCEPTED_KEY = 'exam_quiz_privacy_accepted_v1'
+
+function getPrivacyAcceptedVersion() {
+  try {
+    const v = wx.getStorageSync(PRIVACY_ACCEPTED_KEY)
+    return typeof v === 'number' ? v : 0
+  } catch (e) {
+    return 0
+  }
+}
+
+function setPrivacyAcceptedVersion(v) {
+  try {
+    wx.setStorageSync(PRIVACY_ACCEPTED_KEY, typeof v === 'number' ? v : 0)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/** 版本阻断标记：云端 forceUpdate=true 且当前版本低于 minVersion 时置位 */
+const UNSUPPORTED_KEY = 'exam_quiz_unsupported_v1'
+
+/**
+ * 阻断态必须持久化。
+ *
+ * 只在启动时弹一次提示拦不住任何操作：showCancel 只决定有没有取消按钮，
+ * 用户点「知道了」之后照样登录、导航、练习——等于没有强制更新（评审 P2 4422339103）。
+ * 因此置位后所有入口一律阻断，直到拉到不再要求更新的配置。
+ */
+function markUnsupportedVersion() {
+  try {
+    wx.setStorageSync(UNSUPPORTED_KEY, true)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function clearUnsupportedVersion() {
+  try {
+    wx.removeStorageSync(UNSUPPORTED_KEY)
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+/** 当前版本是否被运营判定为过低、需要强制更新 */
+function isVersionBlocked() {
+  try {
+    return wx.getStorageSync(UNSUPPORTED_KEY) === true
+  } catch (e) {
+    return false
+  }
+}
+
+/** 读取云端运营配置中的功能开关（灰度用），未配置时返回空对象 */
+function getFeatures() {
+  const cfg = (typeof getApp === 'function' && getApp() && getApp().globalData && getApp().globalData.config) || {}
+  return (cfg.features && typeof cfg.features === 'object') ? cfg.features : {}
+}
+
+/** 判断某功能开关是否开启；缺省视为关闭（需运营在 appConfig.runtime.features 显式开启） */
+function isFeatureOn(name) {
+  return !!getFeatures()[name]
+}
+
 /** 登录页跳转的去重标记，避免多个页面同时触发重复跳转 */
 let loginRedirecting = false
 
@@ -268,7 +383,9 @@ let loginRedirecting = false
  * 依赖登录的初始化应放在 onLogged 回调中，以覆盖同步放行与异步恢复两条路径。
  */
 function requireLogin(onLogged) {
-  const app = typeof getApp === 'function' ? getApp() : null
+    const app = typeof getApp === 'function' ? getApp() : null
+    // 版本过低时连登录入口一并阻断，否则用户可以先登录再继续练习
+    if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return false
   const currentPage = () => {
     const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
     return pages[pages.length - 1]
@@ -305,9 +422,19 @@ module.exports = {
   requireLogin,
   login,
   ensureSession,
+  bindStoredScope,
   updateProfile,
   uploadAvatar,
   logout,
   initial,
-  displayName
+  displayName,
+  getExamOptions,
+  getRuntimeConfig,
+  getPrivacyAcceptedVersion,
+  setPrivacyAcceptedVersion,
+  getFeatures,
+  markUnsupportedVersion,
+  clearUnsupportedVersion,
+  isVersionBlocked,
+  isFeatureOn
 }

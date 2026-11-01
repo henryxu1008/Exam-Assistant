@@ -18,7 +18,12 @@ Page({
       exam: ''
     },
     avatarPreview: '',
-    initial: '备'
+    initial: '备',
+    /** 目标考试选择器的候选列表与当前下标（来自云端，无本地兜底） */
+    examOptions: [],
+    examIndex: 0,
+    /** 是否已勾选同意《用户协议》与《隐私政策》（登录前强制） */
+    agreed: false
   },
 
   onLoad(options) {
@@ -39,34 +44,68 @@ Page({
         step: mode === 'edit' ? 'profile' : 'done'
       })
       wx.setNavigationBarTitle({ title: mode === 'edit' ? '编辑资料' : '账号' })
+      this.refreshExamOptions()
       return
     }
 
-    this.setData({ mode: 'login', step: 'login', form })
+    this.setData({
+      mode: 'login',
+      step: 'login',
+      form,
+      // 曾同意过隐私政策的老用户预勾选，避免每次登出再登录都强制重勾；新用户须主动勾选
+      agreed: user.getPrivacyAcceptedVersion() > 0
+    })
     wx.setNavigationBarTitle({ title: '登录' })
+    this.refreshExamOptions()
   },
+
+  /**
+   * 从云端拉取目标考试可选项（无本地兜底，完全依赖后端配置）。
+   * 历史自由文本（旧数据）不在云端列表时，临时保留在列表末尾，避免选中态丢失。
+   */
+  refreshExamOptions() {
+    const self = this
+    const current = String(self.data.form.exam || '').trim()
+    user.getExamOptions().then((cloud) => {
+      const base = Array.isArray(cloud) ? cloud.slice() : []
+      if (current && base.indexOf(current) === -1) base.push(current)
+      const index = base.indexOf(current)
+      self.setData({ examOptions: base, examIndex: index >= 0 ? index : 0 })
+    })
+  },
+
 
   /* ---------------- 登录 ---------------- */
 
   onWechatLogin() {
     if (this.data.loading) return
+    // 强制勾选同意：未勾选则拦截登录，仅提示不报错
+    if (!this.data.agreed) {
+      wx.showToast({ title: '请先阅读并同意《用户协议》与《隐私政策》', icon: 'none' })
+      return
+    }
     this.setData({ loading: true, error: '' })
     const self = this
     user
       .login()
       .then((profile) => {
+        // 登录成功即视为已同意当前云端隐私政策版本，写入本地已同意版本
+        const cfg = (app.globalData && app.globalData.config) || {}
+        if (typeof cfg.privacyVersion === 'number') user.setPrivacyAcceptedVersion(cfg.privacyVersion)
         app.setLogged(true)
+        const form = {
+          nickName: profile.nickName || '',
+          avatarUrl: profile.avatarUrl || '',
+          exam: profile.exam || ''
+        }
         self.setData({
           loading: false,
           step: 'profile',
           initial: user.initial(profile.nickName),
-          form: {
-            nickName: profile.nickName || '',
-            avatarUrl: profile.avatarUrl || '',
-            exam: profile.exam || ''
-          },
+          form,
           avatarPreview: profile.avatarUrl || ''
         })
+        self.refreshExamOptions()
         wx.showToast({ title: '登录成功', icon: 'none' })
       })
       .catch((err) => {
@@ -76,6 +115,11 @@ Page({
   },
 
   /* ---------------- 资料 ---------------- */
+
+  /** 勾选/取消「已同意协议」 */
+  onAgreeChange(e) {
+    this.setData({ agreed: !!(e.detail && e.detail.value && e.detail.value.length) })
+  },
 
   onChooseAvatar(e) {
     const tempPath = e.detail && e.detail.avatarUrl
@@ -100,8 +144,11 @@ Page({
     })
   },
 
-  onExam(e) {
-    this.setData({ 'form.exam': e.detail.value })
+  onExamChange(e) {
+    const options = this.data.examOptions || []
+    const index = Number(e.detail.value) || 0
+    const exam = options[index] || ''
+    this.setData({ examIndex: index, 'form.exam': exam })
   },
 
   onSave() {
@@ -134,6 +181,7 @@ Page({
   onEdit() {
     this.setData({ step: 'profile', mode: 'edit' })
     wx.setNavigationBarTitle({ title: '编辑资料' })
+    this.refreshExamOptions()
   },
 
   onLogout() {

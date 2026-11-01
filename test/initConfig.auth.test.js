@@ -1,0 +1,275 @@
+/**
+ * initConfig 云函数鉴权回归测试（PR #10 评审发现 P1 4422245843）
+ *
+ * 原实现：任何人都能直接调用 initConfig 且无需任何凭据，
+ * 每次调用都会整体覆盖 appConfig 的两份共享文档。
+ * 后果：普通调用者可以删掉运营公告、重新打开已关闭的功能开关、
+ * 把 forceUpdate 重置为 false（让所有人都绕过强制更新）。
+ *
+ * 锁定：
+ *  - 未配置 ADMIN_SECRET 时一律拒绝（fail-closed，绝不「没配就放行」）；
+ *  - 密钥不对时拒绝；
+ *  - 密钥正确时才写入；
+ *  - 默认只补缺失字段，不覆盖运营已有配置；force 才整体重置。
+ */
+
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const vm = require('node:vm')
+const crypto = require('node:crypto')
+
+const NOW = new Date('2026-10-30T06:00:00Z').getTime()
+const SECRET = 's3cret-sauce'
+
+function harness({ env = {}, seeds = {} } = {}) {
+  const appConfig = new Map()
+  Object.keys(seeds).forEach((id) => appConfig.set(id, seeds[id]))
+  /** 置为 Error 可模拟数据库读取抛出非「不存在」的失败 */
+  const fail = { get: null, id: null, result: undefined }
+  const reads = []
+  const writes = []
+
+  const collections = {
+    users: new Map([['u1', { _id: 'u1', openid: 'o1', token: 'tok', tokenAt: NOW }]]),
+    appConfig: appConfig
+  }
+
+  function collection(name) {
+    return {
+      doc(id) {
+        return {
+          async get() {
+            reads.push(id)
+            if (fail.get && (!fail.id || fail.id === id)) throw fail.get
+            if (fail.result !== undefined) return fail.result
+            const store = collections[name]
+            if (!store.has(id)) throw new Error('document does not exist')
+            return { data: clone(store.get(id)) }
+          },
+          async set({ data }) {
+            writes.push(id)
+            collections[name].set(id, clone(data))
+            return { stats: { updated: 1 } }
+          }
+        }
+      }
+    }
+  }
+
+  const db = { collection: collection }
+
+  class FixedDate extends Date {
+    static now() {
+      return NOW
+    }
+  }
+
+  const processEnv = Object.assign({}, env)
+
+  function loadModule(absPath) {
+    const exports = {}
+    const module = { exports: exports }
+    vm.runInNewContext(fs.readFileSync(absPath, 'utf8'), {
+      exports,
+      module,
+      Date: FixedDate,
+      Buffer,
+      process: { env: processEnv },
+      require(name) {
+        if (name === 'wx-server-sdk') return { init() {}, database: () => db }
+        if (name === 'crypto') return crypto
+        if (name.indexOf('./') === 0) return loadModule(path.join(path.dirname(absPath), name))
+        throw new Error(`unexpected module ${name}`)
+      }
+    })
+    return module.exports
+  }
+
+  return {
+    main: loadModule(path.join(__dirname, '../cloudfunctions/initConfig/index.js')).main,
+    fail: fail,
+    reads: reads,
+    writes: writes,
+    doc: (id) => (collections.appConfig.has(id) ? clone(collections.appConfig.get(id)) : null)
+  }
+}
+
+const clone = (v) => JSON.parse(JSON.stringify(v))
+
+/* ------------------------------------------------------------------ *
+ * fail-closed：没有配置管理员凭据时一律拒绝
+ * ------------------------------------------------------------------ */
+
+test('未配置 ADMIN_SECRET 时拒绝初始化，且不动任何配置', async () => {
+  const h = harness()
+  const r = await h.main({})
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'ADMIN_SECRET_NOT_CONFIGURED')
+  assert.equal(h.doc('examOptions'), null)
+  assert.equal(h.doc('runtime'), null)
+})
+
+test('未配置 ADMIN_SECRET 时，即便提供 token 也拒绝', async () => {
+  const h = harness()
+  const r = await h.main({ token: 'tok' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'ADMIN_SECRET_NOT_CONFIGURED')
+  assert.equal(h.doc('runtime'), null)
+})
+
+/* ------------------------------------------------------------------ *
+ * 密钥校验
+ * ------------------------------------------------------------------ */
+
+test('密钥为空被拒绝', async () => {
+  const h = harness({ env: { ADMIN_SECRET: SECRET } })
+  const r = await h.main({})
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'NOT_ADMIN')
+})
+
+test('密钥错误被拒绝，配置保持不变', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: { runtime: { _id: 'runtime', notice: '运营公告', noticeEnabled: true } }
+  })
+  const r = await h.main({ adminSecret: 'wrong' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'NOT_ADMIN')
+  assert.equal(h.doc('runtime').notice, '运营公告')
+})
+
+test('密钥正确时写入默认配置', async () => {
+  const h = harness({ env: { ADMIN_SECRET: SECRET } })
+  const r = await h.main({ adminSecret: SECRET })
+  assert.equal(r.ok, true)
+  assert.ok(Array.isArray(r.examOptions) && r.examOptions.length > 0)
+  assert.equal(r.runtime._id, 'runtime')
+  assert.equal(h.doc('examOptions')._id, 'examOptions')
+  assert.equal(h.doc('runtime')._id, 'runtime')
+})
+
+/* ------------------------------------------------------------------ *
+ * 不覆盖运营已有配置
+ * ------------------------------------------------------------------ */
+
+test('已存在运营配置时，默认只补缺失字段而不覆盖', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: { runtime: { _id: 'runtime', notice: '重要公告', noticeEnabled: true } }
+  })
+  const r = await h.main({ adminSecret: SECRET })
+  assert.equal(r.ok, true)
+  // 运营设置保持原值
+  assert.equal(h.doc('runtime').notice, '重要公告')
+  assert.equal(h.doc('runtime').noticeEnabled, true)
+  // 缺失的字段被补上默认值
+  assert.equal(h.doc('runtime').forceUpdate, false)
+  assert.equal(h.doc('runtime').minVersion, '1.0.0')
+})
+
+test('features 逐键补齐：运营已关闭的开关不会被重新打开', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: { runtime: { _id: 'runtime', features: { aiAdvice: false } } }
+  })
+  const r = await h.main({ adminSecret: SECRET })
+  assert.equal(r.ok, true)
+  assert.equal(h.doc('runtime').features.aiAdvice, false)
+})
+
+test('读取已有配置失败时中止初始化，不得用默认值覆盖（评审 P2 4430849974）', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: {
+      runtime: {
+        _id: 'runtime',
+        notice: '重要停服公告',
+        noticeEnabled: true,
+        features: { aiAdvice: false },
+        minVersion: '9.9.9',
+        forceUpdate: true
+      }
+    }
+  })
+
+  // 模拟读取超时 / 数据库错误（非「不存在」）
+  h.fail.get = Object.assign(new Error('read timeout'), { errCode: -502001 })
+
+  // 必须中止本次初始化，而不是拿 null 当「尚未初始化」写回默认值
+  await assert.rejects(h.main({ adminSecret: SECRET }), /read timeout/)
+  assert.deepEqual(h.writes, [], '读取失败后不允许任何配置写入')
+
+  // 运营在控制台设好的公告、开关、强制更新必须原样保留
+  const doc = h.doc('runtime')
+  assert.equal(doc.notice, '重要停服公告', '公告不得被抹掉')
+  assert.equal(doc.noticeEnabled, true, '公告开关不得被复位')
+  assert.equal(doc.features.aiAdvice, false, '已关闭的功能开关不得被重新打开')
+  assert.equal(doc.forceUpdate, true, '强制更新不得被重置为 false')
+  assert.equal(doc.minVersion, '9.9.9', '最低版本不得被降低')
+})
+
+test('任一配置读取失败均在全部写入之前中止，恢复后可重试', async () => {
+  const seeds = {
+    examOptions: { _id: 'examOptions', options: ['自定义考试'] },
+    runtime: { _id: 'runtime', notice: '维护公告', features: { aiAdvice: false }, forceUpdate: true, minVersion: '9.9.9' }
+  }
+  for (const id of ['examOptions', 'runtime']) {
+    for (const error of [
+      new Error('read timeout'),
+      Object.assign(new Error('permission denied'), { errCode: -502003 }),
+      new Error('index does not exist'),
+      Object.assign(new Error('collection not exists'), { errCode: -502005 })
+    ]) {
+      const h = harness({ env: { ADMIN_SECRET: SECRET }, seeds: seeds })
+      h.fail.id = id
+      h.fail.get = error
+      await assert.rejects(h.main({ adminSecret: SECRET }), (e) => e === error)
+      assert.deepEqual(h.writes, [], id + ': 不得发生部分写入')
+      assert.deepEqual(h.doc('examOptions'), seeds.examOptions)
+      assert.deepEqual(h.doc('runtime'), seeds.runtime)
+
+      h.fail.get = null
+      assert.equal((await h.main({ adminSecret: SECRET })).ok, true)
+      assert.equal(h.doc('runtime').forceUpdate, true)
+      assert.equal(h.doc('runtime').features.aiAdvice, false)
+    }
+  }
+})
+
+test('异常读取响应不能触发配置覆盖，拒绝的凭据也不能访问数据库', async () => {
+  const seed = { _id: 'runtime', forceUpdate: true, notice: '维护公告' }
+  const h = harness({ env: { ADMIN_SECRET: SECRET }, seeds: { runtime: seed } })
+  h.fail.result = {}
+  await assert.rejects(h.main({ adminSecret: SECRET }), /INVALID_DOCUMENT_RESPONSE/)
+  assert.deepEqual(h.writes, [])
+  assert.deepEqual(h.doc('runtime'), seed)
+
+  h.reads.length = 0
+  assert.equal((await h.main({ adminSecret: 'wrong', force: true })).ok, false)
+  assert.deepEqual(h.reads, [])
+  assert.deepEqual(h.writes, [])
+})
+
+test('force=true 时整体重置为默认值', async () => {
+  const h = harness({
+    env: { ADMIN_SECRET: SECRET },
+    seeds: { runtime: { _id: 'runtime', notice: '重要公告', noticeEnabled: true, features: { aiAdvice: false } } }
+  })
+  const r = await h.main({ adminSecret: SECRET, force: true })
+  assert.equal(r.ok, true)
+  assert.equal(h.doc('runtime').notice, '')
+  assert.equal(h.doc('runtime').noticeEnabled, false)
+  assert.equal(h.doc('runtime').features.aiAdvice, true)
+})
+
+test('无凭据调用不会清空已存在的配置', async () => {
+  const h = harness({
+    seeds: { runtime: { _id: 'runtime', notice: '重要公告', noticeEnabled: true } }
+  })
+  const r = await h.main({ force: true })
+  assert.equal(r.ok, false)
+  assert.equal(h.doc('runtime').notice, '重要公告')
+})

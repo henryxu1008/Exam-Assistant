@@ -68,6 +68,11 @@ function requestLLM(messages, subject, context) {
       resolve(null)
       return
     }
+    let token = ''
+    try { token = (wx.getStorageSync('exam_quiz_session_v1') || {}).token || '' } catch (e) {
+      resolve(null)
+      return
+    }
     // 透传当前科目，保证大模型回答只讲该科目（与全应用科目口径一致）
     // 端上助手消息 role 用 'ai'，云函数白名单只认 'user'/'assistant'/'system'，
     // 在此归一化，避免大模型侧把助手历史整段丢弃导致多轮上下文丢失
@@ -102,7 +107,7 @@ function requestLLM(messages, subject, context) {
     wx.cloud
       .callFunction({
         name: REMOTE_LLM.cloudFunction,
-        data: { messages: payload, subject: subject || store.getCurrentSubject() }
+        data: { token, messages: payload, subject: subject || store.getCurrentSubject() }
       })
       .then((res) => resolve((res && res.result && res.result.content) || null))
       .catch(() => resolve(null))

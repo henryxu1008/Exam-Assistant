@@ -64,6 +64,9 @@ miniprogram-4/
 └── cloudfunctions/
     ├── userLogin/        # 登录：code -> openid/token，用户落库
     ├── userProfile/      # 资料：读取 / 更新 / 登出（token 校验）
+    ├── studySync/        # 学习档案与流水：事务提交 / 恢复 / 清空代次
+    ├── bankSync/         # 公开读题库、管理员导入
+    ├── initConfig/       # 管理员初始化运营配置
     └── aiTutor/          # AI 助教：大模型接入骨架（默认关闭，配置后启用）
 ```
 
@@ -71,13 +74,13 @@ miniprogram-4/
 
 1. **开通云开发**：微信开发者工具 → 云开发，创建环境。
 2. **配置环境 ID**：修改 `utils/config.js` 的 `cloudEnv`（当前已填 `cloud1-d4gye2rcib84f0347`，换成你自己的环境 ID）。
-3. **创建数据库集合**：云开发控制台 → 数据库 → 新建集合 `users`。
-4. **部署云函数**：右键 `cloudfunctions/userLogin`、`cloudfunctions/userProfile`、`cloudfunctions/aiTutor` → 上传并部署（云端安装依赖）。
+3. **创建数据库集合**：`users`、`studyStats`、`attempts`、`questions`、`appConfig`；启用真实 AI 时另需 `aiTutorUsage`。
+4. **准备云函数**：各函数目录独立打包、安装依赖；先按 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md) 验证事务、索引、管理员及新旧客户端兼容，再协调发布。题库由管理员显式导入，普通客户端不自动播种。
 5. 编译运行。
 
 > 需要 `unionid` 时，在云函数 `userLogin` 的环境变量中配置 `APP_SECRET`，函数会用 `code` 调 `jscode2session` 换取；不配置则用云开发原生 `OPENID`，不影响登录。
 
-> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`（true/false）、`LLM_ENDPOINT`（OpenAI 兼容接口完整 URL）、`LLM_API_KEY`、`LLM_MODEL`（可选）、`AI_TUTOR_DAILY_CAP`（可选，每日上游调用次数上限，默认 200；必须为非负安全整数，显式配置 0 表示不限制）。未配置或 `AI_TUTOR_ENABLED=false` 时，端上回落本地规则引擎。预算护栏在调用上游之前原子预约一次额度：`aiTutorUsage` 以日期作为唯一 `_id`，条件自增 `count`；并发创建也共用一个计数器。超过上限、配置无效或数据库不可用时回落本地引擎。预约后上游失败仍计入次数，不退还额度，以保证调用次数上限。
+> `aiTutor` 的环境变量：`AI_TUTOR_ENABLED`、`LLM_ENDPOINT`、`LLM_API_KEY`、`LLM_MODEL`（可选）、全局每日 `AI_TUTOR_DAILY_CAP`（默认 200，非负安全整数，显式 0 为无全局限制）、每用户每日 `AI_TUTOR_USER_DAILY_CAP`（默认 20，正安全整数）。远端请求必须携带有效业务 token。两份配额在同一事务预约；鉴权、配额或上游失败均可回落本地，上游失败仍计入次数。默认关闭。
 
 ## 题库
 
@@ -124,6 +127,8 @@ miniprogram-4/
 
 **AI 对话生命周期**：页面历史与异步回复绑定到仓储中的对话代次。切换账号（包括 A→B→A）、清空学习数据或清空对话都会使旧代次失效；页面先重载当前账号历史，再消费预填问题。远程成功、异常回落、本地延迟回复和清空确认框均校验所属代次，避免旧操作写入新用户或复活已删除的对话。
 
+**跨设备清空 AI 历史**：客户端持久化每次 clearId，服务端 clearAI 事务统一生成 aiEpoch，并保存幂等回执。独立清空不会获得相同代次，丢失回包后的重试也不会误删另一设备的新消息。待确认时消息和学习数据继续保存在本地，云同步在确认后恢复；旧代次 AI 片段不会阻断新作答流水的提交。协议与回执保留策略见 ADR 0009。
+
 **启动认证与页面初始化**：缓存登录不代表启动校验已经完成。页面通过 `requireLogin(onLogged)` 等待 `whenSessionReady`，认证完成后才刷新用户数据、创建/恢复练习和消费 AI 预填内容；校验确认不可用时跳转登录。网络不可达返回 unknown 时继续保留离线练习能力，已离开的页面不执行过期初始化回调。
 
 **练习状态机与不可变作答（Issue 2 / Issue 3）**：每轮练习创建 `practiceSession`（状态 `created → in_progress → completed`），每题绑定 `attemptId`，以 `clientOpId` 实现**幂等提交**（重复点击只落库一次、不重复计数）；已提交题在会话内回看为只读，主动重练生成新 Session。单次作答作为不可变事实追加到 `attempts[]`（AnswerAttempt），聚合统计由事件派生。详见 `docs/adr/0003-answer-attempt-domain.md`。
@@ -139,7 +144,9 @@ miniprogram-4/
 
 服务端过期清理和登出均按读取时的 `(_id, token)` 条件原子撤销：旧请求读完后若已有新登录换发令牌，旧请求不再清除新会话；过期令牌即使清理写入失败也不会被接受。
 
-答题数据仍存本地，未同步到云端——多设备同步需要另行开发。
+学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。同一请求的档案和流水一起提交，失败不推进本地游标；超过 48 条流水分批补传，最后一批发布完整档案。恢复分页校验同一修订号；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
+
+当前仍使用启动时全量拉取及快照合并，持续增量同步、持久 outbox、题目不可变版本与仓储拆分分别跟踪在 #7、#5、#11。协议、升级/回滚及剩余限制见 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md)。
 
 ## 已知限制
 
@@ -149,7 +156,7 @@ miniprogram-4/
 ## 上线前核对
 
 - **`users` 集合建索引**：控制台给 `openid`、`token` 各建一个索引，否则用户量增长后按 token 查询会全表扫描。
-- **`aiTutorUsage` 集合（启用真实大模型时才需要）**：部署前在控制台创建集合 `aiTutorUsage` 并给 `date` 建索引。每日计数文档 `_id` 固定为日期（如 `2026-10-30`），依靠 `_id` 唯一约束防止重复计数器；首次升级会分页汇总当天旧版随机 ID 文档的 `count`，保留旧文档。切换时应停止旧版云函数接收新调用，待在途调用结束后启用新版，避免旧版继续写入随机计数器。集合缺失、计数服务故障或达到上限时回落本地答疑，不调用付费上游。
+- **`aiTutorUsage` 集合（启用真实大模型时才需要）**：部署前在控制台创建集合 `aiTutorUsage` 并给 `date` 建索引。全局计数 `_id` 为日期（如 `2026-10-30`），每用户计数 `_id` 为 `user:<日期>:<openid>`，两者共同事务预约；首次升级会分页汇总当天旧版随机 ID 文档的 `count`，保留旧文档。切换时应停止旧版云函数接收新调用，待在途调用结束后启用新版，避免旧版继续写入随机计数器。集合缺失、计数服务故障或达到上限时回落本地答疑，不调用付费上游。
 - **协议文本**：`utils/agreement.js` 中的主体名称与联系方式是占位内容，需替换；并与微信后台「用户隐私保护指引」保持一致，两者不一致会被驳回。
 - **隐私接口**：本小程序未调用位置、相册等隐私接口，暂无需在指引中声明。
 - 学情报告的 Canvas 图表在部分低版本基础库上可能需要适配。

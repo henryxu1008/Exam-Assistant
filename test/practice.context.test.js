@@ -32,6 +32,8 @@ beforeEach((t) => {
 afterEach(() => {
   pages.forEach((page) => page.onUnload())
   store.flush()
+  wx.__cloudReady = false
+  wx.cloud = undefined
 })
 
 function makePage(params) {
@@ -175,3 +177,134 @@ test('当前页 loadPending 消费切账号后的新请求，返回页面不再�
   assert.equal(page._sessionId, id)
   assert.deepEqual(page.data.queue.map((q) => q.id), [questions[1].id])
 })
+
+test('页面打开期间云端替换会话，立即恢复新题集，不把旧选项记入新会话', () => {
+  wx.__cloudReady = false
+  store.setUserScope('cloud-user')
+  wx.setStorageSync('exam_quiz_session_v1', { logged: true, openid: 'cloud-user', token: 'tok' })
+  const page = start('single')
+  page.setData({ selected: page.data.question.answer, canSubmit: true })
+  const calls = []
+  wx.__cloudReady = true
+  wx.cloud = { callFunction(opts) { calls.push(opts); return Promise.resolve() } }
+  store.pullFromCloud()
+  const restored = {
+    id: 'restored-session', subject: OTHER_SUBJECT, mode: 'single', questionIds: [questions[1].id],
+    params: { mode: 'single', subject: OTHER_SUBJECT, chapter: '', ids: [questions[1].id] },
+    status: 'in_progress', createdAt: Date.now() + 1000, updatedAt: Date.now() + 1000,
+    currentIndex: 0, submitted: {}
+  }
+  calls.find((c) => c.data.action === 'get').success({ result: {
+    ok: true, stats: { version: 3, practiceSession: restored }, attempts: [], hasMore: false
+  } })
+  assert.equal(store.getPracticeSession().id, restored.id)
+  assert.equal(page._sessionId, restored.id)
+  assert.equal(page.data.question.id, questions[1].id)
+  assert.deepEqual(page.data.selected, [])
+  page.onSubmit()
+  assert.equal(store.getAttempts().length, 0, '旧选项不得提交到新会话')
+  store.saveSettings({ autoNext: false })
+  page.setData({ selected: page.data.question.answer })
+  page.onSubmit()
+  assert.equal(store.getAttempts()[0].sessionId, restored.id)
+  assert.equal(store.getAttempts()[0].questionId, questions[1].id)
+})
+
+test('过期页面的提交、暂停、完成均不能改写替换后的会话', () => {
+  const page = start('single')
+  const context = store.getPracticeContext()
+  const oldQuestion = page.data.question
+  const next = store.createPracticeSession({
+    subject: OTHER_SUBJECT, mode: 'single', questionIds: [questions[1].id],
+    params: { mode: 'single', subject: OTHER_SUBJECT, chapter: '', ids: [questions[1].id] }
+  })
+  const before = JSON.stringify(store.load())
+  const rejected = store.submitAttempt(oldQuestion, oldQuestion.answer, true, 1, 'stale', context)
+  assert.equal(rejected.ok, false)
+  assert.equal(JSON.stringify(store.load()), before)
+  assert.equal(store.updatePracticeSession({ currentIndex: 99 }, context), null)
+  assert.equal(store.completePracticeSession(context), null)
+  page.setData({ selected: oldQuestion.answer })
+  page.onSubmit()
+  assert.equal(store.getAttempts().length, 0)
+  assert.equal(store.getPracticeSession().id, next.id)
+  assert.equal(page.data.question.id, questions[1].id)
+})
+
+test('同会话远端补齐作答后，页面刷新答案并直接结束得到正确成绩', () => {
+  wx.__cloudReady = false
+  store.setUserScope('cloud-user')
+  wx.setStorageSync('exam_quiz_session_v1', { logged: true, openid: 'cloud-user', token: 'tok' })
+  const page = start('chapter')
+  store.saveSettings({ autoNext: false })
+  const first = page.data.queue[0]
+  const second = page.data.queue[1]
+  page.setData({ selected: ['definitely-wrong'] })
+  page.onSubmit()
+  const local = JSON.parse(JSON.stringify(store.getPracticeSession()))
+  const previousContext = store.getPracticeContext()
+  const remote = Object.assign({}, local, {
+    updatedAt: local.updatedAt + 10, submitted: { [second.id]: { attemptId: 'remote-answer' } },
+    sessionTotal: 1, sessionCorrect: 1, errorIds: []
+  })
+  const calls = []
+  wx.__cloudReady = true
+  wx.cloud = { callFunction(opts) { calls.push(opts); return Promise.resolve() } }
+  store.pullFromCloud()
+  calls.find((c) => c.data.action === 'get').success({ result: {
+    ok: true, stats: { version: 3, practiceSession: remote },
+    attempts: [{ id: 'remote-answer', sessionId: local.id, questionId: second.id,
+      score: 1, createdAt: Date.now() + 100, selected: second.answer }], hasMore: false
+  } })
+  assert.equal(page.data.sessionTotal, 2)
+  assert.equal(page.data.sessionCorrect, 1)
+  assert.deepEqual(page.data.errorIds, [first.id])
+  assert.equal(store.submitAttempt(first, first.answer, true, 1, 'stale-same-session', previousContext).error, 'STALE_PRACTICE_CONTEXT')
+  page._load(1)
+  assert.equal(page.data.submitted, true)
+  assert.deepEqual(page.data.selected, second.answer)
+  page._finish()
+  assert.equal(page.data.summary.total, 2)
+  assert.equal(page.data.summary.correct, 1)
+  assert.equal(page.data.summary.rate, 50)
+  assert.deepEqual(page.data.summary.wrongList.map((q) => q.id), [first.id])
+})
+
+test('存储层拒绝会话外题目，加入相似题后同步扩展可提交范围', () => {
+  const page = start('single')
+  const nextQuestion = questions[1]
+  const before = JSON.stringify(store.load())
+  const result = store.submitAttempt(nextQuestion, nextQuestion.answer, true, 10, 'outside', store.getPracticeContext())
+  assert.equal(result.error, 'QUESTION_OUTSIDE_SESSION')
+  assert.equal(JSON.stringify(store.load()), before)
+  page.onAddSimilar({ currentTarget: { dataset: { id: nextQuestion.id } } })
+  page.onNext()
+  page.setData({ selected: nextQuestion.answer })
+  store.saveSettings({ autoNext: false })
+  page.onSubmit()
+  assert.equal(store.getPracticeSession().questionIds.includes(nextQuestion.id), true)
+  assert.equal(store.getAttempts()[0].questionId, nextQuestion.id)
+})
+
+test('缺少作答证据的恢复会话不能显示缓存的成功成绩', () => {
+  const page = start('single')
+  store.updatePracticeSession({ statsComplete: false, sessionTotal: 1, sessionCorrect: 1 })
+  page._finish()
+  assert.equal(page.data.finished, false)
+  assert.equal(store.getPracticeSession().status, 'in_progress')
+})
+
+for (const action of ['onStop', '_finish']) {
+  test(`旧页面 ${action} 只能重新绑定，不写入新会话的进度或状态`, () => {
+    const page = start('single')
+    const next = store.createPracticeSession({
+      subject: OTHER_SUBJECT, mode: 'single', questionIds: [questions[1].id],
+      params: { mode: 'single', subject: OTHER_SUBJECT, chapter: '', ids: [questions[1].id] }
+    })
+    const before = JSON.stringify(store.load())
+    page[action]()
+    assert.equal(JSON.stringify(store.load()), before)
+    assert.equal(page._sessionId, next.id)
+    assert.equal(page.data.question.id, questions[1].id)
+  })
+}

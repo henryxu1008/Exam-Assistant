@@ -11,6 +11,18 @@
 
   <!-- 未登录 -->
   <view class="card" wx:if="{{step === 'login'}}">
+    <checkbox-group class="agree-check" bindchange="onAgreeChange">
+      <label class="agree-check-label">
+        <checkbox class="agree-checkbox" value="agree" checked="{{agreed}}" color="#07c160" />
+        <view class="agree-check-text">
+          我已阅读并同意
+          <navigator class="agree-link" url="/pages/agreement/agreement?type=user">《用户协议》</navigator>
+          与
+          <navigator class="agree-link" url="/pages/agreement/agreement?type=privacy">《隐私政策》</navigator>
+        </view>
+      </label>
+    </checkbox-group>
+
     <button class="btn-wechat" bindtap="onWechatLogin" loading="{{loading}}" hover-class="none">
       <text class="wx-icon">微</text>
       <text>{{loading ? '登录中…' : '微信一键登录'}}</text>
@@ -40,10 +52,22 @@
   <!-- 完善资料 -->
   <view class="card" wx:elif="{{step === 'profile'}}">
     <view class="avatar-wrap">
-      <button class="avatar-btn" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar" hover-class="none">
-        <image class="avatar-img" src="{{avatarPreview || form.avatarUrl}}" mode="aspectFill" wx:if="{{avatarPreview || form.avatarUrl}}" />
+      <!-- 头像与选择按钮分离：图片固定在正方形盒子里，按钮只作为覆盖在上面的点击热区 -->
+      <view class="avatar-box">
+        <image
+          class="avatar-img"
+          src="{{avatarPreview || form.avatarUrl}}"
+          mode="aspectFill"
+          wx:if="{{avatarPreview || form.avatarUrl}}"
+        />
         <view class="avatar-ph" wx:else>{{initial}}</view>
-      </button>
+        <button
+          class="avatar-hit"
+          open-type="chooseAvatar"
+          bind:chooseavatar="onChooseAvatar"
+          hover-class="none"
+        ></button>
+      </view>
       <view class="small muted avatar-tip">
         {{uploading ? '头像上传中…' : '点击设置头像'}}
       </view>
@@ -64,14 +88,18 @@
 
     <view class="field">
       <text class="field-label">目标考试</text>
-      <input
-        class="field-input"
-        value="{{form.exam}}"
-        placeholder="例：事业单位 · 公共基础知识"
-        placeholder-class="field-ph"
-        maxlength="30"
-        bindinput="onExam"
-      />
+      <picker
+        class="field-picker"
+        mode="selector"
+        range="{{examOptions}}"
+        value="{{examIndex}}"
+        bindchange="onExamChange"
+      >
+        <view class="picker-inner">
+          <text class="{{form.exam ? 'picker-value' : 'picker-placeholder'}}">{{form.exam || '请选择目标考试'}}</text>
+          <text class="picker-arrow">›</text>
+        </view>
+      </picker>
     </view>
 
     <view class="error-box" wx:if="{{error}}">

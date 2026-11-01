@@ -8,8 +8,16 @@ const root = path.resolve(__dirname, '..')
 let app, user, store, verify, pages, navigation, definition
 
 beforeEach(() => {
+  // 注意：Windows 上 require.cache 的 key 用反斜杠，用 '/' 拼接做 startsWith 比较永远不成立，
+  // 会导致模块无法清理、用例间共享实例（会话缓存 / waiters 等状态泄漏）而使用例失败。统一用 path 处理。
+  const utilsDir = path.join(root, 'utils')
+  const pagesDir = path.join(root, 'pages')
+  const appPath = path.join(root, 'app.js')
   Object.keys(require.cache).forEach((key) => {
-    if (key.startsWith(root + '/utils/') || key.startsWith(root + '/pages/') || key === root + '/app.js') delete require.cache[key]
+    const normalized = path.normalize(key)
+    if (normalized.startsWith(utilsDir + path.sep) || normalized.startsWith(pagesDir + path.sep) || normalized === appPath) {
+      delete require.cache[key]
+    }
   })
   global.__wxStorage.clearAll()
   wx.setStorageSync('exam_quiz_session_v1', {

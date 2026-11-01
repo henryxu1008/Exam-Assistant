@@ -24,6 +24,14 @@ const CACHE_KEYS = [
 ]
 
 function freshStore(seed) {
+  // 先取消上一个 store 实例遗留的节流定时器：它引用的还是旧模块闭包，
+  // 一旦在后续用例中触发，就会用当前用例的 wx mock 发出请求，污染断言。
+  try {
+    const prev = require('../utils/store.js')
+    if (prev && typeof prev.__clearFlushTimer === 'function') prev.__clearFlushTimer()
+  } catch (e) {
+    /* 首个用例尚无实例 */
+  }
   global.__wxStorage.clearAll()
   // 默认作用域为 'anon'，故按匿名作用域 key 播种（store 现按用户命名空间隔离）
   if (seed) global.__wxStorage.setRaw('exam_quiz_data_v1__anon', seed)

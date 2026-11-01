@@ -72,6 +72,8 @@ function jscode2session(code, appid, secret) {
         try {
           data = JSON.parse(body)
         } catch (e) {
+          // swallow: 响应体不是合法 JSON 时按「换票失败」往下走，
+          // 下方 data && !data.errcode && data.openid 校验会因 data 为 null 而拒绝
           data = null
         }
         // 微信接口出错时 HTTP 状态码仍是 200，必须校验 errcode
