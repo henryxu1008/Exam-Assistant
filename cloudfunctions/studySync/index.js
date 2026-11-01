@@ -75,7 +75,35 @@ async function readExisting(getDoc) {
 const MAX_ATTEMPTS = 48
 const epochOf = (doc) => Number(doc && doc.dataEpoch || 0)
 const aiEpochOf = (doc) => Number(doc && doc.aiEpoch || 0)
-const revisionOf = (doc) => Number(doc && doc.syncRevision || 0)
+function revisionOf(doc) {
+  const n = doc && doc.syncRevision !== undefined ? doc.syncRevision : 0
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error('INVALID_SYNC_REVISION')
+  return n
+}
+function nextRevision(doc) {
+  const n = revisionOf(doc) + 1
+  if (!Number.isSafeInteger(n)) throw new Error('SYNC_REVISION_EXHAUSTED')
+  return n
+}
+// 新事实在同一事务中分配严格递增序号；不使用客户端时间，也不改写历史事实。
+function sequenceOf(doc) {
+  const n = doc && doc.attemptSequence !== undefined ? doc.attemptSequence : 0
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error('INVALID_ATTEMPT_SEQUENCE')
+  return n
+}
+// 旧处理器会保留未知字段，但只推进 syncRevision。检测这种写入并使旧游标失效，
+// 避免滚动升级/回滚期间无序号的新事实被增量查询永久跳过。
+function generationOf(doc) {
+  const n = doc && doc.sequenceGeneration !== undefined ? doc.sequenceGeneration : 0
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error('INVALID_SEQUENCE_GENERATION')
+  return n
+}
+const legacySequenceWrite = doc => doc && doc.sequenceRevision !== undefined && doc.sequenceRevision !== revisionOf(doc)
+function nextGeneration(doc) {
+  const n = generationOf(doc) + (legacySequenceWrite(doc) ? 1 : 0)
+  if (!Number.isSafeInteger(n)) throw new Error('SEQUENCE_GENERATION_EXHAUSTED')
+  return n
+}
 const sameRevision = (a, b) => epochOf(a) === epochOf(b) && revisionOf(a) === revisionOf(b)
 
 // 清理只匹配旧代次；新代次使用不同文档 ID，清理与新作答并发也不会误删。
@@ -110,7 +138,20 @@ exports.main = async (event = {}) => {
       return { ok: false, error: 'READ_STATS_FAILED' }
     }
     const dataEpoch = epochOf(stats)
-    const syncRevision = revisionOf(stats)
+    const protocol = event.syncProtocol === 2
+    let sequence, generation, syncRevision
+    try { sequence = sequenceOf(stats); generation = generationOf(stats); syncRevision = revisionOf(stats) } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
+    const cursor = protocol && event.cursor
+    const delta = !!cursor
+    let afterSequence = 0
+    if (delta) {
+      afterSequence = event.afterSequence === undefined ? cursor.sequence : event.afterSequence
+      const cursorGeneration = cursor.generation === undefined ? 0 : cursor.generation
+      if (legacySequenceWrite(stats) || cursorGeneration !== generation || cursor.dataEpoch !== dataEpoch || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0 ||
+        !Number.isSafeInteger(afterSequence) || afterSequence < cursor.sequence || afterSequence > sequence) {
+        return { ok: false, error: 'CURSOR_RESET_REQUIRED', dataEpoch }
+      }
+    }
     if (event.syncRevision !== undefined && (event.syncRevision !== syncRevision || event.dataEpoch !== dataEpoch)) {
       return { ok: false, error: 'SNAPSHOT_CHANGED' }
     }
@@ -120,20 +161,33 @@ exports.main = async (event = {}) => {
     try {
       // 代次 0 兼容升级前没有 dataEpoch 的流水；清空后只读当前代次。
       const filter = dataEpoch ? { openid, dataEpoch } : { openid }
-      const res = await ATTEMPTS.where(filter).orderBy('createdAt', 'asc').orderBy('_id', 'asc')
-        .skip(skip).limit(limit).get()
+      let query
+      if (delta) {
+        query = ATTEMPTS.where({ ...filter, serverSequence: db.command.gt(afterSequence) }).orderBy('serverSequence', 'asc')
+      } else query = ATTEMPTS.where(filter).orderBy('createdAt', 'asc').orderBy('_id', 'asc').skip(skip)
+      const res = await query.limit(limit).get()
       if (!res || !Array.isArray(res.data)) throw new Error('INVALID_ATTEMPTS_RESPONSE')
       list = res.data
+      if (delta) {
+        let previous = afterSequence
+        for (const row of list) {
+          if (!Number.isSafeInteger(row.serverSequence) || row.serverSequence <= previous || row.serverSequence > sequence) throw new Error('INVALID_INCREMENTAL_PAGE')
+          previous = row.serverSequence
+        }
+      }
     } catch (e) { return { ok: false, error: 'READ_ATTEMPTS_FAILED' } }
     try {
       // where 不能放入事务。前后读修订号并跨页携带，整批恢复才是同一快照。
       const after = await readExisting(() => STATS.doc(openid).get())
       if (!sameRevision(stats, after)) return { ok: false, error: 'SNAPSHOT_CHANGED' }
     } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
-    const attempts = list.map(({ _id, openid: _owner, dataEpoch: _epoch, ...rest }) => rest)
+    const attempts = list.map(({ _id, openid: _owner, dataEpoch: _epoch, serverSequence: _sequence, ...rest }) => rest)
     const hasMore = list.length >= limit
-    return { ok: true, stats: stats && !stats.deleted ? sanitizeStats(stats) : null,
-      attempts, hasMore, nextSkip: hasMore ? skip + list.length : null, dataEpoch, syncRevision, aiEpoch: aiEpochOf(stats) }
+    const includeStats = !protocol || (delta ? afterSequence === cursor.sequence : skip === 0)
+    return { ok: true, stats: includeStats && stats && !stats.deleted ? sanitizeStats(stats) : null,
+      attempts, hasMore, nextSkip: hasMore ? skip + list.length : null, dataEpoch, syncRevision, aiEpoch: aiEpochOf(stats),
+      ...(protocol ? { syncProtocol: 2, mode: delta ? 'delta' : 'bootstrap', cursor: { dataEpoch, sequence, generation },
+        nextSequence: delta && list.length ? list[list.length - 1].serverSequence : afterSequence } : {}) }
   }
 
   if (action === 'clearAI') {
@@ -163,7 +217,8 @@ exports.main = async (event = {}) => {
         const aiEpoch = current + 1
         const data = Object.assign({}, existing || mergeStats(null, {}), {
           _id: openid, openid, dataEpoch: event.dataEpoch, aiEpoch, aiMessages: [],
-          syncRevision: revisionOf(existing) + 1, updatedAt: Date.now()
+          syncRevision: nextRevision(existing), sequenceRevision: nextRevision(existing),
+          sequenceGeneration: nextGeneration(existing), updatedAt: Date.now()
         })
         await ref.set({ data })
         await receiptRef.set({ data: { _id: id, kind: 'aiClearReceipt', openid,
@@ -186,6 +241,7 @@ exports.main = async (event = {}) => {
         const ref = tx.collection('studyStats').doc(openid)
         const existing = await readExisting(() => ref.get())
         if (epochOf(existing) !== dataEpoch) return { ok: false, error: 'STALE_EPOCH', dataEpoch: epochOf(existing) }
+        let attemptSequence = sequenceOf(existing)
         const incoming = sanitizeStats(event.stats)
         const aiStale = (incoming.aiEpoch !== undefined || incoming.aiMessages !== undefined) &&
           Number(incoming.aiEpoch || 0) !== aiEpochOf(existing)
@@ -197,7 +253,8 @@ exports.main = async (event = {}) => {
         incoming.attempts = attempts
         const merged = mergeStats(existing, incoming)
         delete merged.attempts
-        Object.assign(merged, { _id: openid, openid, dataEpoch, syncRevision: revisionOf(existing) + 1,
+        Object.assign(merged, { _id: openid, openid, dataEpoch, syncRevision: nextRevision(existing),
+          sequenceRevision: nextRevision(existing), sequenceGeneration: nextGeneration(existing),
           deleted: !event.stats && !!(existing && existing.deleted),
           lastDeleteId: existing && existing.lastDeleteId || null, updatedAt: Date.now() })
         // 流水和派生档案一起提交。任一流水写失败会回滚整个事务。
@@ -211,8 +268,13 @@ exports.main = async (event = {}) => {
               error.code = 'ATTEMPT_CONFLICT'
               throw error
             }
-          } else await attemptRef.set({ data: attempt })
+          } else {
+            if (attemptSequence >= Number.MAX_SAFE_INTEGER) throw new Error('ATTEMPT_SEQUENCE_EXHAUSTED')
+            attemptSequence += 1
+            await attemptRef.set({ data: { ...attempt, serverSequence: attemptSequence } })
+          }
         }
+        merged.attemptSequence = attemptSequence
         await ref.set({ data: merged })
         return { ok: true, dataEpoch, aiEpoch: aiEpochOf(merged), aiStale, acceptedAttemptIds: attempts.map(a => a.id) }
       })
@@ -238,7 +300,8 @@ exports.main = async (event = {}) => {
         if (event.dataEpoch < current) return { ok: true, dataEpoch: current, superseded: true }
         if (event.dataEpoch !== current) return { ok: false, error: 'STALE_EPOCH', dataEpoch: current }
         await ref.set({ data: { _id: openid, openid, dataEpoch: current + 1,
-          syncRevision: revisionOf(existing) + 1, deleted: true, lastDeleteId: event.deleteId, updatedAt: Date.now() } })
+          syncRevision: nextRevision(existing), sequenceRevision: nextRevision(existing),
+          sequenceGeneration: 0, attemptSequence: 0, deleted: true, lastDeleteId: event.deleteId, updatedAt: Date.now() } })
         return { ok: true, dataEpoch: current + 1 }
       })
     } catch (e) { return { ok: false, error: 'DELETE_STATS_FAILED' } }

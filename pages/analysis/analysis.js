@@ -36,7 +36,21 @@ Page({
     currentSubject: ''
   },
 
+  onLoad() {
+    this._unsubscribeSync = store.onSyncRestored(() => {
+      if (this._visible) user.requireLogin(() => { if (this._visible) this.refresh() })
+    })
+  },
+
+  onHide() { this._visible = false },
+
+  onUnload() {
+    this.onHide()
+    if (this._unsubscribeSync) this._unsubscribeSync()
+  },
+
   onShow() {
+    this._visible = true
     user.requireLogin(() => this.refresh())
   },
 

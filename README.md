@@ -144,9 +144,9 @@ miniprogram-4/
 
 服务端过期清理和登出均按读取时的 `(_id, token)` 条件原子撤销：旧请求读完后若已有新登录换发令牌，旧请求不再清除新会话；过期令牌即使清理写入失败也不会被接受。
 
-学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。同一请求的档案和流水一起提交；作答与待传队列先一起落盘，服务端返回明确的 acceptedAttemptIds 后才持久出队。超过 48 条流水分批补传，每批确认独立保存进度，最后一批发布完整档案。恢复分页校验同一修订号；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
+学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。同一请求的档案和流水一起提交；作答与待传队列先一起落盘，服务端返回明确的 acceptedAttemptIds 后才持久出队。超过 48 条流水分批补传，每批确认独立保存进度，最后一批发布完整档案。首次全量恢复后按服务端序号增量读取作答；恢复分页校验同一修订号，完整恢复结果与游标一起落盘。登录、前台和网络恢复事件共享有界同步任务；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
 
-当前仍使用启动时全量拉取及快照合并，持久 outbox 已实现 #7 第一阶段；持续增量同步、题目不可变版本与仓储拆分分别跟踪在 #7、#5、#11。原有事务/权限边界见 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md)，队列契约、旧数据重放、同步写盘成本及发布/回滚约束见 [ADR 0010](docs/adr/0010-durable-attempt-outbox.md)。
+持久 outbox 与按 ID 确认对应 #7 第一阶段；作答增量恢复及生命周期触发对应第二阶段，协议、旧写入器兼容和索引验收见 [ADR 0011](docs/adr/0011-incremental-recovery-and-lifecycle-sync.md)。聚合仍使用快照合并；事实对账、题目不可变版本与仓储拆分分别跟踪在 #7、#5、#11。原有事务/权限边界见 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md)，队列契约、旧数据重放、同步写盘成本及发布/回滚约束见 [ADR 0010](docs/adr/0010-durable-attempt-outbox.md)。
 
 ## 已知限制
 

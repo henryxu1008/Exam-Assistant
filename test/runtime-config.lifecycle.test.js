@@ -130,3 +130,64 @@ test('版本阻断先解除、认证后完成时，首页不会遗漏初始化',
   assert.equal(page.refreshCount, 1)
   assert.equal(page.data.notice, config.notice)
 })
+
+test('同步完成后当前首页刷新学习数据，隐藏和销毁后不响应通知', async () => {
+  const page = home()
+  auth.resolve({ result: { ok: true, profile: {} } })
+  await settle()
+  await store.syncNow()
+  let total = 1
+  wx.cloud.callFunction = opts => {
+    const result = { ok: true, attempts: [], acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id), hasMore: false, dataEpoch: 0,
+      stats: { records: { synced: { id: 'synced', subject: store.getCurrentSubject(), chapter: '同步恢复', attempts: total, right: total, wrong: 0 } } } }
+    opts.success({ result })
+    return Promise.resolve({ result })
+  }
+  await store.syncNow()
+  assert.equal(page.data.overview.total, 1)
+  const beforeHide = page.refreshCount
+  page.onHide()
+  total = 2
+  await store.syncNow()
+  assert.equal(page.refreshCount, beforeHide)
+  page.onShow()
+  assert.equal(page.data.overview.total, 2)
+  const beforeUnload = page.refreshCount
+  page.onUnload()
+  total = 3
+  await store.syncNow()
+  assert.equal(page.refreshCount, beforeUnload)
+})
+
+for (const name of ['analysis', 'profile']) {
+  test(`同步通知更新当前${name}页，隐藏与卸载后不更新`, async () => {
+    require('../pages/' + name + '/' + name + '.js')
+    const page = Object.assign({}, definition, { data: JSON.parse(JSON.stringify(definition.data)) })
+    page.setData = patch => Object.assign(page.data, patch)
+    pages.push(page)
+    page.onLoad()
+    page.onShow()
+    auth.resolve({ result: { ok: true, profile: {} } })
+    await settle()
+    await store.syncNow()
+    let total = 1
+    wx.cloud.callFunction = opts => {
+      const result = { ok: true, attempts: [], acceptedAttemptIds: (opts.data.attempts || []).map(a => a.id), hasMore: false, dataEpoch: 0,
+        stats: { records: { synced: { id: 'synced', subject: store.getCurrentSubject(), chapter: '同步恢复', attempts: total, right: total, wrong: 0 } } } }
+      opts.success({ result })
+      return Promise.resolve({ result })
+    }
+    await store.syncNow()
+    assert.equal(page.data.overview.total, 1)
+    page.onHide()
+    total = 2
+    await store.syncNow()
+    assert.equal(page.data.overview.total, 1)
+    page.onShow()
+    assert.equal(page.data.overview.total, 2)
+    page.onUnload()
+    total = 3
+    await store.syncNow()
+    assert.equal(page.data.overview.total, 2)
+  })
+}

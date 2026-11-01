@@ -33,6 +33,10 @@ App({
     store.load()
 
     this._sessionWaiters = []
+    if (typeof wx.onNetworkStatusChange === 'function' && !this._networkSyncListener) {
+      this._networkSyncListener = status => { if (status.isConnected) return this._resumeLearningSync() }
+      wx.onNetworkStatusChange(this._networkSyncListener)
+    }
     this._checkSession()
 
     // 以下均为云就绪后的异步操作，不阻塞启动：
@@ -131,6 +135,20 @@ App({
     return 0
   },
 
+  onShow() {
+    return this._resumeLearningSync()
+  },
+
+  _resumeLearningSync() {
+    if (!this.globalData.sessionReady) {
+      if (this._syncWaiting) return
+      this._syncWaiting = true
+      this.whenSessionReady(() => { this._syncWaiting = false; this._resumeLearningSync() })
+      return
+    }
+    if (this.globalData.logged) return store.syncNow()
+  },
+
   onHide() {
     // 进入后台时强制落盘，避免节流窗口内的作答丢失
     store.flush()
@@ -163,12 +181,14 @@ App({
     const waiters = this._sessionWaiters || []
     this._sessionWaiters = []
     waiters.forEach((fn) => fn(logged))
+    if (logged) this._resumeLearningSync()
   },
 
   /** 登录态变化（登录页登录成功 / 退出登录时调用） */
   setLogged(logged) {
     this.globalData.logged = !!logged
     this.globalData.sessionReady = true
+    if (logged) this._resumeLearningSync()
   },
 
   /** 等待会话校验完成后回调（已完成时立即回调） */

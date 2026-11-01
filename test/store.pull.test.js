@@ -34,6 +34,7 @@ test('作答流水超一页时分页拉全并合并', async () => {
   ])
   global.wx.setStorageSync(SESSION_KEY, { logged: true, token: 'tok', openid: 'o1' })
 
+  store.setUserScope('o1')
   // load() 会触发 pullFromCloud（freshStore 后 bootPulled 初始为 false）
   store.load()
 
