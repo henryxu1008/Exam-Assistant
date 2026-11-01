@@ -39,6 +39,7 @@ Page({
       dateText: this._buildDateText()
     })
     this._unsubscribeConfig = app.onRuntimeConfigChange(() => this._requestRefresh())
+    this._unsubscribeSync = store.onSyncRestored(() => this._requestRefresh())
   },
 
   onShow() {
@@ -55,6 +56,7 @@ Page({
   onUnload() {
     this.onHide()
     if (this._unsubscribeConfig) this._unsubscribeConfig()
+    if (this._unsubscribeSync) this._unsubscribeSync()
   },
 
   /** 配置与认证可任意顺序返回；同一轮等待只注册一次初始化回调。 */

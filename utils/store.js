@@ -7,6 +7,7 @@
 const bank = require('./questions.js')
 const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
+const { createSyncCoordinator } = require('./sync-coordinator.js')
 
 /**
  * 档案合并逻辑与云端 studySync 共用同一份实现（shared/stats-merge.js），
@@ -289,7 +290,7 @@ function load() {
       wx.setStorageSync(scopeKey(), state)
     }
   } catch (e) { dirty = true } // 保留原档案；持久化/队列异常时禁止发送。
-  // 启动后首次（且已登录）尝试从云端拉取一次学习档案
+  // 启动时恢复一次；之后由登录、前台和网络事件通过协调器继续增量恢复。
   if (isLogged() && getPendingDelete(userScope)) deleteCloud()
   else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
   else if (!bootPulled && isLogged()) pullFromCloud()
@@ -400,7 +401,7 @@ function isLogged() {
   }
 }
 
-/** 启动后只尝试一次云端拉取 */
+/** 默认启动拉取只执行一次；协调器可强制发起后续恢复。 */
 let bootPulled = false
 
 /** 首次上云也要备份本地有效数据；创建时间和未修改的默认设置不算历史。 */
@@ -437,138 +438,169 @@ function isStaleContext(ctx) {
 }
 
 /**
- * 从云端拉取学习档案，与本地双向合并后写回本地并上传云端，实现多端最终一致。
- * 作答流水可能很多（单查上限 100 条），采用顺序分页拉取：每页带 skip，
- * 服务端返回 hasMore / nextSkip，直到取完所有页再一次性合并。
- *
- * 一致性防护（评审 P1）：发起时 captureSyncContext()，
- * 每次回包（含每个分页）先 isStaleContext() 校验，失效即丢弃。
- * 否则账号 A 的拉取在登出 / 切到 B 之后回来，会把 A 的答题记录与 AI 对话
- * 并入当前（属于 B 的）内存态，并随后续落盘以 B 的令牌上传。
- * 分页复用同一个 token 快照，避免一次拉取横跨两个账号。
- *
- * @param {Function} [onDone] 拉取（含所有分页）结束后回调，便于测试；生产调用通常省略
+ * 初次按修订号校验全量基线，之后按服务端序号拉取新增事实。
+ * 任一页失败、上下文失效或检查点写盘失败均不发布半批数据/游标。
+ * force 绕过启动一次性标记；同一有效上下文的并发拉取共享 Promise。
+ * @param {Function} [onDone] 成功落盘后回调 true，否则 false
+ * @param {Object} [options] {force: Boolean}
+ * @returns {Promise<Boolean>}
  */
-function pullFromCloud(onDone) {
-  if (!hasCloud() || !isLogged()) return
-  // 删除意图优先于启动拉取标记：恢复云连接后先补删除，不能读取旧备份。
+let activePull = null
+const syncRestoredListeners = new Set()
+
+function onSyncRestored(listener) {
+  syncRestoredListeners.add(listener)
+  return () => syncRestoredListeners.delete(listener)
+}
+
+function savedCursor(snapshot) {
+  const c = snapshot && snapshot.syncCursor
+  return c && c.version === 2 && c.dataEpoch === Number(snapshot.dataEpoch || 0) &&
+    Number.isSafeInteger(c.sequence) && c.sequence >= 0 && Number.isSafeInteger(c.generation) && c.generation >= 0
+    ? { dataEpoch: c.dataEpoch, sequence: c.sequence, generation: c.generation } : null
+}
+
+function pullFromCloud(onDone, options = {}) {
+  if (!hasCloud() || !isLogged()) return Promise.resolve(false)
+  if (!state) load()
+  if (getSessionOpenid() !== userScope) return Promise.resolve(false)
   if (getPendingDelete(userScope)) {
     deleteCloud()
     if (typeof onDone === 'function') onDone(false)
-    return
+    return Promise.resolve(false)
   }
-  if ((state && state.aiClearQueue || []).length) {
+  if ((state.aiClearQueue || []).length) {
     clearAiFromCloud()
     if (typeof onDone === 'function') onDone(false)
-    return
+    return Promise.resolve(false)
   }
-  if (bootPulled) return
   const ctx = captureSyncContext()
   const conversationVersion = aiConversationVersion
+  if (activePull && !isStaleContext(activePull.ctx) && activePull.conversationVersion === conversationVersion) {
+    if (typeof onDone === 'function') activePull.promise.then(onDone)
+    return activePull.promise
+  }
+  if (bootPulled && !options.force) return Promise.resolve(true)
+  let resolveRun
+  const run = { ctx, conversationVersion, promise: new Promise(resolve => { resolveRun = resolve }) }
+  activePull = run
   bootPulled = true
+  let cursor = savedCursor(state)
+  let afterSequence = cursor ? cursor.sequence : 0
   let skip = 0
   let stats = null
   let dataEpoch = null
   let syncRevision
   let aiEpoch
+  let protocol = null
+  let checkpoint = null
+  let resetTried = false
+  let pages = 0
+  let completed = false
   const allAttempts = []
-  const abort = () => {
-    // 回包被判为过期时必须重新武装启动拉取：冷启动时 load() 会在 _checkSession()
-    // 之前就开始拉取，而 ensureFreshToken() 可能在同一个账号内换掉一个仍然有效的令牌。
-    // 丢弃回包是对的，但 bootPulled 若就此停在 true，本次启动剩下的时间里
-    // 任何 load / pullFromCloud 都无法再恢复该账号的云端数据（评审 P2 4425593460）。
-    bootPulled = false
-    if (typeof onDone === 'function') onDone(false)
+  const current = () => !isStaleContext(ctx) && conversationVersion === aiConversationVersion
+  const done = ok => {
+    if (completed) return
+    completed = true
+    if (activePull === run) { activePull = null; bootPulled = ok }
+    resolveRun(ok)
+    if (typeof onDone === 'function') onDone(ok)
   }
-  const finish = (ok) => {
-    if (isStaleContext(ctx) || conversationVersion !== aiConversationVersion) { abort(); return }
-    if (!ok) {
-      // 拉取失败：允许下次（重新登录/重启）再试
-      bootPulled = false
-      if (typeof onDone === 'function') onDone(false)
-      return
-    }
-    let practiceChanged = false
-    if (dataEpoch !== null && dataEpoch < Number(state.dataEpoch || 0)) { abort(); return }
-    if (dataEpoch !== null && dataEpoch > Number(state.dataEpoch || 0)) {
-      // 服务端清空是账号级边界，旧代次内容不得再次参与并集或上传。
-      state = getDefaultState()
-      state.dataEpoch = dataEpoch
-      cloudSyncGeneration += 1
-      practiceGeneration += 1
-      aiConversationVersion += 1
-      practiceChanged = true
-      setPendingPush(ctx.scope, false)
-      dirty = true
-    }
-    try { attemptOutbox.ensure(state) } catch (e) { abort(); return }
-    const localOutbox = state.attemptOutbox
-    const localResetId = state.pendingDeleteId
-    if (stats || allAttempts.length || (aiEpoch !== undefined && aiEpoch !== Number(state.aiEpoch || 0))) {
-      const before = state
-      // AI 代次只认服务端；不同代次的本地片段不能跨清空合并。
-      const local = aiEpoch !== undefined && aiEpoch !== Number(state.aiEpoch || 0)
-        ? Object.assign({}, state, { aiEpoch, aiMessages: [] }) : state
-      const remote = Object.assign({}, stats || {}, { attempts: allAttempts })
-      if (aiEpoch !== undefined) remote.aiEpoch = aiEpoch
-      state = mergeStats(local, remote)
-      practiceChanged = practiceChanged || JSON.stringify(before.practiceSession) !== JSON.stringify(state.practiceSession)
-      if (practiceChanged) practiceGeneration += 1
-      // flush 仅在 dirty 时落盘；合并结果必须显式标记脏，否则只存在于内存，
-      // 关闭后离线重开即丢失，本地独有数据也不会按承诺上传（评审 P2）
-      dirty = true
-      // 会话被拉取恢复时必须推进会话版本号：AI 页可能在启动拉取完成之前
-      // 就缓存了初始会话与版本号，而 _syncConversation() 只在版本变化时才重载消息。
-      // 不推进的话，本次启动剩下的时间里 AI 页会一直显示恢复前的历史，
-      // 在途的异步回复也不会被作废（评审 P2 4425946095）。
-      const convBefore = JSON.stringify(before.aiMessages || []) + '|' + Number(before.aiEpoch || 0)
-      const convAfter = JSON.stringify(state.aiMessages || []) + '|' + Number(state.aiEpoch || 0)
-      if (convBefore !== convAfter) aiConversationVersion += 1
-    } else if (getPendingPush(ctx.scope) || hasLocalSyncData(state)) {
-      // 空云端需要初始化备份；升级前本地历史没有 pending 标记，也不能被跳过。
-      dirty = true
-    }
-    state.attemptOutbox = localOutbox
-    if (localResetId) state.pendingDeleteId = localResetId
-    if (dataEpoch !== null) state.dataEpoch = dataEpoch
-    if (dirty) flush() // 合并结果回写本地，并由 flush 自动 pushToCloud，保证两端收敛
-    if (practiceChanged) practiceRestoredListeners.forEach((listener) => {
+  const finish = () => {
+    if (!current()) { done(false); return }
+    const before = state
+    if (dataEpoch < Number(before.dataEpoch || 0)) { done(false); return }
+    const reset = dataEpoch > Number(before.dataEpoch || 0)
+    const base = JSON.parse(JSON.stringify(reset ? getDefaultState() : before))
+    try { attemptOutbox.ensure(base) } catch (e) { done(false); return }
+    const needsPush = !reset && (dirty || getPendingPush(ctx.scope) || attemptOutbox.pending(base).length ||
+      (!cursor && hasLocalSyncData(before)))
+    const localOutbox = base.attemptOutbox
+    const local = aiEpoch !== undefined && aiEpoch !== Number(base.aiEpoch || 0)
+      ? Object.assign({}, base, { aiEpoch, aiMessages: [] }) : base
+    const remote = Object.assign({}, stats || {}, { attempts: allAttempts })
+    if (aiEpoch !== undefined) remote.aiEpoch = aiEpoch
+    const next = mergeStats(local, remote)
+    next.attemptOutbox = localOutbox
+    next.dataEpoch = dataEpoch
+    if (checkpoint) next.syncCursor = { version: 2, ...checkpoint }
+    else delete next.syncCursor // 旧服务端只作全量恢复，不能凭猜测推进增量游标。
+    try { wx.setStorageSync(scopeKey(), next) } catch (e) { done(false); return }
+    state = next
+    dirty = false
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+    const practiceChanged = reset || JSON.stringify(before.practiceSession) !== JSON.stringify(next.practiceSession)
+    if (reset) { cloudSyncGeneration += 1; setPendingPush(ctx.scope, false) }
+    if (practiceChanged) practiceGeneration += 1
+    if (reset || JSON.stringify(before.aiMessages || []) + '|' + Number(before.aiEpoch || 0) !==
+      JSON.stringify(next.aiMessages || []) + '|' + Number(next.aiEpoch || 0)) aiConversationVersion += 1
+    // 拉取写盘与上传分开：增量恢复不能制造无意义的快照回声和新修订。
+    if (needsPush) syncPersistedState()
+    if (practiceChanged) practiceRestoredListeners.forEach(listener => {
       try { listener() } catch (e) { console.error('[store] 练习恢复通知失败', e) }
     })
-    if (typeof onDone === 'function') onDone(true)
+    const visibleFields = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'dataEpoch']
+    const changed = visibleFields.some(field => JSON.stringify(before[field]) !== JSON.stringify(next[field]))
+    if (changed) syncRestoredListeners.forEach(listener => {
+      try { listener() } catch (e) { console.error('[store] 同步恢复通知失败', e) }
+    })
+    done(true)
   }
   const fetchPage = () => {
-    callCloud({
-      name: config.functions.studySync,
-      data: { token: ctx.token, action: 'get', skip, ...(syncRevision === undefined ? {} : { syncRevision, dataEpoch }) },
-      success: (res) => {
-        if (isStaleContext(ctx) || conversationVersion !== aiConversationVersion) { abort(); return }
-        const r = res && res.result
-        if (!r || !r.ok) { finish(false); return }
-        const pageEpoch = Number(r.dataEpoch || 0)
-        if (dataEpoch !== null && (dataEpoch !== pageEpoch || syncRevision !== r.syncRevision)) { finish(false); return }
-        dataEpoch = pageEpoch
-        syncRevision = r.syncRevision
-        if (Number.isSafeInteger(r.aiEpoch)) aiEpoch = r.aiEpoch
-        else if (r.stats && Number.isSafeInteger(r.stats.aiEpoch)) aiEpoch = r.stats.aiEpoch
-        if (r.stats) stats = r.stats
-        if (Array.isArray(r.attempts)) {
-          for (let i = 0; i < r.attempts.length; i++) allAttempts.push(r.attempts[i])
-        }
-        if (r.hasMore) {
-          skip = (typeof r.nextSkip === 'number')
-            ? r.nextSkip
-            : skip + (Array.isArray(r.attempts) ? r.attempts.length : 0)
+    if (!current() || ++pages > 1000) { done(false); return }
+    const data = { token: ctx.token, action: 'get', syncProtocol: 2, skip,
+      ...(cursor ? { cursor, afterSequence } : {}),
+      ...(syncRevision === undefined ? {} : { syncRevision, dataEpoch }) }
+    try {
+      callCloud({ name: config.functions.studySync, data,
+        success: res => {
+          if (!current()) { done(false); return }
+          const r = res && res.result
+          if (!r || !r.ok) {
+            if (r && r.error === 'CURSOR_RESET_REQUIRED' && cursor && !resetTried) {
+              cursor = null; afterSequence = 0; skip = 0; stats = null; dataEpoch = null
+              syncRevision = undefined; aiEpoch = undefined; protocol = null; checkpoint = null
+              allAttempts.length = 0; resetTried = true
+              fetchPage()
+            } else done(false)
+            return
+          }
+          const pageEpoch = r.dataEpoch === undefined ? 0 : r.dataEpoch
+          if (!Number.isSafeInteger(pageEpoch) || pageEpoch < 0 || !Array.isArray(r.attempts) ||
+            (dataEpoch !== null && (dataEpoch !== pageEpoch || syncRevision !== r.syncRevision))) { done(false); return }
+          if (r.syncProtocol === 2) {
+            const c = r.cursor
+            if (protocol === 0 || !Number.isSafeInteger(r.syncRevision) || r.syncRevision < 0 || !c || c.dataEpoch !== pageEpoch || !Number.isSafeInteger(c.sequence) || c.sequence < 0 || !Number.isSafeInteger(c.generation) || c.generation < 0 ||
+              r.mode !== (cursor ? 'delta' : 'bootstrap') || (checkpoint && (checkpoint.sequence !== c.sequence || checkpoint.generation !== c.generation))) { done(false); return }
+            if (cursor && (!Number.isSafeInteger(r.nextSequence) || r.nextSequence < afterSequence || r.nextSequence > c.sequence ||
+              (r.hasMore ? r.nextSequence <= afterSequence : r.nextSequence !== c.sequence))) { done(false); return }
+            protocol = 2
+            checkpoint = { dataEpoch: c.dataEpoch, sequence: c.sequence, generation: c.generation }
+          } else {
+            if (protocol === 2 || r.syncProtocol !== undefined) { done(false); return }
+            protocol = 0; cursor = null; checkpoint = null
+          }
+          dataEpoch = pageEpoch
+          syncRevision = r.syncRevision
+          if (Number.isSafeInteger(r.aiEpoch)) aiEpoch = r.aiEpoch
+          else if (r.stats && Number.isSafeInteger(r.stats.aiEpoch)) aiEpoch = r.stats.aiEpoch
+          if (r.stats) stats = r.stats
+          allAttempts.push(...r.attempts)
+          if (!r.hasMore) { finish(); return }
+          if (cursor) afterSequence = r.nextSequence
+          else {
+            const nextSkip = typeof r.nextSkip === 'number' ? r.nextSkip : skip + r.attempts.length
+            if (!Number.isSafeInteger(nextSkip) || nextSkip <= skip) { done(false); return }
+            skip = nextSkip
+          }
           fetchPage()
-          return
-        }
-        finish(true)
-      },
-      fail: () => { finish(false) }
-    })
+        },
+        fail: () => done(false)
+      })
+    } catch (e) { done(false) }
   }
-  bootPulled = true
   fetchPage()
+  return run.promise
 }
 
 /** 待重试的云端删除标记（按作用域隔离） */
@@ -796,6 +828,29 @@ function pushToCloud() {
       else if (!getPendingDelete(ctx.scope)) setPendingPush(ctx.scope, false)
     } catch (e) { keepPending() } finally { queuedPushes.delete(signature) }
   })
+}
+
+/** 前台/网络/登录触发只走同一个协调器，补传完成后再增量恢复。 */
+const runSync = createSyncCoordinator({
+  ready: () => hasCloud() && isLogged() && getSessionOpenid() === userScope,
+  context: captureSyncContext,
+  isCurrent: ctx => !isStaleContext(ctx),
+  push: async () => {
+    flush()
+    for (let i = 0; i < 4; i++) {
+      const tail = cloudWriteChain
+      await tail
+      if (tail === cloudWriteChain) break
+    }
+    return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&
+      !attemptOutbox.pending(state).length && !getPendingPush(userScope)
+  },
+  pull: () => pullFromCloud(undefined, { force: true })
+})
+
+function syncNow() {
+  load()
+  return runSync()
 }
 
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
@@ -1411,6 +1466,8 @@ module.exports = {
   getPracticeContext,
   isPracticeContextCurrent,
   onPracticeRestored,
+  onSyncRestored,
+  syncNow,
   setUserScope,
   clearScope,
   load,

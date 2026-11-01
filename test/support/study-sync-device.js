@@ -7,7 +7,7 @@ function device(server, saved, cloudReady = true) {
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
-  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, failAckWrite: false, loseUpdateAck: false, failUpdate: 0, updateAckGate: null, changeUpdateResult: null, now: null, requests: [] }
+  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, failAckWrite: false, loseUpdateAck: false, failUpdate: 0, updateAckGate: null, changeUpdateResult: null, failGet: 0, pageLimit: null, getAckGate: null, afterGet: null, changeGetResult: null, failCursorWrite: false, now: null, requests: [] }
   const clone = value => value === undefined ? '' : JSON.parse(JSON.stringify(value))
   const wx = {
     __cloudReady: cloudReady,
@@ -21,6 +21,10 @@ function device(server, saved, cloudReady = true) {
     setStorageSync: (key, value) => {
       if (controls.failDeleteWrite && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected storage full for delete marker')
       if ((controls.failDataSyncWrite || controls.failStorage) && key.startsWith('exam_quiz_data_v1__')) throw new Error('injected deletion ACK checkpoint failure')
+      if (controls.failCursorWrite && key.startsWith('exam_quiz_data_v1__')) {
+        const before = storage.get(key)
+        if (value.syncCursor && JSON.stringify(before && before.syncCursor) !== JSON.stringify(value.syncCursor)) throw new Error('cursor checkpoint unavailable')
+      }
       if (controls.failAckWrite && key.startsWith('exam_quiz_data_v1__')) {
         const before = storage.get(key)
         if (before && before.attemptOutbox && value.attemptOutbox && before.attemptOutbox.pending.length > value.attemptOutbox.pending.length) throw new Error('ACK checkpoint unavailable')
@@ -37,11 +41,19 @@ function device(server, saved, cloudReady = true) {
     },
     cloud: {
       callFunction(opts) {
-        controls.requests.push(clone(opts.data))
+        const request = clone(opts.data)
+        if (request.action === 'get' && controls.pageLimit) request.limit = controls.pageLimit
+        controls.requests.push(request)
         const promise = (async () => {
           if (controls.offline) { opts.fail(new Error('offline')); return }
           if (opts.data.action === 'update' && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
-          let result = await server.main(clone(opts.data))
+          if (request.action === 'get' && controls.failGet && --controls.failGet === 0) { opts.fail(new Error('injected get transport failure')); return }
+          let result = await server.main(request)
+          if (request.action === 'get') {
+            if (controls.getAckGate) await controls.getAckGate
+            if (controls.afterGet) await controls.afterGet(result, request)
+            if (controls.changeGetResult) result = controls.changeGetResult(result, request)
+          }
           if (opts.data.action === 'update') {
             if (controls.updateAckGate) await controls.updateAckGate
             if (controls.loseUpdateAck) { controls.loseUpdateAck = false; opts.fail(new Error('update ACK lost')); return }
@@ -71,6 +83,7 @@ function device(server, saved, cloudReady = true) {
     module, wx, console, setTimeout, clearTimeout, Date: DeviceDate,
     require(name) {
       if (name === './questions.js') return { getSubjects: () => [{ name: '公基' }] }
+      if (name === './sync-coordinator.js') return require('../../utils/sync-coordinator.js')
       if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
       if (name === './config.js') return require('../../utils/config.js')
       if (name === '../shared/stats-merge.js') return require('../../shared/stats-merge.js')

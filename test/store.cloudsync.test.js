@@ -948,10 +948,8 @@ test('旧设备收到 STALE_EPOCH 后采用服务端新代次，不合并或补�
   assert.equal(store.getRecord('deleted'), null)
   assert.ok(store.getRecord('fresh'))
   assert.equal(store.load().dataEpoch, 3)
-  const last = calls.filter(c => c.data.action === 'update').pop().data
-  assert.equal(last.dataEpoch, 3)
-  assert.equal(last.stats.records.deleted, undefined)
-  assert.deepEqual(last.attempts.map(a => a.id), [], '恢复的远端流水无需重新进入本地待传队列')
+  assert.equal(store.load().attemptOutbox.pending.length, 0)
+  assert.equal(calls.filter(c => c.data.action === 'update' && c.data.dataEpoch === 3).length, 0, '纯恢复无需回声上传')
 })
 
 test('清空操作 ID 持久化，重启重试使用同一 ID 并在确认后携带新代次上传', async () => {

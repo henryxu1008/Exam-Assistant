@@ -50,11 +50,13 @@ function makeHarness() {
       where(filter) {
         let limit = Infinity
         let skip = 0
+        const ordering = []
         const rows = () =>
           Array.from(store.values()).filter((row) =>
           Object.keys(filter).every((k) => {
             const value = filter[k]
             if (value && typeof value === 'object' && 'lt' in value) return row[k] < value.lt
+            if (value && typeof value === 'object' && 'gt' in value) return row[k] > value.gt
             if (value && typeof value === 'object' && 'exists' in value) return (row[k] !== undefined) === value.exists
             return row[k] === value
           })
@@ -62,12 +64,19 @@ function makeHarness() {
         return {
           limit(c) { limit = c; return this },
           skip(c) { skip = c; return this },
-          orderBy() { return this },
+          orderBy(field, direction) { ordering.push([field, direction]); return this },
           async get() {
             // 只命中 attempts：users 上的同款查询是令牌查找，不能一并打挂
             if (fail.attempts && name === 'attempts') throw fail.attempts
             if (name === 'attempts' && fail.attemptsResult !== undefined) return fail.attemptsResult
-            return { data: rows().slice(skip, skip + limit).map(clone) }
+            const found = rows()
+            found.sort((a, b) => {
+              for (const [field, direction] of ordering) {
+                if (a[field] !== b[field]) return (a[field] < b[field] ? -1 : 1) * (direction === 'desc' ? -1 : 1)
+              }
+              return 0
+            })
+            return { data: found.slice(skip, skip + limit).map(clone) }
           },
           async remove() {
             if (fail.remove) throw fail.remove
@@ -80,7 +89,7 @@ function makeHarness() {
     }
   }
 
-  const db = { collection, command: { lt: (v) => ({ lt: v }), exists: (v) => ({ exists: v }) } }
+  const db = { collection, command: { gt: (v) => ({ gt: v }), lt: (v) => ({ lt: v }), exists: (v) => ({ exists: v }) } }
   let queue = Promise.resolve()
   db.runTransaction = (fn) => {
     const run = queue.then(async () => {
