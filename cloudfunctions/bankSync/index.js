@@ -1,6 +1,7 @@
 /**
  * Public: get (legacy mirror), getPublished, getVersion(releaseId, versionId).
  * Admin: publish(bank, reviewed:true, expectedRevision); immutable releases + atomic activation audit.
+ * Workflow: createDraft / getDraft / reviewDraft / publishDraft; separate catalog roles and immutable provenance.
  * Legacy set stays admin-only and is rejected once a versioned release is activated.
  * All documents use the existing questions collection; reads never interpret access failure as absence.
  */
@@ -21,6 +22,8 @@ const { readOptionalDoc } = require('./db-error.js')
 /** 题库写操作允许的顶层字段（其余一律丢弃，防止写入任意字段） */
 const BANK_FIELDS = ['manifest', 'questions']
 const domain = require('./question-domain.js')
+const { createWorkflow, workflowRequired } = require('./workflow.js')
+const workflow = createWorkflow(db, activateBank)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
 const ADMIN_ACTOR_ID = 'admin'
@@ -44,43 +47,46 @@ async function adminActor(event) {
   return { id: admin.ok ? ADMIN_ACTOR_ID : user.openid }
 }
 
+async function activateBank(tx, bank, actor, expectedRevision, approval) {
+  const collection = tx.collection('questions'), ref = collection.doc('bank')
+  const current = await readOptionalDoc(() => ref.get())
+  if (!approval && await workflowRequired(collection, current)) return { ok: false, error: 'REVIEW_WORKFLOW_REQUIRED' }
+  const revision = current && current.publicationRevision || 0
+  if (revision !== expectedRevision) return { ok: false, error: 'STALE_PUBLICATION', publicationRevision: revision }
+  if (!Number.isSafeInteger(revision + 1)) return { ok: false, error: 'BAD_REVISION' }
+  const releaseRef = collection.doc(bank.releaseId)
+  const existing = await readOptionalDoc(() => releaseRef.get())
+  if (existing && (existing.kind !== 'questionBankRelease' || !domain.validRelease(existing.bank) ||
+      domain.canonical(existing.bank) !== domain.canonical(bank))) return { ok: false, error: 'RELEASE_CONFLICT' }
+  // The first publication archives the exact legacy bank. Never infer v1 attempt versions from it.
+  if (current && current.schemaVersion !== 2) {
+    const backupRef = collection.doc('bank_legacy_backup')
+    const backup = await readOptionalDoc(() => backupRef.get())
+    if (backup) return { ok: false, error: 'LEGACY_BACKUP_EXISTS' }
+    await backupRef.set({ data: { kind: 'legacyBankBackup', bank: current, archivedAt: Date.now(), archivedBy: actor } })
+  }
+  if (!existing) await releaseRef.set({ data: { kind: 'questionBankRelease', bank, publishedAt: Date.now(), publishedBy: actor } })
+  const next = revision + 1
+  await collection.doc('bank_publication_' + next).set({ data: { kind: 'bankPublication', publicationRevision: next,
+    releaseId: bank.releaseId, previousReleaseId: current && current.releaseId || null, at: Date.now(), by: actor, ...(approval ? { approval } : {}) } })
+  // Compatibility mirror for older readers; older set writers are rejected after this transaction.
+  await ref.set({ data: { _id: 'bank', ...bank, publicationRevision: next, ...(approval ? { workflowVersion: 1 } : {}), updatedAt: Date.now(), updatedBy: actor } })
+  return { ok: true, releaseId: bank.releaseId, publicationRevision: next }
+}
+
 async function publish(event, actor) {
   if (event.reviewed !== true) return { ok: false, error: 'REVIEW_REQUIRED' }
   if (!Number.isSafeInteger(event.expectedRevision) || event.expectedRevision < 0) return { ok: false, error: 'BAD_REVISION' }
   let bank
   try { bank = domain.buildRelease(event.bank) } catch (e) { return { ok: false, error: e.code || 'BAD_BANK' } }
   if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
-  try {
-    return await db.runTransaction(async tx => {
-      const collection = tx.collection('questions'), ref = collection.doc('bank')
-      const current = await readOptionalDoc(() => ref.get())
-      const revision = current && current.publicationRevision || 0
-      if (revision !== event.expectedRevision) return { ok: false, error: 'STALE_PUBLICATION', publicationRevision: revision }
-      if (!Number.isSafeInteger(revision + 1)) return { ok: false, error: 'BAD_REVISION' }
-      const releaseRef = collection.doc(bank.releaseId)
-      const existing = await readOptionalDoc(() => releaseRef.get())
-      if (existing && (existing.kind !== 'questionBankRelease' || !domain.validRelease(existing.bank) ||
-          domain.canonical(existing.bank) !== domain.canonical(bank))) return { ok: false, error: 'RELEASE_CONFLICT' }
-      // The first publication archives the exact legacy bank. Never infer v1 attempt versions from it.
-      if (current && current.schemaVersion !== 2) {
-        const backupRef = collection.doc('bank_legacy_backup')
-        const backup = await readOptionalDoc(() => backupRef.get())
-        if (backup) return { ok: false, error: 'LEGACY_BACKUP_EXISTS' }
-        await backupRef.set({ data: { kind: 'legacyBankBackup', bank: current, archivedAt: Date.now(), archivedBy: actor } })
-      }
-      if (!existing) await releaseRef.set({ data: { kind: 'questionBankRelease', bank, publishedAt: Date.now(), publishedBy: actor } })
-      const next = revision + 1
-      await collection.doc('bank_publication_' + next).set({ data: { kind: 'bankPublication', publicationRevision: next,
-        releaseId: bank.releaseId, previousReleaseId: current && current.releaseId || null, at: Date.now(), by: actor } })
-      // Compatibility mirror for older readers; older set writers are rejected after this transaction.
-      await ref.set({ data: { _id: 'bank', ...bank, publicationRevision: next, updatedAt: Date.now(), updatedBy: actor } })
-      return { ok: true, releaseId: bank.releaseId, publicationRevision: next }
-    })
-  } catch (e) { return { ok: false, error: 'PUBLISH_FAILED' } }
+  try { return await db.runTransaction(tx => activateBank(tx, bank, actor, event.expectedRevision)) }
+  catch (e) { return { ok: false, error: 'PUBLISH_FAILED' } }
 }
 
 exports.main = async (event = {}) => {
   const action = event.action || 'get'
+  if (['createDraft', 'getDraft', 'reviewDraft', 'publishDraft'].includes(action)) return workflow(event)
   if (action === 'get' || action === 'getPublished') {
     try {
       const bank = await readOptionalDoc(() => BANK.doc('bank').get())
@@ -114,6 +120,7 @@ exports.main = async (event = {}) => {
     return await db.runTransaction(async tx => {
       const ref = tx.collection('questions').doc('bank')
       const existing = await readOptionalDoc(() => ref.get())
+      if (await workflowRequired(tx.collection('questions'), existing)) return { ok: false, error: 'REVIEW_WORKFLOW_REQUIRED' }
       if (existing && existing.schemaVersion === 2) return { ok: false, error: 'PUBLICATION_REQUIRED' }
       if (existing && event.force !== true) return { ok: false, error: 'BANK_EXISTS' }
       await ref.set({ data: { _id: 'bank', updatedAt: Date.now(), updatedBy: actor.id, ...sanitizeBank(event.bank) } })

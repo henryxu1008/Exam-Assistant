@@ -1,6 +1,6 @@
 # ADR 0005：动态题库、题目版本与内容审核发布流程（Issue 5）
 
-- 状态：第一阶段 Implemented，完整工作流仍 Proposed；实际落地契约见 ADR 0013
+- 状态：第一阶段 Implemented，完整工作流仍 Proposed；版本发布见 ADR 0013；第二阶段独立角色、审核状态机及来源记录见 ADR 0014
 - 关联：Issue 5（依赖 Issue 3 的 QuestionVersion；后端契约与 Issue 6 协同）
 - 范围：题库从「内置 mock 51 题」演进为可运营的动态题库
 
