@@ -1,6 +1,6 @@
 # ADR 0005：动态题库、题目版本与内容审核发布流程（Issue 5）
 
-- 状态：Proposed
+- 状态：第一阶段 Implemented，完整工作流仍 Proposed；实际落地契约见 ADR 0013
 - 关联：Issue 5（依赖 Issue 3 的 QuestionVersion；后端契约与 Issue 6 协同）
 - 范围：题库从「内置 mock 51 题」演进为可运营的动态题库
 
@@ -14,7 +14,7 @@
 1. **领域模型**：`Exam`、`Subject`、`Chapter`、`KnowledgePoint`、`Question`、`QuestionVersion`、
    `QuestionBank`、`QuestionBankRelease`、`SourceLicense`。
 2. **题目不可变 + 版本化**：`Question` 为稳定标识（含 `externalId`）；任何编辑生成新的 `QuestionVersion`
-   （`version` 递增，`content` 快照）。沿用 Issue 3 的 `questionVersionId` 占位。
+   （不可变 `content` 快照）。第一阶段用内容摘要生成稳定 versionId，替代 Issue 3 的占位；不伪造历史。
 3. **发布快照**：`QuestionBankRelease` 记录某次发布包含的 `(questionId, versionId)` 集合与 `releaseTag`；
    客户端按 `releaseTag` 分页拉取并缓存，未发布/草稿版本不会进入练习。
 4. **导入校验**：JSON/CSV 批量导入，强制字段与答案校验、按 `externalId` 去重；逐行错误报告 + 部分失败策略
@@ -59,7 +59,7 @@ POST /admin/releases  { tag, items: [{ questionId, versionId }] }
 ## 迁移（本地 → 云）
 
 - 本地 v1 题目 `utils/bank/*` 映射为 `Question(externalId=gk-1) + QuestionVersion(version=1)`；
-  旧 `attempts.questionVersionId='v1'` 升级为真实 `questionId@1`。迁移幂等：已存在 `externalId` 则跳过。
+  旧 `attempts.questionVersionId='v1'` 保留未知，不能凭当前题面追认历史版本。第一阶段对新题使用内容版本，并将原题快照固定在会话和新作答中（ADR 0013）。
 - 客户端缓存按 `releaseTag` 失效重建。
 
 ## 回滚

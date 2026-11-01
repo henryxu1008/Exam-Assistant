@@ -19,6 +19,7 @@ const { findByToken } = require('./auth.js')
 /** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
+const questionDomain = require('./question-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -26,7 +27,7 @@ const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSe
 /** 作答流水允许写入的字段（防止把大对象/无关字段塞进库） */
 const ATTEMPT_FIELDS = [
   'id', 'sessionId', 'questionId', 'questionVersionId',
-  'selected', 'answer', 'score', 'costMs', 'clientOpId', 'createdAt', 'projection'
+  'selected', 'answer', 'score', 'costMs', 'clientOpId', 'createdAt', 'projection', 'questionSnapshot', 'bankReleaseId'
 ]
 
 /**
@@ -143,6 +144,8 @@ async function commitAttempts(event, openid) {
   if (raw.length > 32) return { ok: false, error: 'BATCH_TOO_LARGE' }
   if (raw.some(a => !a || typeof a.id !== 'string' || !a.id) || new Set(raw.map(a => a.id)).size !== raw.length) return { ok: false, error: 'BAD_ATTEMPT' }
   if (raw.some(a => a.projection !== undefined && !attemptDomain.validProjection(a))) return { ok: false, error: 'BAD_FACT_METADATA' }
+  if (raw.some(a => a.questionSnapshot !== undefined || /^qv_/.test(a.questionVersionId || '')) && event.action !== 'commitVersionedAttempts') return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+  if (raw.some(a => (a.questionSnapshot !== undefined || a.bankReleaseId !== undefined || /^qv_/.test(a.questionVersionId || '')) && !questionDomain.attemptQuestion(a))) return { ok: false, error: 'BAD_QUESTION_VERSION' }
   for (let round = 0; round < 3; round++) {
     let before, candidates
     try { before = await readExisting(() => STATS.doc(openid).get()) } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
@@ -233,7 +236,10 @@ exports.main = async (event = {}) => {
   const openid = user.openid
   const action = event.action || 'get'
 
-  if (action === 'commitAttempts') return commitAttempts(event, openid)
+  if (action === 'commitAttempts' || action === 'commitVersionedAttempts') {
+    if (action === 'commitVersionedAttempts' && event.questionProtocol !== 1) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+    return commitAttempts(event, openid)
+  }
 
   if (action === 'get') {
     let stats

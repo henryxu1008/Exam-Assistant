@@ -814,7 +814,8 @@ function pushToCloud() {
         const result = await new Promise(resolve => {
           try {
             callCloud({ name: config.functions.studySync,
-              data: { token: ctx.token, action: 'commitAttempts', attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
+              data: { token: ctx.token, action: sent.some(a => a.questionSnapshot) ? 'commitVersionedAttempts' : 'commitAttempts',
+                  ...(sent.some(a => a.questionSnapshot) ? { questionProtocol: 1 } : {}), attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
                 ...(index === batches.length - 1 ? { stats: payloadForSend() } : {}), attempts: sent },
               success: res => resolve(res && res.result), fail: () => resolve(null) })
           } catch (e) { resolve(null) }
@@ -869,7 +870,7 @@ const runSync = createSyncCoordinator({
       if (tail === cloudWriteChain) break
     }
     const failure = lastPushFailure && !isStaleContext(lastPushFailure.ctx) ? lastPushFailure.error : null
-    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure)) {
+    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure)) {
       throw Object.assign(new Error(failure), { code: failure, retryable: false })
     }
     return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&
@@ -1374,11 +1375,13 @@ function getPracticeSession() {
  */
 function createPracticeSession(opt) {
   const s = load()
+  const questions = (opt && opt.questions) || (typeof bank.findQuestion === 'function' ? ((opt && opt.questionIds) || []).map(id => bank.findQuestion(id)).filter(Boolean) : [])
   const session = {
     id: newId('ps'),
     mode: (opt && opt.mode) || 'all',
     subject: (opt && opt.subject) || '',
     questionIds: (opt && opt.questionIds) || [],
+    questionSnapshots: questions.length ? Object.fromEntries(questions.map(q => [q.id, bank.snapshotQuestion(q)])) : null,
     params: (opt && opt.params) || null, // 用于「重进页面恢复未完成会话」时比对参数
     status: 'in_progress',
     createdAt: Date.now(),
@@ -1454,18 +1457,27 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
     return { ok: true, record: getRecord(question.id), attempt: existing || null, dup: true }
   }
 
+  const pinned = session && session.questionSnapshots && session.questionSnapshots[question.id]
+  if (session && session.questionSnapshots && Object.prototype.hasOwnProperty.call(session.questionSnapshots, question.id) &&
+      (!pinned || pinned.versionId !== question.versionId)) return { ok: false, error: 'QUESTION_VERSION_MISMATCH', record: null, attempt: null, dup: false }
   const attemptId = newId('at')
   const attempt = {
     id: attemptId,
     sessionId: session ? session.id : '',
     questionId: question.id,
-    questionVersionId: question.version || 'v1', // Issue 5 接入题目版本后填充
+    questionVersionId: question.versionId || question.version || 'v1',
     selected: Array.isArray(selected) ? selected.slice() : selected,
-    answer: question.answer,
+    answer: JSON.parse(JSON.stringify(question.answer || [])),
     score: isCorrect ? 1 : 0,
     costMs: Number.isSafeInteger(costMs) ? Math.max(0, costMs) : 0,
     clientOpId: opId,
     createdAt: Date.now()
+  }
+  if (question.versionId && typeof bank.snapshotQuestion === 'function') {
+    try {
+      attempt.questionSnapshot = bank.snapshotQuestion(question)
+      if (question.bankReleaseId) attempt.bankReleaseId = question.bankReleaseId
+    } catch (e) { return { ok: false, error: 'BAD_QUESTION_VERSION', record: null, attempt: null, dup: false } }
   }
   const projection = { version: 1, subject: question.subject, chapter: question.chapter, date: todayKey(new Date(attempt.createdAt)) }
   if (attemptDomain.validProjection({ ...attempt, projection })) attempt.projection = projection

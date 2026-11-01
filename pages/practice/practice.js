@@ -125,8 +125,26 @@ Page({
   /** 云端恢复与页面重建共用同一处绑定；恢复本身不改写会话进度。 */
   _restoreSession(session) {
     if (!session || session.subject !== store.getCurrentSubject()) return false
-    const queue = (session.questionIds || []).map((id) => bank.findQuestion(id)).filter(Boolean)
+    const queue = (session.questionIds || []).map((id) => {
+      const marker = session.submitted && session.submitted[id]
+      if (marker) {
+        const attempt = store.getAttempts().find(a => a.id === marker.attemptId)
+        const q = attempt && attempt.sessionId === session.id && bank.resolveAttemptQuestion(attempt)
+        return q && q.id === id ? q : null
+      }
+      const pinned = session.questionSnapshots && session.questionSnapshots[id]
+      if (pinned) { try { const q = bank.snapshotQuestion(pinned); return q.id === id ? q : null } catch (e) { return null } }
+      return null
+    })
     if (!queue.length) return false
+    if (queue.some(q => !q)) {
+      this._sessionId = session.id
+      this._practiceContext = store.getPracticeContext()
+      this._params = session.params || { mode: session.mode, subject: session.subject, chapter: '', ids: null }
+      this._scope = store.getUserScope()
+      this.setData({ queue: [], total: 0, question: null, submitted: false, canSubmit: false, finished: false, summary: null, showAi: false, emptyTip: '这次练习缺少原题版本，请从首页开始新练习' })
+      return true
+    }
     const params = session.params || {}
     const mode = MODE_TITLES[session.mode] ? session.mode : 'all'
     this._params = { mode, subject: session.subject, chapter: params.chapter || '', ids: params.ids || null, fresh: false }
@@ -219,6 +237,7 @@ Page({
       mode,
       subject,
       questionIds: queue.map((item) => item.id),
+      questions: queue,
       params: snapshot
     })
     this._sessionId = session.id
@@ -488,7 +507,8 @@ Page({
       return
     }
     queue.splice(this.data.idx + 1, 0, target)
-    if (!store.updatePracticeSession({ questionIds: queue.map((q) => q.id) }, this._practiceContext)) return
+    if (!store.updatePracticeSession({ questionIds: queue.map((q) => q.id),
+      questionSnapshots: Object.fromEntries(queue.map(q => [q.id, bank.snapshotQuestion(q)])) }, this._practiceContext)) return
     this.setData({ queue, total: queue.length, showAi: false })
     wx.showToast({ title: '已加入队列', icon: 'none' })
   },

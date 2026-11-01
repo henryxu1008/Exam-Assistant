@@ -314,8 +314,16 @@ function mergeSession(a, b, attempts) {
       submitted[qid] = pickNewer(submitted[qid], marker, ['createdAt'])
     })
   })
+  const questionSnapshots = {}
+  for (const qid of questionIds) {
+    const l = left.questionSnapshots ? left.questionSnapshots[qid] : undefined
+    const r = right.questionSnapshots ? right.questionSnapshots[qid] : undefined
+    if (l === null || r === null || (l && r && l.versionId !== r.versionId)) questionSnapshots[qid] = null
+    else if (l || r) questionSnapshots[qid] = pickNewer(l, r)
+  }
   const merged = Object.assign({}, newer, {
     submitted,
+    ...(Object.keys(questionSnapshots).length ? { questionSnapshots } : {}),
     // 进度只前进不回退
     currentIndex: Math.max(Number(left.currentIndex || 0), Number(right.currentIndex || 0)),
     completedAt: Math.max(Number(left.completedAt || 0), Number(right.completedAt || 0)),

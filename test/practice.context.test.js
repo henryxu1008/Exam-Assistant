@@ -194,6 +194,7 @@ test('页面打开期间云端替换会话，立即恢复新题集，不把旧�
   store.pullFromCloud()
   const restored = {
     id: 'restored-session', subject: OTHER_SUBJECT, mode: 'single', questionIds: [questions[1].id],
+    questionSnapshots: { [questions[1].id]: questions[1] },
     params: { mode: 'single', subject: OTHER_SUBJECT, chapter: '', ids: [questions[1].id] },
     status: 'in_progress', createdAt: Date.now() + 1000, updatedAt: Date.now() + 1000,
     currentIndex: 0, submitted: {}
@@ -262,7 +263,8 @@ test('同会话远端补齐作答后，页面刷新答案并直接结束得到�
   calls.find((c) => c.data.action === 'get').success({ result: {
     ok: true, stats: { version: 3, practiceSession: remote },
     attempts: [{ id: 'remote-answer', sessionId: local.id, questionId: second.id,
-      score: 1, createdAt: Date.now() + 100, selected: second.answer }], hasMore: false
+      score: 1, createdAt: Date.now() + 100, selected: second.answer, questionVersionId: second.versionId,
+      bankReleaseId: second.bankReleaseId, questionSnapshot: second, answer: second.answer }], hasMore: false
   } })
   assert.equal(page.data.sessionTotal, 2)
   assert.equal(page.data.sessionCorrect, 1)
@@ -347,6 +349,56 @@ test('本地保存失败时保留所选答案且不锁题，恢复存储后可�
   assert.equal(store.getRecord(q.id).attempts, 1)
   page.onSubmit()
   assert.equal(store.getAttempts().length, 1)
+})
+
+test('题库纠错后恢复会话仍显示作答时题面、答案和解析，不按稳定题号套用新版本', (t) => {
+  const page = start('single')
+  store.saveSettings({ autoNext: false })
+  const original = JSON.parse(JSON.stringify(page.data.question))
+  page.setData({ selected: original.answer }); page.onSubmit()
+  const attempt = store.getAttempts()[0]
+  assert.equal(attempt.questionVersionId, original.versionId)
+  assert.deepEqual(bank.resolveAttemptQuestion(attempt), original)
+  t.mock.method(bank, 'findQuestion', () => ({ ...original, stem: '运营修订后的新题面', answer: ['Z'], explain: '新的解析' }))
+  page._restoreSession(store.getPracticeSession())
+  assert.equal(page.data.question.stem, original.stem)
+  assert.deepEqual(page.data.question.answer, original.answer)
+  assert.equal(page.data.question.explain, original.explain)
+  assert.deepEqual(page.data.selected, original.answer)
+})
+
+test('旧 v1 作答缺失原题证据时保留未知，不用当前题库伪造恢复或改写旧流水', () => {
+  const page = start('single')
+  store.saveSettings({ autoNext: false })
+  page.setData({ selected: page.data.question.answer }); page.onSubmit()
+  const old = store.load().attempts[0]
+  delete old.questionSnapshot; delete old.bankReleaseId; old.questionVersionId = 'v1'
+  const before = JSON.stringify(store.load())
+  page._restoreSession(store.getPracticeSession())
+  assert.equal(page.data.question, null)
+  assert.match(page.data.emptyTip, /缺少原题版本/)
+  assert.equal(JSON.stringify(store.load()), before)
+})
+
+test('带题目快照的作答在旧后端明确拒绝，不会先接受流水再丢掉版本证据', async () => {
+  store.setUserScope('cloud-user')
+  wx.setStorageSync('exam_quiz_session_v1', { logged: true, openid: 'cloud-user', token: 'tok' })
+  let accepted = 0
+  wx.__cloudReady = true
+  wx.cloud = { callFunction(opts) {
+    let result
+    if (opts.data.action === 'get') result = { ok: true, stats: null, attempts: [], hasMore: false, dataEpoch: 0 }
+    else if (opts.data.action === 'commitAttempts') { accepted += opts.data.attempts.length; result = { ok: false, error: 'UNEXPECTED_OLD_ACTION' } }
+    else result = { ok: false, error: 'BAD_ACTION' }
+    opts.success({ result }); return Promise.resolve({ result })
+  } }
+  const page = start('single'); store.saveSettings({ autoNext: false })
+  page.setData({ selected: page.data.question.answer }); page.onSubmit()
+  const result = await store.syncNow()
+  assert.equal(result.error, 'BAD_ACTION')
+  assert.equal(accepted, 0)
+  assert.equal(store.load().attemptOutbox.pending.length, 1)
+  assert.ok(store.getAttempts()[0].questionSnapshot)
 })
 
 test('服务端确认改为业务 ID 后，本轮页面上下文与自动下一题计时器仍有效', async () => {

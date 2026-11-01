@@ -86,6 +86,8 @@ miniprogram-4/
 
 内置 51 道 mock 题，3 个科目：公共基础知识（22）、职业能力测验（12）、专业知识（17）。
 
+新题库使用不可变题目版本与发布快照。管理员经 bankSync.publish 全量校验、显式确认审核并按修订号发布；纠错、撤回和回滚都保留旧归档。客户端只读取 getPublished，缓存落盘后才切换；练习会话和新作答保留原题快照，旧 v1 记录不推测版本。接口、权限、兼容和剩余范围见 [ADR 0013](docs/adr/0013-immutable-question-releases.md)。本阶段未部署，真实环境未验收。
+
 支持 6 种题型，判分统一走 `utils/bank/index.js` 的 `judge(type, selected, answer)`：
 
 | type | 题型 | 题数 | 作答方式 | 判分规则 |
@@ -112,7 +114,7 @@ miniprogram-4/
 
 - **换科目 / 章节**：改 `manifest.js` 即可，题目分片不变。
 - **加科目**：① 在 `manifest.js` 追加一项；② 新建对应的 `utils/bank/<key>.js`（`module.exports = [题目...]`）；其余查询函数无需改动。
-- **换真实大题库 / 上云**：把各分片的 `require` 换成异步拉取（fetch / 分包加载）即可，`index.js` 其余逻辑不动。
+- **发布题库**：使用 ADR 0013 的管理员 publish 协议；旧 set 在启用版本发布后被拒绝。现阶段全量发布限制 500 题 / 600 KB，大题库分页及来源审核继续跟踪 #5。
 
 ## 数据说明
 
@@ -144,7 +146,7 @@ miniprogram-4/
 
 服务端过期清理和登出均按读取时的 `(_id, token)` 条件原子撤销：旧请求读完后若已有新登录换发令牌，旧请求不再清除新会话；过期令牌即使清理写入失败也不会被接受。
 
-学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。新作答经 commitAttempts 按业务键事务去重；客户端先将作答与待传队列一起落盘，验证提交 ID 与云端事实映射后才持久出队。新协议每批最多 32 条，每批确认独立保存进度，最后一批发布完整会话/设置快照；题目和每日计数按已接受事实累计。首次全量恢复后按服务端序号增量读取作答；恢复分页校验同一修订号，完整恢复结果与游标一起落盘。登录、前台和网络恢复事件共享有界同步任务；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
+学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。作答经 commitAttempts / commitVersionedAttempts 按业务键事务去重；客户端先将作答与待传队列一起落盘，验证提交 ID 与云端事实映射后才持久出队。新协议每批最多 32 条，每批确认独立保存进度，最后一批发布完整会话/设置快照；题目和每日计数按已接受事实累计。首次全量恢复后按服务端序号增量读取作答；恢复分页校验同一修订号，完整恢复结果与游标一起落盘。登录、前台和网络恢复事件共享有界同步任务；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
 
 持久 outbox 与按 ID 确认对应 #7 第一阶段；作答增量恢复及生命周期触发对应第二阶段，协议、旧写入器兼容和索引验收见 [ADR 0011](docs/adr/0011-incremental-recovery-and-lifecycle-sync.md)。第三阶段业务幂等、规范 ID、事实计数和只读对账见 [ADR 0012](docs/adr/0012-business-idempotency-and-readonly-reconciliation.md)。旧聚合仍保留历史基线；真实环境/历史差异验收、题目不可变版本与仓储拆分分别跟踪在 #7、#5、#11。原有事务/权限边界见 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md)，队列契约、旧数据重放、同步写盘成本及发布/回滚约束见 [ADR 0010](docs/adr/0010-durable-attempt-outbox.md)。
 
