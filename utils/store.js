@@ -272,7 +272,8 @@ function load() {
   if (!Array.isArray(state.aiMessages)) state.aiMessages = []
   if (!Array.isArray(state.attempts)) state.attempts = []
   // 启动后首次（且已登录）尝试从云端拉取一次学习档案
-  if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
+  if (isLogged() && getPendingDelete(userScope)) deleteCloud()
+  else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
   else if (!bootPulled && isLogged()) pullFromCloud()
   return state
 }
@@ -429,6 +430,12 @@ function isStaleContext(ctx) {
  */
 function pullFromCloud(onDone) {
   if (!hasCloud() || !isLogged()) return
+  // 删除意图优先于启动拉取标记：恢复云连接后先补删除，不能读取旧备份。
+  if (getPendingDelete(userScope)) {
+    deleteCloud()
+    if (typeof onDone === 'function') onDone(false)
+    return
+  }
   if ((state && state.aiClearQueue || []).length) {
     clearAiFromCloud()
     if (typeof onDone === 'function') onDone(false)
@@ -534,13 +541,6 @@ function pullFromCloud(onDone) {
       },
       fail: () => { finish(false) }
     })
-  }
-  // 存在未完成的云端删除时先让它落地，此刻拉取会把「已清空」的数据并回本地：
-  // update 是合并而非整doc覆盖，空快照删不掉服务端已有内容（评审 P2 4425593448）。
-  // 标记不清空则下次 flush / 重启继续重试，因此这里不必再排一次删除。
-  if (getPendingDelete(ctx.scope)) {
-    if (typeof onDone === 'function') onDone(false)
-    return
   }
   bootPulled = true
   fetchPage()
@@ -774,7 +774,10 @@ function pushToCloud() {
 let pendingDeleteQueued = false
 
 function deleteCloud() {
-  if (!hasCloud() || !isLogged()) return
+  // 账号删除意图不依赖云初始化或当前令牌；只把传输放在云就绪/身份检查之后。
+  if (userScope === 'anon') return
+  setPendingDelete(userScope, true)
+  if (!hasCloud() || !isLogged() || getSessionOpenid() !== userScope) return
   // 上下文必须在**入队时**捕获，而不是等队列排到它才捕获：
   // 删除要排在前面的在途上传之后才执行，这期间用户可能已经切到 B 账号。
   // 若在执行时才捕获，这次删除就会拿着 B 的令牌发出，删掉 B 的云端数据；
@@ -782,8 +785,6 @@ function deleteCloud() {
   // ——即「删错账号 + 标记误清」双重后果（评审 P1 4425820628）。
   // 执行与确认都必须绑定发起时的账号。
   const ctx = captureSyncContext()
-  // 先落标记：删除失败（例如离线）时保留意图，后续 flush 重试
-  setPendingDelete(ctx.scope, true)
   ctx.deleteOperation = getDeleteOperation(ctx.scope)
   if (!ctx.deleteOperation) return
   if (pendingDeleteQueued) return

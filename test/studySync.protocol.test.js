@@ -6,14 +6,14 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { makeHarness } = require('./support/study-sync-harness.js')
 
-function device(server, saved) {
+function device(server, saved, cloudReady = true) {
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
   const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, requests: [] }
   const clone = value => value === undefined ? '' : JSON.parse(JSON.stringify(value))
   const wx = {
-    __cloudReady: true,
+    __cloudReady: cloudReady,
     getStorageSync: key => clone(storage.get(key)),
     setStorageSync: (key, value) => storage.set(key, clone(value)),
     removeStorageSync: key => storage.delete(key),
@@ -56,7 +56,7 @@ function device(server, saved) {
   store.setUserScope('alice')
   store.load()
   return {
-    store, controls, storage,
+    store, controls, storage, wx,
     async settle() {
       await new Promise(setImmediate)
       while (inflight.size) { await Promise.all([...inflight]); await new Promise(setImmediate) }
@@ -376,5 +376,120 @@ test('清空意图写盘失败时不发送，写盘恢复后仍按同一 ID 清�
   assert.equal(requests[0].clearId, id)
   assert.equal(a.store.load().aiClearQueue.length, 0)
   assert.equal((await server.main({ token: 'tokA' })).stats.aiEpoch, 1)
+  a.store.__clearFlushTimer()
+})
+
+test('云初始化失败时清空仍持久化账号删除意图，且不发出请求', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old-cloud-record')
+  await a.settle()
+  const requestsBefore = a.controls.requests.length
+  a.wx.__cloudReady = false
+  a.store.clearAll()
+  await a.settle()
+  const operation = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  assert.ok(operation && operation.deleteId, '初始化不可用也必须保留可重试的删除 ID')
+  assert.equal(operation.dataEpoch, 0)
+  assert.equal(a.controls.requests.length, requestsBefore, '云未就绪不得发送请求')
+  assert.equal(a.store.getRecord('old-cloud-record'), null)
+  assert.ok((await server.main({ token: 'tokA' })).stats.records['old-cloud-record'])
+  a.store.__clearFlushTimer()
+})
+
+test('云不可用清空后重启，恢复云端时先补删除而不能恢复旧备份', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('must-stay-deleted')
+  await a.settle()
+  a.wx.__cloudReady = false
+  a.store.clearAll()
+  await a.settle()
+  const reopened = device(server, a.storage, false)
+  await reopened.settle()
+  assert.equal(reopened.controls.requests.length, 0)
+  reopened.wx.__cloudReady = true
+  reopened.store.pullFromCloud()
+  await reopened.settle()
+  assert.equal(reopened.store.getRecord('must-stay-deleted'), null, '不能恢复被用户清空的旧记录')
+  assert.equal(reopened.controls.requests[0].action, 'delete', '恢复传输后必须先处理持久删除意图')
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 1)
+  assert.equal(cloud.stats && cloud.stats.records['must-stay-deleted'], undefined)
+  assert.equal(cloud.attempts.length, 0)
+  for (const client of [a, reopened]) client.store.__clearFlushTimer()
+})
+
+test('同一进程恢复云连接时绕过已完成启动拉取，先删除再补传清空后的新作答', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('old')
+  await a.settle()
+  a.wx.__cloudReady = false
+  a.store.clearAll()
+  const operation = a.storage.get('exam_quiz_pending_delete_v1__alice')
+  a.answer('new-offline-answer')
+  await a.settle()
+  const start = a.controls.requests.length
+  a.wx.__cloudReady = true
+  a.store.pullFromCloud()
+  await a.settle()
+  assert.equal(a.controls.requests[start].action, 'delete')
+  assert.equal(a.controls.requests[start].deleteId, operation.deleteId)
+  const cloud = await server.main({ token: 'tokA' })
+  assert.equal(cloud.dataEpoch, 1)
+  assert.equal(cloud.stats.records.old, undefined)
+  assert.ok(cloud.stats.records['new-offline-answer'])
+  assert.equal(cloud.attempts.length, 1)
+  assert.equal(cloud.attempts[0].questionId, 'new-offline-answer')
+  a.store.__clearFlushTimer()
+})
+
+test('无可用登录令牌仍保存原账号删除意图，切换账号不会以新身份执行', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('alice-old')
+  await a.settle()
+  await server.main({ token: 'tokB', action: 'update', stats: { records: { bob: { id: 'bob', attempts: 1 } } } })
+  a.storage.set('exam_quiz_session_v1', { logged: false, token: '', openid: 'alice' })
+  const before = a.controls.requests.length
+  a.store.clearAll()
+  await a.settle()
+  assert.ok(a.storage.get('exam_quiz_pending_delete_v1__alice').deleteId)
+  assert.equal(a.controls.requests.length, before)
+  a.storage.set('exam_quiz_session_v1', { logged: true, token: 'tokB', openid: 'bob' })
+  a.store.setUserScope('bob')
+  a.store.load()
+  await a.settle()
+  assert.ok((await server.main({ token: 'tokB' })).stats.records.bob)
+  assert.equal(a.controls.requests.filter(r => r.action === 'delete').length, 0)
+  a.storage.set('exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' })
+  a.store.setUserScope('alice')
+  a.store.load()
+  await a.settle()
+  const deletion = a.controls.requests.find(r => r.action === 'delete')
+  assert.equal(deletion.token, 'tokA')
+  assert.equal((await server.main({ token: 'tokA' })).stats.records['alice-old'], undefined)
+  assert.ok((await server.main({ token: 'tokB' })).stats.records.bob)
+  a.store.__clearFlushTimer()
+})
+
+test('匿名本地清空不创建云端删除意图，也不能使用缓存令牌删除账号备份', async () => {
+  const server = makeHarness()
+  const a = device(server)
+  await a.settle()
+  a.answer('account-backup')
+  await a.settle()
+  a.store.setUserScope(null)
+  a.store.load()
+  a.store.clearAll()
+  await a.settle()
+  assert.equal(a.storage.has('exam_quiz_pending_delete_v1__anon'), false)
+  assert.equal(a.controls.requests.filter(r => r.action === 'delete').length, 0)
+  assert.ok((await server.main({ token: 'tokA' })).stats.records['account-backup'])
   a.store.__clearFlushTimer()
 })
