@@ -47,7 +47,7 @@ function device(server, saved, cloudReady = true, questionBank, { sourceRoot = p
         controls.requests.push(request)
         const promise = (async () => {
           if (controls.offline) { opts.fail(new Error('offline')); return }
-          if (['commitAttempts', 'commitVersionedAttempts'].includes(opts.data.action) && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
+          if (['commitAttempts', 'commitVersionedAttempts', 'commitPagedAttempts'].includes(opts.data.action) && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
           if (request.action === 'get' && controls.failGet && --controls.failGet === 0) { opts.fail(new Error('injected get transport failure')); return }
           let result = await server.main(request)
           if (request.action === 'get') {
@@ -55,7 +55,7 @@ function device(server, saved, cloudReady = true, questionBank, { sourceRoot = p
             if (controls.afterGet) await controls.afterGet(result, request)
             if (controls.changeGetResult) result = controls.changeGetResult(result, request)
           }
-          if (['commitAttempts', 'commitVersionedAttempts'].includes(opts.data.action)) {
+          if (['commitAttempts', 'commitVersionedAttempts', 'commitPagedAttempts'].includes(opts.data.action)) {
             if (controls.updateAckGate) await controls.updateAckGate
             if (controls.loseUpdateAck) { controls.loseUpdateAck = false; opts.fail(new Error('update ACK lost')); return }
             if (controls.changeUpdateResult) result = controls.changeUpdateResult(result, opts.data)

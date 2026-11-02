@@ -8,6 +8,7 @@
     "audit:learning": "node scripts/audit-learning.js",
     "lint": "node scripts/lint.js && node scripts/check-shared-sync.js && node scripts/check-error-handling.js",
     "catalog:check": "node scripts/catalog-preflight.js",
+    "catalog:check:paged": "node scripts/catalog-paged-preflight.js",
     "check:grading-upgrade": "node scripts/check-grading-upgrade.js",
     "bench:learning": "node scripts/benchmark-learning-storage.js"
   },

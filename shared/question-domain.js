@@ -105,6 +105,10 @@ function snapshotQuestion(q) {
     if (!/^qb_[a-f0-9]{64}$/.test(q.bankReleaseId)) fail('BAD_RELEASE_ID')
     snapshot.bankReleaseId = q.bankReleaseId
   }
+  if (q.catalogProtocol !== undefined) {
+    if (q.catalogProtocol !== 4 || !snapshot.bankReleaseId) fail('BAD_QUESTION_VERSION')
+    snapshot.catalogProtocol = 4
+  }
   return snapshot
 }
 function attemptQuestion(attempt) {

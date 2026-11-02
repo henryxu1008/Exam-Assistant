@@ -2,6 +2,7 @@ const user = require('../../utils/user.js')
 const { runtimeClient } = require('../../utils/catalog-admin.js')
 const editor = require('../../utils/catalog-editor.js')
 const { chapterIdentity } = require('../../shared/exam-catalog-domain.js')
+const paged = require('../../shared/paged-catalog-domain.js')
 const { createCatalogCheckpoint } = require('../../utils/catalog-checkpoint.js')
 const utf8Bytes = value => encodeURIComponent(value).replace(/%[A-F0-9]{2}/g, 'x').length
 const questionTypes = [{ name: '单选题', value: 'single' }, { name: '多选题', value: 'multiple' }, { name: '判断题', value: 'judge' },
@@ -18,6 +19,7 @@ const errorMessages = {
   QUESTION_ID_CONFLICT: '题号已存在或题目已不存在。', EXAM_NOT_EMPTY: '请先处理考试下的科目。', SUBJECT_NOT_EMPTY: '请先处理科目下的章节和题目。',
   QUESTION_ID_RETIRED: '题号已撤回，不能再次使用。', QUESTION_SCOPE_IMMUTABLE: '已发布题目的科目和章节不能变更。',
   LEGACY_IDENTITY_MIGRATION_REQUIRED: '旧题库身份与学习记录尚未迁移，无法直接发布为新版。', IDENTITY_REGISTRY_INVALID: '题号登记状态异常，发布已停止，请先核查。', IDENTITY_REGISTRY_FULL: '题号登记容量不足，发布已停止。',
+  PAGED_EDITOR_FILE_REQUIRED: '当前是分页题库，请使用完整 JSON 文件导入；可视化逐题编辑尚不支持。', BAD_UTF8: '文件不是有效的 UTF-8 编码。', BAD_FILE_LENGTH: '文件读取不完整，请重试。', FILE_API_UNAVAILABLE: '当前设备不支持选择文件。',
   CHAPTER_NOT_EMPTY: '请先处理章节下的题目。', EXAM_NOT_FOUND: '请先选择考试。', SUBJECT_NOT_FOUND: '请先选择科目。', CHAPTER_NOT_FOUND: '请先选择章节。',
   RIGHTS_CONFIRMATION_REQUIRED: '请先核对来源并确认具有发布权。', PREFLIGHT_REQUIRED: '请先检查完整题库。',
   DRAFT_TOO_LARGE_FOR_PAGE: '完整题库和来源超出页面容量，未提交任何截断内容。', INPUT_TOO_LARGE_FOR_PAGE: '输入超出页面容量。', REVIEW_PAGES_REQUIRED: '请先逐页查看全部题目和来源。',
@@ -37,10 +39,32 @@ function jsonArray(value, code) {
   } catch (e) { /* Invalid structured input must be reported as a field error. */ }
   throw Object.assign(new Error(code), { code })
 }
+function decodeUtf8(buffer) {
+  if (!buffer || typeof buffer.byteLength !== 'number') throw Object.assign(new Error('BAD_UTF8'), { code: 'BAD_UTF8' })
+  const data = new Uint8Array(buffer), parts = [], units = []
+  const bad = () => { throw Object.assign(new Error('BAD_UTF8'), { code: 'BAD_UTF8' }) }
+  for (let i = 0; i < data.length;) {
+    const first = data[i++]; let n, count
+    if (first < 0x80) { n = first; count = 0 }
+    else if (first >= 0xc2 && first <= 0xdf) { n = first & 31; count = 1 }
+    else if (first >= 0xe0 && first <= 0xef) { n = first & 15; count = 2 }
+    else if (first >= 0xf0 && first <= 0xf4) { n = first & 7; count = 3 }
+    else bad()
+    if (i + count > data.length) bad()
+    for (let j = 0; j < count; j++) { const next = data[i++]; if ((next & 0xc0) !== 0x80) bad(); n = (n << 6) | (next & 63) }
+    if ((count === 2 && n < 0x800) || (count === 3 && n < 0x10000) || (n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff) bad()
+    if (n < 0x10000) units.push(n)
+    else { n -= 0x10000; units.push(0xd800 + (n >> 10), 0xdc00 + (n & 1023)) }
+    if (units.length >= 4096) { parts.push(String.fromCharCode(...units)); units.length = 0 }
+  }
+  if (units.length) parts.push(String.fromCharCode(...units))
+  return parts.join('')
+}
 const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: false, roleText: '', allowed: false, busy: false, inputText: '', format: 'json', report: '', ready: false,
   rightsConfirmed: false, sourceVerified: false, submissionId: '', draftId: '', note: '', revision: '', removeIds: '', preview: '', result: '', error: '',
   editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
   reviewItems: [], reviewPage: 1, reviewPages: 1, reviewAllSeen: false,
+  pagedReady: false, pagedReport: '', pagedSubmissionId: '', pagedRights: false,
   questionTypeName: '单选题', sourceTypeName: '原创', errorMessages })
 Page({
   data: blank(),
@@ -55,7 +79,7 @@ Page({
       let ctx
       try { ctx = this._client.capture() } catch (e) { this.setData(blank()); return }
       if (!this._context || this._context.openid !== ctx.openid || this._context.token !== ctx.token) {
-        this._prepared = null; this._preparedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null
+        this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null
         this._checkpoint = createCatalogCheckpoint(wx, ctx.openid)
         this.setData(blank())
       }
@@ -68,22 +92,23 @@ Page({
     })
   },
   onHide() { this._active = false; this._generation += 1 },
-  onUnload() { this.onHide(); this._prepared = null; this._preparedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._context = null; this._checkpoint = null; this._checkpointToken = null },
+  onUnload() { this.onHide(); this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._context = null; this._checkpoint = null; this._checkpointToken = null },
   async _run(task, apply) {
     if (this.data.busy || !this._active || !this._context || !this._client.current(this._context)) return
     const generation = this._generation, ctx = this._context
     const live = () => this._active && generation === this._generation && ctx && this._client.current(ctx)
     this.setData({ busy: true, error: '', result: '' })
     try {
-      const result = await task()
+      const result = await task(live)
       if (live()) { if (apply) apply(result); else this.setData({ result: JSON.stringify(result, null, 2) }) }
-    } catch (e) { if (live()) this.setData({ error: /^[A-Z_]+$/.test(e.code || '') ? e.code : 'OPERATION_FAILED' }) }
+    } catch (e) { if (live()) this.setData({ error: /^[A-Z][A-Z0-9_]*$/.test(e.code || '') ? e.code : 'OPERATION_FAILED',
+      ...(Number.isSafeInteger(e.row) && e.row > 0 ? { pagedReport: `第 ${e.row} 条题目校验失败，字段 ${e.field || 'question'}；整批未提交。` } : {}) }) }
     finally { if (live()) this.setData({ busy: false }) }
   },
   onInput(e) {
     if (this.data.busy) return
     const field = e.currentTarget.dataset.field
-    if (!['inputText', 'submissionId', 'draftId', 'note', 'revision', 'removeIds'].includes(field)) return
+    if (!['inputText', 'submissionId', 'pagedSubmissionId', 'draftId', 'note', 'revision', 'removeIds'].includes(field)) return
     if (field === 'inputText' && utf8Bytes(e.detail.value) > 200000) {
       this._prepared = null; this.setData({ inputText: '', ready: false, report: '', rightsConfirmed: false, error: 'INPUT_TOO_LARGE_FOR_PAGE' }); return
     }
@@ -97,6 +122,7 @@ Page({
     const values = e.detail.value || []
     const field = e.currentTarget && e.currentTarget.dataset.field
     if (field === 'rights') this.setData({ rightsConfirmed: values.includes('rights') })
+    else if (field === 'pagedRights') this.setData({ pagedRights: values.includes('rights') })
     else if (field === 'sources') this.setData({ sourceVerified: values.includes('sources') })
     else this.setData({ rightsConfirmed: values.includes('rights'), sourceVerified: values.includes('sources') })
   },
@@ -115,7 +141,54 @@ Page({
       this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) })
     })
   },
-  onReadDraft() { this._run(() => this._client.getDraft(this.data.draftId), result => {
+  onChoosePagedFile() {
+    if (this._editorDirty || this._questionFormDirty) { this.setData({ error: 'UNSAVED_WORKSPACE_CHANGES' }); return }
+    if (!this.data.canEdit || this.data.busy) return
+    this._pagedPrepared = null; this._pagedBase = null; this.setData({ pagedReady: false, pagedRights: false, pagedReport: '' })
+    this._run(async live => {
+      const chosen = await new Promise((resolve, reject) => {
+        if (typeof wx.chooseMessageFile !== 'function') return reject(Object.assign(new Error('FILE_API_UNAVAILABLE'), { code: 'FILE_API_UNAVAILABLE' }))
+        wx.chooseMessageFile({ count: 1, type: 'file', extension: ['json'], success: resolve, fail: reject })
+      })
+      if (!live()) throw Object.assign(new Error('STALE_OPERATOR_CONTEXT'), { code: 'STALE_OPERATOR_CONTEXT' })
+      const file = chosen && Array.isArray(chosen.tempFiles) && chosen.tempFiles[0]
+      if (!file || typeof file.path !== 'string' || !Number.isSafeInteger(file.size) || file.size < 1 || file.size > 12000000) throw Object.assign(new Error('INPUT_TOO_LARGE_FOR_PAGE'), { code: 'INPUT_TOO_LARGE_FOR_PAGE' })
+      const buffer = await new Promise((resolve, reject) => wx.getFileSystemManager().readFile({ filePath: file.path, success: r => resolve(r.data), fail: reject }))
+      if (!live()) throw Object.assign(new Error('STALE_OPERATOR_CONTEXT'), { code: 'STALE_OPERATOR_CONTEXT' })
+      if (!buffer || buffer.byteLength !== file.size) throw Object.assign(new Error('BAD_FILE_LENGTH'), { code: 'BAD_FILE_LENGTH' })
+      const content = decodeUtf8(buffer)
+      const prepared = this._client.preparePaged(content), base = await this._client.pagedBase()
+      return { prepared, base }
+    }, result => {
+      this._pagedPrepared = result.prepared; this._pagedBase = result.base
+      this.setData({ pagedReady: true, pagedReport: `校验通过：${result.prepared.root.totalQuestions} 题、${result.prepared.root.pages.length} 页。提交的是完整题库快照，将替换当前目录；基线修订 ${result.base ? result.base.revision : 0}。`, error: '' })
+    })
+  },
+  onSubmitPaged() {
+    if (!this._pagedPrepared) { this.setData({ error: 'PREFLIGHT_REQUIRED' }); return }
+    this._run(live => this._client.submitPaged(this._pagedPrepared, { submissionId: this.data.pagedSubmissionId, rightsConfirmed: this.data.pagedRights,
+      basePublication: this._pagedBase, onProgress: (done, total) => { if (live()) this.setData({ pagedReport: `已上传 ${done} / ${total} 页，尚未发布。` }) } }, live), result => {
+      this._draft = null; this._reviewRows = null; this._reviewSeen = null
+      this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) })
+    })
+  },
+  onReadDraft() {
+    if (/^qpd_/.test(this.data.draftId)) {
+      this._run(async () => {
+        const result = await this._client.getPagedDraft(this.data.draftId), draft = result.draft
+        if (!draft || !paged.validRoot(draft.root) || !paged.validEvidence(draft.root, draft.evidence)) throw Object.assign(new Error('INVALID_DRAFT'), { code: 'INVALID_DRAFT' })
+        const first = await this._client.getPagedDraftPage(draft.draftId, 0)
+        if (!paged.validPagePair(draft.root, draft.evidence, first.page, first.sourcePage)) throw Object.assign(new Error('INVALID_PAGED_PAGE'), { code: 'INVALID_PAGED_PAGE' })
+        return { draft, first }
+      }, result => {
+        this._draft = result.draft; this._reviewRows = null; this._reviewSeen = new Set()
+        this.setData({ preview: JSON.stringify({ draftId: result.draft.draftId, state: result.draft.state, manifest: result.draft.root.manifest,
+          releaseId: result.draft.root.releaseId, totalQuestions: result.draft.root.totalQuestions }, null, 2), sourceVerified: false })
+        this._renderPagedReview(result.first)
+      })
+      return
+    }
+    this._run(() => this._client.getDraft(this.data.draftId), result => {
     const preview = JSON.stringify(result.draft)
     if (utf8Bytes(preview) > 800000) { this._draft = null; this._reviewRows = null; this.setData({ preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
     const draft = result.draft
@@ -124,7 +197,15 @@ Page({
     this._reviewSeen = new Set()
     this.setData({ preview: JSON.stringify({ draftId: draft.draftId, state: draft.state, manifest: draft.bank.manifest, releaseId: draft.bank.releaseId }, null, 2), sourceVerified: false })
     this._renderReview(1)
-  }) },
+    })
+  },
+  _renderPagedReview(result) {
+    const page = result.page, sourcePage = result.sourcePage
+    this._reviewSeen.add(page.index)
+    this.setData({ reviewPage: page.index + 1, reviewPages: this._draft.root.pages.length,
+      reviewItems: page.questions.map(q => ({ id: q.id, text: JSON.stringify({ question: q, source: sourcePage.sources[q.id] }, null, 2) })),
+      reviewAllSeen: this._reviewSeen.size === this._draft.root.pages.length })
+  },
   _renderReview(page) {
     if (!this._reviewRows || !this._reviewSeen) return
     const pages = Math.max(1, Math.ceil(this._reviewRows.length / 10)), current = Math.max(1, Math.min(page, pages))
@@ -134,21 +215,35 @@ Page({
   onReviewPage(e) {
     if (this.data.busy || !this._draft || this._draft.draftId !== this.data.draftId) return
     const delta = Number(e.currentTarget.dataset.delta)
-    if (delta === -1 || delta === 1) this._renderReview(this.data.reviewPage + delta)
+    if (delta !== -1 && delta !== 1) return
+    if (this._draft.kind === 'pagedCatalogDraft') {
+      const index = Math.max(0, Math.min(this._draft.root.pages.length - 1, this.data.reviewPage - 1 + delta)), draft = this._draft
+      this._run(() => this._client.getPagedDraftPage(draft.draftId, index), result => {
+        if (!paged.validPagePair(draft.root, draft.evidence, result.page, result.sourcePage) || result.page.index !== index) { this.setData({ error: 'INVALID_PAGED_PAGE' }); return }
+        this._renderPagedReview(result)
+      })
+    } else this._renderReview(this.data.reviewPage + delta)
   },
   onReview(e) {
     if (!this._draft || this._draft.draftId !== this.data.draftId) { this.setData({ error: 'READ_DRAFT_REQUIRED' }); return }
     if (e.currentTarget.dataset.decision === 'approve' && !this.data.reviewAllSeen) { this.setData({ error: 'REVIEW_PAGES_REQUIRED' }); return }
-    this._run(() => this._client.review({ draftId: this.data.draftId, decision: e.currentTarget.dataset.decision, note: this.data.note, sourceVerified: this.data.sourceVerified })) },
-  onReadRevision() { this._run(() => this._client.activeDraft(), result => this.setData({ revision: String(result.basePublication ? result.basePublication.revision : 0) })) },
+    const method = this._draft.kind === 'pagedCatalogDraft' ? this._client.reviewPaged : this._client.review
+    this._run(() => method({ draftId: this.data.draftId, decision: e.currentTarget.dataset.decision, note: this.data.note, sourceVerified: this.data.sourceVerified })) },
+  onReadRevision() {
+    if (this._draft && this._draft.kind === 'pagedCatalogDraft') this._run(() => this._client.pagedBase(), base => this.setData({ revision: String(base ? base.revision : 0) }))
+    else this._run(() => this._client.activeDraft(), result => this.setData({ revision: String(result.basePublication ? result.basePublication.revision : 0) }))
+  },
   onPublish() {
     if (!this._draft || this._draft.draftId !== this.data.draftId) { this.setData({ error: 'READ_DRAFT_REQUIRED' }); return }
     if (!/^\d+$/.test(this.data.revision)) { this.setData({ error: 'BAD_REVISION' }); return }
-    this._run(() => (this._draft.bank.schemaVersion === 3 ? this._client.publishExam : this._client.publish)({ draftId: this.data.draftId, expectedRevision: Number(this.data.revision) }))
+    const method = this._draft.kind === 'pagedCatalogDraft' ? this._client.publishPaged : this._draft.bank.schemaVersion === 3 ? this._client.publishExam : this._client.publish
+    this._run(() => method({ draftId: this.data.draftId, expectedRevision: Number(this.data.revision) }))
   },
   onWithdraw() {
-    this._run(() => this._client.withdraw({ draftId: this.data.draftId, questionIds: this.data.removeIds.split(/[,，\s]+/).filter(Boolean),
-      submissionId: this.data.submissionId, rightsConfirmed: this.data.rightsConfirmed }), result => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) }) })
+    this._run(live => {
+      const input = { draftId: this.data.draftId, questionIds: this.data.removeIds.split(/[,，\s]+/).filter(Boolean), submissionId: this.data.submissionId, rightsConfirmed: this.data.rightsConfirmed }
+      return /^qpd_/.test(input.draftId) ? this._client.withdrawPaged(input, live) : this._client.withdraw(input)
+    }, result => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) }) })
   },
   _renderEditor() {
     const w = this._workspace, subject = w && w.bank.manifest.subjects.find(s => s.key === this.data.selectedSubject)
@@ -225,7 +320,11 @@ Page({
     this._readEditor()
   },
   _readEditor() {
-    this._run(() => this._client.activeDraft(), result => {
+    this._run(async () => {
+      const current = await this._client.pagedCurrent()
+      if (current.root) throw Object.assign(new Error('PAGED_EDITOR_FILE_REQUIRED'), { code: 'PAGED_EDITOR_FILE_REQUIRED' })
+      return this._client.activeDraft()
+    }, result => {
       if (result.draft && result.draft.bank.schemaVersion !== 3) { this.setData({ error: 'LEGACY_IDENTITY_MIGRATION_REQUIRED' }); return }
       const bytes = utf8Bytes(JSON.stringify(result))
       if (bytes > 800000) { this.setData({ error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }

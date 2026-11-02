@@ -20,6 +20,8 @@ const manifest = require('./manifest.js')
 const config = require('../config.js')
 const domain = require('../../shared/question-domain.js')
 const examDomain = require('../../shared/exam-catalog-domain.js')
+const paged = require('../../shared/paged-catalog-domain.js')
+const { createPagedCache } = require('../paged-bank-cache.js')
 const { normalizeText, judge } = require('../../shared/grading-domain.js')
 
 const cache = {}
@@ -56,6 +58,9 @@ function loadPersistedCloudBank() {
 if (typeof wx !== 'undefined') {
   const persisted = loadPersistedCloudBank()
   if (persisted) source = persisted
+  const cached = createPagedCache(wx).read()
+  if (cached.status === 'ready' && cached.source.publicationRevision >= (source.publicationRevision || 0)) source = cached.source
+  else if (cached.status === 'error' && !persisted) source = { schemaVersion: 4, manifest: { exams: [], subjects: [] }, questions: {}, releaseId: '', publicationRevision: 0 }
 }
 
 let _index = null
@@ -69,7 +74,7 @@ function index() {
 function allQuestions() {
   let out = []
   source.manifest.subjects.forEach((s) => {
-    out = out.concat((source.questions[s.key] || []).map(q => JSON.parse(JSON.stringify({ ...q, bankReleaseId: source.releaseId }))))
+    out = out.concat((source.questions[s.key] || []).map(q => JSON.parse(JSON.stringify({ ...q, bankReleaseId: source.releaseId, ...(source.schemaVersion === 4 ? { catalogProtocol: 4 } : {}) }))))
   })
   return out
 }
@@ -88,14 +93,14 @@ function getExams() { return JSON.parse(JSON.stringify(source.manifest.exams || 
 function getSubjects(examId) {
   // 科目清单由 dataSource 驱动；count 按真实题目累计
   return source.manifest.subjects.filter(s => !examId || s.examId === examId).map((s) => ({
-    name: source.schemaVersion === 3 ? s.key : s.name,
-    ...(source.schemaVersion === 3 ? { label: s.name } : {}),
+    name: source.schemaVersion >= 3 ? s.key : s.name,
+    ...(source.schemaVersion >= 3 ? { label: s.name } : {}),
     count: (source.questions[s.key] || []).length,
     ...(s.examId ? { examId: s.examId } : {})
   }))
 }
 function getSubjectLabel(id) {
-  const subject = source.manifest.subjects.find(s => (source.schemaVersion === 3 ? s.key : s.name) === id)
+  const subject = source.manifest.subjects.find(s => (source.schemaVersion >= 3 ? s.key : s.name) === id)
   return subject ? subject.name : id
 }
 
@@ -103,14 +108,14 @@ function getChapters(subject) {
   // 章节清单由 dataSource 驱动
   if (!subject) {
     const all = []
-    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name)))
+    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(source.schemaVersion >= 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name)))
     return all
   }
-  const s = source.manifest.subjects.filter((x) => (source.schemaVersion === 3 ? x.key : x.name) === subject)[0]
-  return s ? s.chapters.map((c) => source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name) : []
+  const s = source.manifest.subjects.filter((x) => (source.schemaVersion >= 3 ? x.key : x.name) === subject)[0]
+  return s ? s.chapters.map((c) => source.schemaVersion >= 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name) : []
 }
 function getChapterLabel(subjectId, chapterId) {
-  if (source.schemaVersion !== 3) return chapterId
+  if (source.schemaVersion < 3) return chapterId
   const subject = source.manifest.subjects.find(s => s.key === subjectId)
   const chapter = subject && subject.chapters.find(c => examDomain.chapterIdentity(subjectId, c.key) === chapterId)
   return chapter ? chapter.name : chapterId
@@ -220,12 +225,37 @@ function hasCloud() {
   return !!wx.cloud && typeof wx.cloud.callFunction === 'function'
 }
 
+async function loadPagedRelease() {
+  const call = async data => { const result = await wx.cloud.callFunction({ name: config.functions.bankSync, data }); return result && result.result }
+  const active = await call({ action: 'getPagedPublished' })
+  if (!active || !active.ok || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) return false
+  const pages = []
+  for (let start = 0; start < active.root.pages.length; start += 4) {
+    const group = active.root.pages.slice(start, start + 4)
+    const replies = await Promise.all(group.map(p => call({ action: 'getPagedPage', releaseId: active.root.releaseId, index: p.index })))
+    for (let i = 0; i < replies.length; i++) {
+      const reply = replies[i], expected = group[i].index
+      if (!reply || !reply.ok || !reply.page || reply.page.index !== expected || !paged.validQuestionPage(active.root, reply.page)) return false
+      pages.push(reply.page)
+    }
+  }
+  const latest = await call({ action: 'getPagedPublished' })
+  if (!latest || !latest.ok || latest.publicationRevision !== active.publicationRevision || !paged.validRoot(latest.root) || latest.root.releaseId !== active.root.releaseId ||
+      active.publicationRevision < (source.publicationRevision || 0) ||
+      (active.publicationRevision === source.publicationRevision && active.root.releaseId !== source.releaseId)) return false
+  const result = createPagedCache(wx).install(active.root, active.publicationRevision, pages)
+  if (!result.ok) return false
+  source = result.source; _index = null
+  return true
+}
+
 /** 从云端拉取题库并整体替换数据源；无云/失败时保持现有数据源 */
 async function loadCloudBank() {
   if (!hasCloud()) return false
   try {
     const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getPublished' } })
     let r = res && res.result
+    if (r && r.error === 'PAGED_PROTOCOL_REQUIRED') return await loadPagedRelease()
     if (r && r.error === 'EXAM_PROTOCOL_REQUIRED') {
       const upgraded = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getExamPublished' } })
       r = upgraded && upgraded.result

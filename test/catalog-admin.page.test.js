@@ -165,6 +165,62 @@ test('已有标签包含逗号、空格和 30 项时编辑保存可无损往返'
   assert.equal(p.data.error, 'BAD_QUESTION'); assert.equal(JSON.stringify(p._workspace), before)
 })
 
+test('管理页从文件导入 700 题，分批上传、逐页审核并发布', async t => {
+  const ops = operators(), imported = JSON.parse(sample), first = imported.bank.questions.it[0], source = imported.sources[first.id]
+  imported.bank.schemaVersion = 4; imported.bank.manifest.exams = [{ id: 'exam', name: '考试' }]; imported.bank.manifest.subjects[0].examId = 'exam'
+  imported.bank.questions.it = Array.from({ length: 700 }, (_, i) => ({ ...first, id: 'q' + String(i).padStart(4, '0') }))
+  imported.sources = Object.fromEntries(imported.bank.questions.it.map(q => [q.id, source]))
+  const bytes = Buffer.from(JSON.stringify(imported)), data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  const oldChoose = wx.chooseMessageFile, oldFs = wx.getFileSystemManager
+  wx.chooseMessageFile = opts => opts.success({ tempFiles: [{ path: 'synthetic.json', size: bytes.length }] })
+  wx.getFileSystemManager = () => ({ readFile: opts => opts.success({ data }) })
+  t.after(() => { wx.chooseMessageFile = oldChoose; wx.getFileSystemManager = oldFs })
+  async function done(p) { for (let i = 0; p.data.busy && i < 10000; i++) await settle(); assert.equal(p.data.busy, false) }
+  const editor = page(t, ops.editor); await settle(); editor.onChoosePagedFile(); await done(editor)
+  assert.equal(editor.data.pagedReady, true); assert.match(editor.data.pagedReport, /700 题/)
+  input(editor, 'pagedSubmissionId', 'large-file'); editor.onConfirm({ currentTarget: { dataset: { field: 'pagedRights' } }, detail: { value: ['rights'] } })
+  editor.onSubmitPaged(); await done(editor)
+  assert.match(editor.data.draftId, /^qpd_/)
+  const id = editor.data.draftId, reviewer = page(t, ops.reviewer); await settle(); input(reviewer, 'draftId', id)
+  reviewer.onReadDraft(); await done(reviewer)
+  assert.equal(reviewer.data.reviewAllSeen, false)
+  while (reviewer.data.reviewPage < reviewer.data.reviewPages) { reviewer.onReviewPage({ currentTarget: { dataset: { delta: 1 } } }); await done(reviewer) }
+  assert.equal(reviewer.data.reviewAllSeen, true)
+  input(reviewer, 'note', '已逐页核验'); reviewer.onConfirm({ currentTarget: { dataset: { field: 'sources' } }, detail: { value: ['sources'] } })
+  reviewer.onReview({ currentTarget: { dataset: { decision: 'approve' } } }); await done(reviewer)
+  const publisher = page(t, ops.publisher); await settle(); input(publisher, 'draftId', id); publisher.onReadDraft(); await done(publisher)
+  publisher.onReadRevision(); await done(publisher); assert.equal(publisher.data.revision, '0')
+  publisher.onPublish(); await done(publisher)
+  assert.equal((await ops.h.main({ action: 'getPagedPublished' })).root.totalQuestions, 700)
+  const { device } = require('./support/study-sync-device.js'), { makeHarness } = require('./support/study-sync-harness.js')
+  const vm = require('node:vm'), learning = makeHarness({ questionDocuments: ops.h.documents }), proxy = { getSubjects: () => [] }
+  const consumer = device(learning, undefined, true, proxy)
+  try {
+    const callStudy = consumer.wx.cloud.callFunction
+    consumer.wx.cloud.callFunction = opts => opts.name === 'bankSync' ? ops.h.main(opts.data).then(result => ({ result })) : callStudy(opts)
+    const file = path.join(__dirname, '../utils/bank/index.js'), module = { exports: {} }
+    vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx: consumer.wx, require: name => require(path.resolve(path.dirname(file), name)) })
+    Object.assign(proxy, module.exports); assert.equal(await proxy.loadCloudBank(), true)
+    assert.equal(proxy.getAllQuestions().length, 700)
+    const question = proxy.findQuestion('q0000')
+    consumer.store.createPracticeSession({ subject: question.subject, questionIds: [question.id], questions: [question] })
+    assert.equal(consumer.store.submitAttempt(question, ['A'], true, 10, 'learn-paged').ok, true)
+    await consumer.settle(); assert.equal(learning.attempts.size, 1)
+    assert.equal(consumer.store.load().attemptOutbox.pending.length, 0)
+  } finally { consumer.store.__clearFlushTimer() }
+})
+
+test('大题库文件含非法 UTF-8 或长度不符时拒绝导入', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle()
+  const oldChoose = wx.chooseMessageFile, oldFs = wx.getFileSystemManager
+  wx.chooseMessageFile = opts => opts.success({ tempFiles: [{ path: 'bad.json', size: 2 }] })
+  wx.getFileSystemManager = () => ({ readFile: opts => opts.success({ data: Uint8Array.from([0xc0, 0xaf]).buffer }) })
+  t.after(() => { wx.chooseMessageFile = oldChoose; wx.getFileSystemManager = oldFs })
+  p.onChoosePagedFile(); await settle(); assert.equal(p.data.error, 'BAD_UTF8'); assert.equal(p.data.pagedReady, false)
+  wx.getFileSystemManager = () => ({ readFile: opts => opts.success({ data: Uint8Array.from([0x7b]).buffer }) })
+  p.onChoosePagedFile(); await settle(); assert.equal(p.data.error, 'BAD_FILE_LENGTH'); assert.equal(p.data.pagedReady, false)
+})
+
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
   const ops = operators()
   let session = { logged: true, openid: 'editor', token: 'editor' }, release

@@ -2,6 +2,7 @@
 const config = require('./config.js')
 const domain = require('../shared/question-domain.js')
 const examDomain = require('../shared/exam-catalog-domain.js')
+const paged = require('../shared/paged-catalog-domain.js')
 const { sourcesFor } = require('../shared/workflow-domain.js')
 const { preflight } = require('../shared/catalog-import.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
@@ -30,11 +31,85 @@ function createCatalogAdmin({ getSession, call }) {
     const bank = isExam ? examDomain.buildExamRelease(prepared.bank) : domain.buildRelease(prepared && prepared.bank), sources = sourcesFor(bank, prepared && prepared.sources)
     return request({ action: isExam ? 'createExamDraft' : 'createDraft', bank, sources, rightsConfirmed: true, submissionId: options.submissionId, ...(options.basePublication ? { basePublication: options.basePublication } : {}) }, ctx)
   }
+  async function pagedBase(ctx) {
+    const latest = await request({ action: 'getPagedPublished' }, ctx)
+    if (latest.root) {
+      if (!paged.validRoot(latest.root) || !Number.isSafeInteger(latest.publicationRevision) || latest.publicationRevision < 1) fail('INVALID_RELEASE')
+      return { revision: latest.publicationRevision, releaseId: latest.root.releaseId }
+    }
+    if (latest.publicationRevision === 0) return null
+    const prior = await request({ action: 'getExamPublished' }, ctx)
+    if (!prior.bank || !examDomain.validExamRelease(prior.bank) || prior.publicationRevision !== latest.publicationRevision) fail('LEGACY_IDENTITY_MIGRATION_REQUIRED')
+    return { revision: prior.publicationRevision, releaseId: prior.bank.releaseId }
+  }
+  function preparePaged(text) {
+    if (typeof text !== 'string' || encodeURIComponent(text).replace(/%[A-F0-9]{2}/g, 'x').length > 12000000) fail('INPUT_TOO_LARGE_FOR_PAGE')
+    let input
+    try { input = JSON.parse(text.replace(/^\uFEFF/, '')) } catch (e) { fail('BAD_JSON') }
+    const bank = input && (input.bank || input)
+    return paged.buildPagedCatalog({ ...bank, sources: input && input.sources })
+  }
+  async function submitPaged(prepared, options, ctx, live = () => true) {
+    if (!options || options.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(options.submissionId || '')) fail('BAD_SUBMISSION_ID')
+    if (!prepared || !paged.validComplete(prepared.root, prepared.evidence, prepared.publicPages, prepared.privatePages)) fail('BAD_PAGED_CATALOG')
+    const guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
+    guard()
+    const initial = await request({ action: 'beginPagedDraft', root: prepared.root, evidence: prepared.evidence,
+      basePublication: options.basePublication, submissionId: options.submissionId, rightsConfirmed: true }, ctx)
+    guard()
+    if (initial.state === 'uploading') {
+      for (let index = 0; index < prepared.publicPages.length; index++) {
+        guard()
+        await request({ action: 'uploadPagedDraftPage', draftId: initial.draftId, page: prepared.publicPages[index], sourcePage: prepared.privatePages[index] }, ctx)
+        guard()
+        if (options.onProgress) options.onProgress(index + 1, prepared.publicPages.length)
+      }
+      return request({ action: 'sealPagedDraft', draftId: initial.draftId }, ctx)
+    }
+    if (['sealed', 'approved', 'published'].includes(initial.state)) return initial
+    fail('DRAFT_NOT_EDITABLE')
+  }
   return {
     capture, current, preflight,
     access: () => request({ action: 'getCatalogAccess' }, capture()),
     published: () => request({ action: 'getPublished' }, capture()),
     activeDraft: () => request({ action: 'getActiveCatalogDraft' }, capture()),
+    preparePaged,
+    pagedCurrent: () => request({ action: 'getPagedPublished' }, capture()),
+    pagedBase: () => pagedBase(capture()),
+    submitPaged: (prepared, options, live) => submitPaged(prepared, options, capture(), live),
+    getPagedDraft: draftId => request({ action: 'getPagedDraft', draftId }, capture()),
+    getPagedDraftPage: (draftId, index) => request({ action: 'getPagedDraftPage', draftId, index }, capture()),
+    reviewPaged: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewPagedDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
+    publishPaged: ({ draftId, expectedRevision }) => request({ action: 'publishPagedDraft', draftId, expectedRevision }, capture()),
+    async withdrawPaged({ draftId, questionIds, submissionId, rightsConfirmed }, live = () => true) {
+      const ctx = capture(), guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
+      if (rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
+      if (!Array.isArray(questionIds) || !questionIds.length || questionIds.some(id => typeof id !== 'string' || !id) || new Set(questionIds).size !== questionIds.length) fail('BAD_WITHDRAWAL_IDS')
+      guard()
+      const result = await request({ action: 'getPagedDraft', draftId }, ctx), draft = result.draft
+      if (!draft || draft.state !== 'published' || !paged.validRoot(draft.root) || !paged.validEvidence(draft.root, draft.evidence)) fail('BASE_NOT_PUBLISHED')
+      const base = await pagedBase(ctx)
+      if (!base || base.releaseId !== draft.root.releaseId || base.revision !== draft.publicationRevision) fail('STALE_BASE_RELEASE')
+      const publicPages = [], privatePages = []
+      for (const descriptor of draft.root.pages) {
+        guard()
+        const page = await request({ action: 'getPagedDraftPage', draftId, index: descriptor.index }, ctx)
+        if (!paged.validPagePair(draft.root, draft.evidence, page.page, page.sourcePage) || page.page.index !== descriptor.index) fail('INVALID_PAGED_PAGE')
+        publicPages.push(page.page); privatePages.push(page.sourcePage)
+      }
+      guard()
+      if (!paged.validComplete(draft.root, draft.evidence, publicPages, privatePages)) fail('INVALID_PAGED_RELEASE')
+      const remove = new Set(questionIds), remaining = Object.fromEntries(draft.root.manifest.subjects.map(s => [s.key, []])), sources = {}
+      for (let i = 0; i < publicPages.length; i++) for (const q of publicPages[i].questions) {
+        if (remove.has(q.id)) { remove.delete(q.id); continue }
+        remaining[q.subject].push(q); sources[q.id] = privatePages[i].sources[q.id]
+      }
+      if (remove.size) fail('UNKNOWN_QUESTION_ID')
+      const prepared = paged.buildPagedCatalog({ schemaVersion: 4, manifest: draft.root.manifest, questions: remaining, sources })
+      return submitPaged(prepared, { submissionId, rightsConfirmed, basePublication: base }, ctx, live)
+    },
     getDraft: draftId => request({ action: 'getDraft', draftId }, capture()),
     submitDraft: (prepared, options) => submit(prepared, options, capture()),
     review: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
