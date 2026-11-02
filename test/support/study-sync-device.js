@@ -31,6 +31,7 @@ function device(server, saved, cloudReady = true, questionBank) {
       }
       storage.set(key, clone(value))
     },
+    getStorageInfoSync: () => ({ keys: [...storage.keys()] }),
     removeStorageSync: key => {
       if (controls.failDeleteRemove && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected pending marker remove failure')
       storage.delete(key)
@@ -83,6 +84,7 @@ function device(server, saved, cloudReady = true, questionBank) {
     module, wx, console, setTimeout, clearTimeout, Date: DeviceDate,
     require(name) {
       if (name === './questions.js') return questionBank || { getSubjects: () => [{ name: '公基' }] }
+      if (name === './local-repository.js') return require('../../utils/local-repository.js')
       if (name === './sync-coordinator.js') return require('../../utils/sync-coordinator.js')
       if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
       if (name === './config.js') return require('../../utils/config.js')

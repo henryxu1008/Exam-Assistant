@@ -161,6 +161,12 @@ miniprogram-4/
 合成存储基线：`npm run bench:learning -- --sizes 1000,10000 --runs 5`，只用进程内存储、不访问云。
 [基线报告](docs/reports/learning-storage-baseline-2026-11-02.md) 记录整档写入随历史增长的成本，仓储优化继续跟踪 #11。
 
+已确认作答现在由用户隔离的本地仓储分段保存，活动检查点保留聚合、会话、AI 和待传项；
+首次迁移准备失败可延期使用完整原格式，已有分段损坏明确失败。格式、备份、回滚、应用 1.1.0 升级约束及
+剩余风险见 [ADR 0015](docs/adr/0015-scoped-local-repository.md)，
+[分段后报告](docs/reports/learning-storage-segmented-2026-11-02.md) 同时记录写入减少和迁移额外成本。
+代码未部署；微信配额、同步迁移耗时、断电/损坏恢复尚待真实环境验收。
+
 ## 已知限制
 
 - **AI 助教默认走本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。已预留云函数 `aiTutor`（OpenAI 兼容 chat/completions 骨架，默认关闭、安全护栏齐全），接入真实模型时：① 在 `aiTutor` 的环境变量配置 `AI_TUTOR_ENABLED=true`、`LLM_ENDPOINT`、`LLM_API_KEY`（可选 `LLM_MODEL`）；② 把端上 `REMOTE_LLM.enabled` 改为 `true`。云函数未启用时端上自动回落本地引擎，互不影响。

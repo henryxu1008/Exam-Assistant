@@ -1,12 +1,19 @@
 /**
  * utils/store.js
  * 本地数据仓储：答题记录 / 每日统计 / 学习设置 / AI 对话历史
- * 说明：不依赖任何后端，全部通过 wx.setStorageSync 持久化。
+ * 领域状态与同步；本地读写由 local-repository.js 提供用户隔离检查点。
  */
 
 const bank = require('./questions.js')
 const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
+const { createLocalRepository } = require('./local-repository.js')
+const localRepository = createLocalRepository({
+  getStorageSync: key => wx.getStorageSync(key),
+  setStorageSync: (key, value) => wx.setStorageSync(key, value),
+  removeStorageSync: key => wx.removeStorageSync(key),
+  getStorageInfoSync: () => { if (typeof wx.getStorageInfoSync !== 'function') throw new Error('LOCAL_INVENTORY_UNAVAILABLE'); return wx.getStorageInfoSync() }
+})
 const { createSyncCoordinator } = require('./sync-coordinator.js')
 const attemptDomain = require('../shared/attempt-domain.js')
 
@@ -154,10 +161,6 @@ function getAiConversationVersion() {
   return aiConversationVersion
 }
 
-function scopeKey() {
-  return `${STORAGE_KEY}__${userScope}`
-}
-
 /** 读取当前隔离作用域（openid 或 'anon'） */
 function getUserScope() {
   return userScope
@@ -174,12 +177,13 @@ function setUserScope(openid) {
   // （评审 P2：Flush pending changes before switching user scopes）
   if (state) {
     try {
-      wx.setStorageSync(scopeKey(), state)
+      localRepository.write(userScope, state)
     } catch (e) {
       /* 忽略写入失败 */
     }
     pushToCloud() // 切换账号前把旧账号的学习档案上传云端
   }
+  localRepository.release(userScope)
   userScope = next
   state = null
   aiConversationVersion += 1
@@ -193,9 +197,9 @@ function setUserScope(openid) {
   if (userScope !== 'anon') {
     try {
       const rawLegacy = wx.getStorageSync(legacy)
-      const rawScoped = wx.getStorageSync(scopeKey())
+      const rawScoped = localRepository.read(userScope)
       if (rawLegacy && typeof rawLegacy === 'object' && (!rawScoped || rawScoped === '')) {
-        wx.setStorageSync(scopeKey(), rawLegacy)
+        localRepository.write(userScope, rawLegacy)
         wx.removeStorageSync(legacy)
       } else if (rawLegacy && typeof rawLegacy === 'object') {
         wx.removeStorageSync(legacy)
@@ -264,10 +268,11 @@ function migrate(raw) {
 function load() {
   if (state) return state
   try {
-    const raw = wx.getStorageSync(scopeKey())
+    const raw = localRepository.read(userScope)
     state = migrate(raw) || getDefaultState()
   } catch (e) {
-    state = getDefaultState()
+    state = null
+    throw e // An unreadable checkpoint is not an empty account and must never be overwritten.
   }
   if (!state.records) state.records = {}
   if (!state.daily) state.daily = {}
@@ -288,7 +293,7 @@ function load() {
     const migrated = attemptOutbox.ensure(state)
     if (migrated && attemptOutbox.pending(state).length) {
       dirty = true
-      wx.setStorageSync(scopeKey(), state)
+      localRepository.write(userScope, state)
     }
   } catch (e) { dirty = true } // 保留原档案；持久化/队列异常时禁止发送。
   // 启动时恢复一次；之后由登录、前台和网络事件通过协调器继续增量恢复。
@@ -325,7 +330,7 @@ function flush() {
   try {
     attemptOutbox.ensure(state)
     // 与 submitAttempt 的同步检查点使用同一写入顺序，旧异步写不能覆盖新作答。
-    wx.setStorageSync(scopeKey(), state)
+    localRepository.write(userScope, state)
   } catch (e) {
     dirty = true
     console.error('[store] 持久化失败', e)
@@ -527,7 +532,7 @@ function pullFromCloud(onDone, options = {}) {
     next.dataEpoch = dataEpoch
     if (checkpoint) next.syncCursor = { version: 2, ...checkpoint }
     else delete next.syncCursor // 旧服务端只作全量恢复，不能凭猜测推进增量游标。
-    try { wx.setStorageSync(scopeKey(), next) } catch (e) { done(false); return }
+    try { localRepository.write(userScope, next) } catch (e) { done(false); return }
     state = next
     dirty = false
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
@@ -698,7 +703,7 @@ function deleteCloudRequest(ctx) {
           }
           state.dataEpoch = Number.isSafeInteger(r.dataEpoch) ? r.dataEpoch : ctx.dataEpoch
           if (ctx.deleteOperation.localResetId) state.pendingDeleteId = ctx.deleteOperation.localResetId
-          try { wx.setStorageSync(scopeKey(), state) } catch (e) {
+          try { localRepository.write(userScope, state) } catch (e) {
             dirty = true
             resolve()
             return
@@ -774,7 +779,7 @@ function pushToCloud() {
   }
   let snapshot
   try {
-    snapshot = wx.getStorageSync(scopeKey())
+    snapshot = localRepository.read(userScope)
     if (!snapshot || typeof snapshot !== 'object' || !snapshot.attemptOutbox || Number(snapshot.dataEpoch || 0) !== ctx.dataEpoch) throw new Error('NO_DURABLE_SNAPSHOT')
     attemptOutbox.ensure(snapshot)
   } catch (e) { keepPending(); return }
@@ -834,7 +839,7 @@ function pushToCloud() {
         next = mergeStats(next, { records: result.stats.records, daily: result.stats.daily })
         next.attemptOutbox = localOutbox
         attemptOutbox.remove(next, accepted)
-        try { wx.setStorageSync(scopeKey(), next) } catch (e) { keepPending('PERSIST_ACK_FAILED'); return }
+        try { localRepository.write(userScope, next) } catch (e) { keepPending('PERSIST_ACK_FAILED'); return }
         state = next
         for (const receipt of receipts) confirmedAliases.set(JSON.stringify([ctx.gen, ctx.scope, ctx.token, receipt.submittedId]), receipt.attempt)
         syncRestoredListeners.forEach(listener => {
@@ -921,7 +926,7 @@ function clearAiFromCloud() {
   if (!operation) return
   // 旧写盘回调可能晚于下一次清空。只有已落盘的操作 ID 才能发送，重启才能幂等重试。
   try {
-    const saved = wx.getStorageSync(scopeKey())
+    const saved = localRepository.read(userScope)
     if (!saved || !Array.isArray(saved.aiClearQueue) || !saved.aiClearQueue.some(op =>
       op.clearId === operation.clearId && op.dataEpoch === operation.dataEpoch)) return
   } catch (e) { return }
@@ -1333,7 +1338,9 @@ function clearAll() {
   deleteCloud() // 同步删除云端学习档案与作答流水，保证本地与云端一并清空
   persist()
   flush() // 清空当前作用域（不可逆）
-  return { ok: true }
+  const localStatus = localRepository.status(userScope)
+  if (localStatus.state === 'write_error') return deletion ? { ok: true, pendingLocalReset: true, cleanupPending: true } : { ok: false, error: 'PERSIST_CLEAR_FAILED' }
+  return { ok: true, cleanupPending: localStatus.cleanupPending }
 }
 
 /** 清空指定（或当前）作用域的全部本地数据；用于「安全删除/切换账号」场景 */
@@ -1347,12 +1354,15 @@ function clearScope(openid) {
     aiConversationVersion += 1
     cloudSyncGeneration += 1
   }
-  try {
-    wx.removeStorageSync(`${STORAGE_KEY}__${target}`)
-    wx.removeStorageSync(`${LEGACY_ATTEMPT_CURSOR_KEY}__${target}`)
-  } catch (e) {
-    /* ignore */
-  }
+  try { localRepository.clear(target) } catch (e) { return { ok: false, error: 'PERSIST_SCOPE_CLEAR_FAILED' } }
+  try { wx.removeStorageSync(`${LEGACY_ATTEMPT_CURSOR_KEY}__${target}`) } catch (e) { /* Historical cursor is not an authority. */ }
+  return { ok: true, cleanupPending: localRepository.status(target).cleanupPending }
+}
+
+function rollbackLocalStorage() {
+  if (hasCloud() || dirty || activePull || queuedPushes.size || queuedAiClears.size || pendingDeleteQueued) return { ok: false, error: 'ROLLBACK_REQUIRES_OFFLINE_QUIESCENCE' }
+  __clearFlushTimer()
+  try { return { ...localRepository.rollback(userScope), restartRequired: true } } catch (e) { return { ok: false, error: e.code || 'LOCAL_ROLLBACK_FAILED' } }
 }
 
 /* ============================================================
@@ -1436,7 +1446,8 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
     throw new TypeError('submitAttempt: question 非法')
   }
   const original = load()
-  const s = JSON.parse(JSON.stringify(original))
+  const s = JSON.parse(JSON.stringify({ ...original, attempts: [] }))
+  s.attempts = (original.attempts || []).slice() // Existing facts are immutable; do not clone confirmed history for each answer.
   const session = s.practiceSession
   if (context && !isPracticeContextCurrent(context)) {
     return { ok: false, error: 'STALE_PRACTICE_CONTEXT', record: null, attempt: null, dup: false }
@@ -1500,7 +1511,7 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
   }
   try {
     attemptOutbox.add(s, attempt)
-    wx.setStorageSync(scopeKey(), s)
+    localRepository.write(userScope, s)
   } catch (e) { return { ok: false, error: 'PERSIST_ATTEMPT_FAILED', record: null, attempt: null, dup: false } }
   state = s
   dirty = false
@@ -1514,6 +1525,9 @@ module.exports = {
   todayKey,
   shortDate,
   getUserScope,
+  getLocalStorageStatus: () => localRepository.status(userScope),
+  exportLocalSnapshot: () => localRepository.read(userScope),
+  rollbackLocalStorage,
   getPracticeContext,
   isPracticeContextCurrent,
   onPracticeRestored,

@@ -67,7 +67,7 @@ test('升级不信任旧数组游标，真实流水只重放一次，云端幂�
   await a.settle()
   a.answer('legacy')
   await a.settle()
-  const saved = a.storage.get('exam_quiz_data_v1__alice')
+  const saved = a.store.exportLocalSnapshot()
   delete saved.attemptOutbox
   a.storage.set('exam_quiz_data_v1__alice', saved)
   a.storage.set('exam_quiz_attempt_cursor_v1__alice', 99999)

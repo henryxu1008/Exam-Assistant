@@ -30,7 +30,7 @@ function setupCloud(pages) {
 test('作答流水超一页时分页拉全并合并', async () => {
   const store = freshStore()
   const getCalls = setupCloud([
-    { stats: { version: 5 }, attempts: [{ id: 'a1', createdAt: 1 }, { id: 'a2', createdAt: 2 }], hasMore: true, nextSkip: 100 },
+    { stats: { version: 3 }, attempts: [{ id: 'a1', createdAt: 1 }, { id: 'a2', createdAt: 2 }], hasMore: true, nextSkip: 100 },
     { stats: null, attempts: [{ id: 'a3', createdAt: 3 }], hasMore: false, nextSkip: null }
   ])
   global.wx.setStorageSync(SESSION_KEY, { logged: true, token: 'tok', openid: 'o1' })
@@ -86,7 +86,7 @@ test('恢复任一页失败时丢弃整批档案，重试从首页拉全后才�
     updatedAt: Date.now(), status: 'completed'
   }
   const page = {
-    ok: true, stats: { version: 5, practiceSession: session },
+    ok: true, stats: { version: 3, practiceSession: session },
     attempts: [{ id: 'a1', questionId: 'q1', selected: ['A'], createdAt: 1 }],
     hasMore: true, nextSkip: 100
   }
@@ -121,7 +121,7 @@ test('恢复任一页失败时丢弃整批档案，重试从首页拉全后才�
   assert.deepStrictEqual(store.getAttempts().map((a) => a.id).sort(), ['a1', 'a2'])
   assert.deepStrictEqual(store.getAttempts().map((a) => a.selected), [['A'], ['B']])
   assert.strictEqual(store.getPracticeSession().id, session.id)
-  assert.strictEqual(global.wx.getStorageSync(key).attempts.length, 2)
+  assert.strictEqual(store.exportLocalSnapshot().attempts.length, 2)
   const getCount = calls.filter((c) => c.data.action === 'get').length
   store.pullFromCloud()
   assert.strictEqual(calls.filter((c) => c.data.action === 'get').length, getCount)

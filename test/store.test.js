@@ -293,7 +293,7 @@ test('clearScope 删除当前账号后取消待写，不重建已删除存储', 
   const version = store.getAiConversationVersion()
   store.clearScope()
   store.flush()
-  assert.strictEqual(wx.getStorageSync('exam_quiz_data_v1__A'), '')
+  assert.strictEqual(store.exportLocalSnapshot(), null)
   assert.notStrictEqual(store.getAiConversationVersion(), version)
   assert.deepStrictEqual(store.getAiMessages(), [])
 })

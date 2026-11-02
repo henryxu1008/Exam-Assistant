@@ -586,7 +586,9 @@ test('已有待删除操作时再次清空也必须先写入新的本地重置 I
   assert.ok(a.store.getRecord('between-clears'))
   a.controls.failDeleteWrite = false
   a.controls.failStorage = true
-  assert.equal(a.store.clearAll().ok, true)
+  const queuedReset = a.store.clearAll()
+  assert.equal(queuedReset.ok, true)
+  assert.equal(queuedReset.pendingLocalReset, true)
   await a.settle()
   const second = a.storage.get('exam_quiz_pending_delete_v1__alice')
   assert.equal(second.deleteId, first.deleteId)
