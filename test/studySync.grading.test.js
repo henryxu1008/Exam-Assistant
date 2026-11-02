@@ -244,13 +244,14 @@ test('真实设备 50 条版本化待传按 24/24/2 分批，每批有证据确�
 })
 
 test('需要人工处理的判分失败立即返回原始原因，一轮不重复发送且待传事实不变', async () => {
-  for (const scenario of ['score', 'missing', 'invalid', 'no-release', 'selection', 'not-member']) {
+  for (const scenario of ['score', 'missing', 'invalid', 'no-release', 'selection', 'not-member', 'scope']) {
     const h = makeHarness(), bank = release()
     let q = question(bank)
     if (scenario !== 'missing') seed(h, bank)
     if (scenario === 'invalid') h.questions.get(bank.releaseId).kind = 'catalogDraft'
     if (scenario === 'no-release') { q = { ...q }; delete q.bankReleaseId }
     if (scenario === 'not-member') q = { ...q, bankReleaseId: seed(h, release('-other')).releaseId }
+    if (scenario === 'scope') h.studyStats.set('alice', { _id: 'alice', openid: 'alice', dataEpoch: 0, records: { [q.id]: { id: q.id, subject: '旧科目', chapter: '旧章节', attempts: 1, right: 1, wrong: 0 } }, daily: {} })
     const d = device(h, undefined, false, { getSubjects: () => bank.manifest.subjects, snapshotQuestion: questionDomain.snapshotQuestion })
     try {
       d.store.createPracticeSession({ subject: q.subject, questions: [q], questionIds: [q.id] })
@@ -260,7 +261,7 @@ test('需要人工处理的判分失败立即返回原始原因，一轮不重�
       d.wx.__cloudReady = true
       const result = await d.store.syncNow(); await d.settle()
       const error = { score: 'GRADE_MISMATCH', missing: 'PUBLISHED_RELEASE_NOT_FOUND', invalid: 'INVALID_PUBLISHED_RELEASE',
-        'no-release': 'PUBLISHED_RELEASE_REQUIRED', selection: 'BAD_SELECTION', 'not-member': 'PUBLISHED_QUESTION_NOT_FOUND' }[scenario]
+        'no-release': 'PUBLISHED_RELEASE_REQUIRED', selection: 'BAD_SELECTION', 'not-member': 'PUBLISHED_QUESTION_NOT_FOUND', scope: 'QUESTION_SCOPE_MISMATCH' }[scenario]
       assert.equal(result.error, error)
       assert.equal(result.attempts, 1)
       assert.equal(d.controls.requests.filter(r => r.attempts?.length).length, 1)
