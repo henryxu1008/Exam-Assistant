@@ -1,6 +1,7 @@
 /** Minimal catalog operator client. Server roles remain authoritative; no token enters reports or payload previews. */
 const config = require('./config.js')
 const domain = require('../shared/question-domain.js')
+const examDomain = require('../shared/exam-catalog-domain.js')
 const { sourcesFor } = require('../shared/workflow-domain.js')
 const { preflight } = require('../shared/catalog-import.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
@@ -23,13 +24,17 @@ function createCatalogAdmin({ getSession, call }) {
   async function submit(prepared, options, ctx) {
     if (!options || options.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
     if (typeof options.submissionId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(options.submissionId)) fail('BAD_SUBMISSION_ID')
-    const bank = domain.buildRelease(prepared && prepared.bank), sources = sourcesFor(bank, prepared && prepared.sources)
-    return request({ action: 'createDraft', bank, sources, rightsConfirmed: true, submissionId: options.submissionId, ...(options.basePublication ? { basePublication: options.basePublication } : {}) }, ctx)
+    const isExam = prepared && prepared.bank && prepared.bank.schemaVersion === 3
+    if (!isExam && prepared && prepared.bank && prepared.bank.manifest && (prepared.bank.manifest.exams !== undefined ||
+      (Array.isArray(prepared.bank.manifest.subjects) && prepared.bank.manifest.subjects.some(s => s && s.examId !== undefined)))) fail('EXAM_PROTOCOL_REQUIRED')
+    const bank = isExam ? examDomain.buildExamRelease(prepared.bank) : domain.buildRelease(prepared && prepared.bank), sources = sourcesFor(bank, prepared && prepared.sources)
+    return request({ action: isExam ? 'createExamDraft' : 'createDraft', bank, sources, rightsConfirmed: true, submissionId: options.submissionId, ...(options.basePublication ? { basePublication: options.basePublication } : {}) }, ctx)
   }
   return {
     capture, current, preflight,
     access: () => request({ action: 'getCatalogAccess' }, capture()),
     published: () => request({ action: 'getPublished' }, capture()),
+    activeDraft: () => request({ action: 'getActiveCatalogDraft' }, capture()),
     getDraft: draftId => request({ action: 'getDraft', draftId }, capture()),
     submitDraft: (prepared, options) => submit(prepared, options, capture()),
     review: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
@@ -37,12 +42,16 @@ function createCatalogAdmin({ getSession, call }) {
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('BAD_REVISION')
       return request({ action: 'publishDraft', draftId, expectedRevision }, capture())
     },
+    publishExam: ({ draftId, expectedRevision }) => {
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('BAD_REVISION')
+      return request({ action: 'publishExamDraft', draftId, expectedRevision }, capture())
+    },
     async withdraw({ draftId, questionIds, submissionId, rightsConfirmed }) {
       const ctx = capture()
       if (!Array.isArray(questionIds) || !questionIds.length || questionIds.some(id => typeof id !== 'string' || !id) || new Set(questionIds).size !== questionIds.length) fail('BAD_WITHDRAWAL_IDS')
       const base = await request({ action: 'getDraft', draftId }, ctx)
-      if (!base.draft || base.draft.state !== 'published' || !domain.validRelease(base.draft.bank)) fail('BASE_NOT_PUBLISHED')
-      const active = await request({ action: 'getPublished' }, ctx)
+      if (!base.draft || base.draft.state !== 'published' || !(domain.validRelease(base.draft.bank) || examDomain.validExamRelease(base.draft.bank))) fail('BASE_NOT_PUBLISHED')
+      const active = await request({ action: base.draft.bank.schemaVersion === 3 ? 'getExamPublished' : 'getPublished' }, ctx)
       if (!active.bank || active.bank.releaseId !== base.draft.bank.releaseId || active.publicationRevision !== base.draft.publicationRevision) fail('STALE_BASE_RELEASE')
       const ids = new Set(Object.values(base.draft.bank.questions).flat().map(q => q.id))
       if (questionIds.some(id => !ids.has(id))) fail('UNKNOWN_QUESTION_ID')

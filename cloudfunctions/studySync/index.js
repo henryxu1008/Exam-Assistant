@@ -20,6 +20,7 @@ const { findByToken } = require('./auth.js')
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
 const questionDomain = require('./question-domain.js')
+const examDomain = require('./exam-catalog-domain.js')
 const grading = require('./grading-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
@@ -177,7 +178,7 @@ async function commitAttempts(event, openid) {
             let archive
             try { archive = await readExisting(() => tx.collection('questions').doc(releaseId).get()) } catch (e) { throw Object.assign(new Error('READ_RELEASE_FAILED'), { code: 'READ_RELEASE_FAILED' }) }
             if (!archive) fail('PUBLISHED_RELEASE_NOT_FOUND')
-            if (archive.kind !== 'questionBankRelease' || !questionDomain.validRelease(archive.bank) || archive.bank.releaseId !== releaseId ||
+            if (archive.kind !== 'questionBankRelease' || !(questionDomain.validRelease(archive.bank) || examDomain.validExamRelease(archive.bank)) || archive.bank.releaseId !== releaseId ||
                 !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_PUBLISHED_RELEASE')
             releases.set(releaseId, archive.bank)
           }

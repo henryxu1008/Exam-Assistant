@@ -53,6 +53,7 @@ function jsonRows(text) {
   try { parsed = JSON.parse(text) } catch (e) { fail('BAD_JSON') }
   const bank = parsed && (parsed.bank || parsed), sources = parsed && parsed.sources
   if (!bank || !bank.manifest || !Array.isArray(bank.manifest.subjects) || !bank.questions || !sources || typeof sources !== 'object' || Array.isArray(sources)) fail('BAD_IMPORT_SCHEMA')
+  if (bank.schemaVersion === 3 || bank.manifest.exams !== undefined || bank.manifest.subjects.some(s => s && s.examId !== undefined)) fail('EXAM_IMPORT_NOT_SUPPORTED')
   const rows = [], subjectKeys = new Set(), subjectNames = new Set()
   for (const s of bank.manifest.subjects) {
     if (!s || !Array.isArray(s.chapters) || subjectKeys.has(s.key) || subjectNames.has(s.name) || !Array.isArray(bank.questions[s.key])) fail('BAD_MANIFEST', 0, 'manifest')

@@ -28,6 +28,6 @@ function validExamRelease(bank) {
     const built = buildExamRelease(bank)
     return bank.schemaVersion === 3 && bank.releaseId === built.releaseId &&
       domain.canonical(bank.manifest) === domain.canonical(built.manifest) && domain.canonical(bank.questions) === domain.canonical(built.questions)
-  } catch (e) { return false }
+  } catch (e) { /* swallow: pure validation rejects malformed input; no database read occurs. */ return false }
 }
 module.exports = { buildExamRelease, validExamRelease }

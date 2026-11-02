@@ -22,6 +22,8 @@ const { readOptionalDoc } = require('./db-error.js')
 /** 题库写操作允许的顶层字段（其余一律丢弃，防止写入任意字段） */
 const BANK_FIELDS = ['manifest', 'questions']
 const domain = require('./question-domain.js')
+const examDomain = require('./exam-catalog-domain.js')
+const validRelease = bank => domain.validRelease(bank) || examDomain.validExamRelease(bank)
 const { createWorkflow, workflowRequired } = require('./workflow.js')
 const workflow = createWorkflow(db, activateBank)
 
@@ -50,16 +52,17 @@ async function adminActor(event) {
 async function activateBank(tx, bank, actor, expectedRevision, approval) {
   const collection = tx.collection('questions'), ref = collection.doc('bank')
   const current = await readOptionalDoc(() => ref.get())
+  if (current && current.schemaVersion === 3 && bank.schemaVersion !== 3) return { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }
   if (!approval && await workflowRequired(collection, current)) return { ok: false, error: 'REVIEW_WORKFLOW_REQUIRED' }
   const revision = current && current.publicationRevision || 0
   if (revision !== expectedRevision) return { ok: false, error: 'STALE_PUBLICATION', publicationRevision: revision }
   if (!Number.isSafeInteger(revision + 1)) return { ok: false, error: 'BAD_REVISION' }
   const releaseRef = collection.doc(bank.releaseId)
   const existing = await readOptionalDoc(() => releaseRef.get())
-  if (existing && (existing.kind !== 'questionBankRelease' || !domain.validRelease(existing.bank) ||
+  if (existing && (existing.kind !== 'questionBankRelease' || !validRelease(existing.bank) ||
       domain.canonical(existing.bank) !== domain.canonical(bank))) return { ok: false, error: 'RELEASE_CONFLICT' }
   // The first publication archives the exact legacy bank. Never infer v1 attempt versions from it.
-  if (current && current.schemaVersion !== 2) {
+  if (current && current.schemaVersion !== 2 && current.schemaVersion !== 3) {
     const backupRef = collection.doc('bank_legacy_backup')
     const backup = await readOptionalDoc(() => backupRef.get())
     if (backup) return { ok: false, error: 'LEGACY_BACKUP_EXISTS' }
@@ -86,11 +89,15 @@ async function publish(event, actor) {
 
 exports.main = async (event = {}) => {
   const action = event.action || 'get'
-  if (['getCatalogAccess', 'createDraft', 'getDraft', 'reviewDraft', 'publishDraft'].includes(action)) return workflow(event)
-  if (action === 'get' || action === 'getPublished') {
+  if (['getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft', 'publishDraft', 'publishExamDraft'].includes(action)) return workflow(event)
+  if (action === 'get' || action === 'getPublished' || action === 'getExamPublished') {
     try {
       const bank = await readOptionalDoc(() => BANK.doc('bank').get())
-      if (action === 'getPublished') {
+      if (bank && bank.schemaVersion === 3 && action !== 'getExamPublished') return { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }
+      if (action === 'getExamPublished') {
+        if (!bank || bank.schemaVersion !== 3) return { ok: true, bank: null, publicationRevision: bank && bank.publicationRevision || 0 }
+        if (!examDomain.validExamRelease(bank)) return { ok: false, error: 'INVALID_RELEASE' }
+      } else if (action === 'getPublished') {
         if (!bank || bank.schemaVersion !== 2) return { ok: true, bank: null, publicationRevision: 0 }
         if (!domain.validRelease(bank)) return { ok: false, error: 'INVALID_RELEASE' }
       }
@@ -102,12 +109,14 @@ exports.main = async (event = {}) => {
     try {
       const release = await readOptionalDoc(() => BANK.doc(event.releaseId).get())
       if (!release) return { ok: true, question: null }
-      if (release.kind !== 'questionBankRelease' || !domain.validRelease(release.bank) || release.bank.releaseId !== event.releaseId) return { ok: false, error: 'INVALID_RELEASE' }
+      if (release.kind !== 'questionBankRelease' || !validRelease(release.bank) || release.bank.releaseId !== event.releaseId) return { ok: false, error: 'INVALID_RELEASE' }
       const question = Object.values(release.bank.questions).flat().find(q => q.versionId === event.versionId)
       return { ok: true, question: question ? { ...question, bankReleaseId: event.releaseId } : null }
     } catch (e) { return { ok: false, error: 'READ_VERSION_FAILED' } }
   }
   if (action !== 'set' && action !== 'publish') return { ok: false, error: 'BAD_ACTION' }
+  if (event.bank && (event.bank.schemaVersion === 3 || (event.bank.manifest && (event.bank.manifest.exams !== undefined ||
+      (Array.isArray(event.bank.manifest.subjects) && event.bank.manifest.subjects.some(s => s && s.examId !== undefined)))))) return { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }
   if (action === 'set' && (!event.bank || !event.bank.manifest || !event.bank.questions)) return { ok: false, error: 'BAD_BANK' }
   let actor
   try { actor = await adminActor(event) } catch (e) { return { ok: false, error: 'READ_AUTH_FAILED' } }

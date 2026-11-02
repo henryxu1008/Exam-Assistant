@@ -2,8 +2,10 @@
 const { findByToken, TOKEN_TTL } = require('./auth.js')
 const { readOptionalDoc } = require('./db-error.js')
 const { submission, validDraft, validRoles } = require('./workflow-domain.js')
+const domain = require('./question-domain.js')
+const examDomain = require('./exam-catalog-domain.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
-const rolesFor = { createDraft: 'editors', reviewDraft: 'reviewers', publishDraft: 'publishers' }
+const rolesFor = { createDraft: 'editors', createExamDraft: 'editors', reviewDraft: 'reviewers', publishDraft: 'publishers', publishExamDraft: 'publishers' }
 
 async function workflowRequired(collection, current) {
   const marker = await readOptionalDoc(() => collection.doc('bank_workflow').get())
@@ -30,15 +32,29 @@ function createWorkflow(db, activateBank) {
         if (event.action === 'getCatalogAccess') return { ok: true, roles: ['editors', 'reviewers', 'publishers'].filter(r => roles[r].includes(actor)) }
         if (role ? !roles[role].includes(actor) : !['editors', 'reviewers', 'publishers'].some(r => roles[r].includes(actor))) fail('NOT_CATALOG_ROLE')
         const collection = tx.collection('questions')
-        if (event.action === 'createDraft') {
+        if (event.action === 'getActiveCatalogDraft') {
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (!active) return { ok: true, draft: null, basePublication: null }
+          if (!Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1 || !(domain.validRelease(active) || examDomain.validExamRelease(active))) fail('NO_EDITABLE_PUBLISHED_DRAFT')
+          const audit = await readOptionalDoc(() => collection.doc('bank_publication_' + active.publicationRevision).get())
+          const draftId = audit && audit.approval && audit.approval.draftId
+          if (!/^qd_[a-f0-9]{64}$/.test(draftId || '') || audit.kind !== 'bankPublication' || audit.publicationRevision !== active.publicationRevision || audit.releaseId !== active.releaseId) fail('NO_EDITABLE_PUBLISHED_DRAFT')
+          const draft = await readOptionalDoc(() => collection.doc(draftId).get())
+          if (!validDraft(draft) || draft.state !== 'published' || draft.publicationRevision !== active.publicationRevision || draft.bank.releaseId !== active.releaseId || audit.approval.payloadDigest !== draft.payloadDigest) fail('INVALID_PUBLISHED_DRAFT')
+          return { ok: true, draft, basePublication: { revision: active.publicationRevision, releaseId: active.releaseId } }
+        }
+        if (event.action === 'createDraft' || event.action === 'createExamDraft') {
           const payload = submission(event, actor), ref = collection.doc(payload.draftId)
           const existing = await readOptionalDoc(() => ref.get())
           if (existing) {
             if (!validDraft(existing) || existing.payloadDigest !== payload.payloadDigest) fail('DRAFT_OPERATION_CONFLICT')
             return { ok: true, draftId: existing.draftId, state: existing.state, replayed: true }
           }
+          const active = event.action === 'createExamDraft' || payload.basePublication ? await readOptionalDoc(() => collection.doc('bank').get()) : null
+          if (event.action === 'createExamDraft' && !Object.values(payload.bank.questions).some(list => list.length)) fail('EMPTY_EXAM_DRAFT')
+          if (event.action === 'createExamDraft' && active && !(domain.validRelease(active) || examDomain.validExamRelease(active))) fail('INVALID_ACTIVE_RELEASE')
+          if (event.action === 'createExamDraft' && active && !payload.basePublication) fail('BASE_PUBLICATION_REQUIRED')
           if (payload.basePublication) {
-            const active = await readOptionalDoc(() => collection.doc('bank').get())
             if (!active || active.publicationRevision !== payload.basePublication.revision || active.releaseId !== payload.basePublication.releaseId) fail('STALE_BASE_RELEASE')
           }
           const required = await workflowRequired(collection)
@@ -69,6 +85,7 @@ function createWorkflow(db, activateBank) {
           await ref.set({ data: { ...draft, ...review } })
           return { ok: true, draftId: draft.draftId, state }
         }
+        if ((draft.bank.schemaVersion === 3) !== (event.action === 'publishExamDraft')) fail('EXAM_PROTOCOL_REQUIRED')
         if (!Number.isSafeInteger(event.expectedRevision) || event.expectedRevision < 0) fail('BAD_REVISION')
         if (draft.state === 'published') return { ok: true, releaseId: draft.bank.releaseId, publicationRevision: draft.publicationRevision, alreadyPublished: true }
         if (draft.state !== 'approved' || !draft.sourceVerified || draft.reviewedBy === draft.createdBy) fail('DRAFT_NOT_APPROVED')
@@ -79,6 +96,10 @@ function createWorkflow(db, activateBank) {
         if (draft.basePublication) {
           const active = await readOptionalDoc(() => collection.doc('bank').get())
           if (!active || event.expectedRevision !== draft.basePublication.revision || active.publicationRevision !== draft.basePublication.revision || active.releaseId !== draft.basePublication.releaseId) fail('STALE_BASE_RELEASE')
+        } else if (draft.bank.schemaVersion === 3) {
+          // A draft created against an empty catalog cannot be rebased onto someone else's first publication.
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (active || event.expectedRevision !== 0) fail('STALE_BASE_RELEASE')
         }
         const result = await activateBank(tx, draft.bank, actor, event.expectedRevision,
           { draftId: draft.draftId, reviewedBy: draft.reviewedBy, payloadDigest: draft.payloadDigest, sourceVerified: true })
