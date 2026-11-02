@@ -1,0 +1,41 @@
+<view class="page catalog-admin">
+  <view class="card">
+    <view class="title">题库管理</view>
+    <view wx:if="{{allowed}}">当前角色：{{roleText}}</view>
+    <view wx:else>当前账号没有题库管理权限，或权限尚未读取成功。</view>
+    <view class="error" wx:if="{{error}}">{{error}}</view>
+    <button size="mini" bindtap="onShow" disabled="{{busy}}">刷新权限</button>
+  </view>
+  <block wx:if="{{allowed}}">
+    <view class="card">
+      <view class="title">1. 导入预检与草稿</view>
+      <view class="row"><button size="mini" data-format="json" bindtap="onFormat">JSON</button><button size="mini" data-format="csv" bindtap="onFormat">CSV</button><text>{{format}}</text></view>
+      <textarea disabled="{{busy}}" value="{{inputText}}" data-field="inputText" bindinput="onInput" maxlength="-1" placeholder="粘贴完整题库与来源（管理页限 200 KB），先预检再提交" />
+      <button bindtap="onCheck" disabled="{{busy}}">本地预检</button>
+      <text class="report" selectable="true">{{report}}</text>
+      <input disabled="{{busy}}" value="{{submissionId}}" data-field="submissionId" bindinput="onInput" placeholder="稳定提交 ID：修改内容或重新审核时换一个 ID" />
+      <checkbox-group data-field="rights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{rightsConfirmed}}" />我已核对来源并确认具有发布权</label></checkbox-group>
+      <button bindtap="onSubmit" disabled="{{busy || !canEdit || !ready || !rightsConfirmed}}">提交草稿</button>
+    </view>
+    <view class="card">
+      <view class="title">2. 查看与独立审核</view>
+      <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />
+      <button bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
+      <text class="report" selectable="true">{{preview}}</text>
+      <checkbox-group data-field="sources" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="sources" checked="{{sourceVerified}}" />我作为独立审核人已核验来源证据</label></checkbox-group>
+      <input disabled="{{busy}}" value="{{note}}" data-field="note" bindinput="onInput" maxlength="2000" placeholder="审核结论（必填）" />
+      <view class="row"><button data-decision="approve" bindtap="onReview" disabled="{{busy || !canReview || !sourceVerified}}">批准</button><button data-decision="reject" bindtap="onReview" disabled="{{busy || !canReview}}">拒绝</button></view>
+    </view>
+    <view class="card">
+      <view class="title">3. 发布</view>
+      <button bindtap="onReadRevision" disabled="{{busy}}">读取当前发布修订</button>
+      <input disabled="{{busy}}" value="{{revision}}" data-field="revision" bindinput="onInput" type="number" placeholder="核对后输入预期修订号" />
+      <button bindtap="onPublish" disabled="{{busy || !canPublish}}">按该修订发布已批准草稿</button>
+      <view class="title">撤回题目</view>
+      <view>先填写当前已发布草稿 ID、新提交 ID，并确认来源；撤回会生成新草稿，仍需独立审核和发布。</view>
+      <input disabled="{{busy}}" value="{{removeIds}}" data-field="removeIds" bindinput="onInput" placeholder="要撤回的题号，用逗号分隔" />
+      <button bindtap="onWithdraw" disabled="{{busy || !canEdit || !rightsConfirmed}}">提交撤回草稿</button>
+      <text class="report" selectable="true">{{result}}</text>
+    </view>
+  </block>
+</view>

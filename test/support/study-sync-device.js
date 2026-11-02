@@ -3,7 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 
-function device(server, saved, cloudReady = true) {
+function device(server, saved, cloudReady = true, questionBank) {
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
@@ -82,7 +82,7 @@ function device(server, saved, cloudReady = true) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../utils/store.js'), 'utf8'), {
     module, wx, console, setTimeout, clearTimeout, Date: DeviceDate,
     require(name) {
-      if (name === './questions.js') return { getSubjects: () => [{ name: '公基' }] }
+      if (name === './questions.js') return questionBank || { getSubjects: () => [{ name: '公基' }] }
       if (name === './sync-coordinator.js') return require('../../utils/sync-coordinator.js')
       if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
       if (name === './config.js') return require('../../utils/config.js')

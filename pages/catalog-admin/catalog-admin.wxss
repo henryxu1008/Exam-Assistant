@@ -1,0 +1,9 @@
+.catalog-admin { padding: 24rpx; }
+.catalog-admin .title { font-weight: 600; margin: 16rpx 0; }
+.catalog-admin textarea { width: 100%; min-height: 260rpx; box-sizing: border-box; background: #f5f7fb; padding: 16rpx; }
+.catalog-admin input { margin: 20rpx 0; border-bottom: 1rpx solid #d7dce5; min-height: 72rpx; }
+.catalog-admin label { display: block; margin: 20rpx 0; }
+.catalog-admin .report { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 24rpx; margin: 18rpx 0; }
+.catalog-admin .error { color: #aa2631; margin: 16rpx 0; }
+.catalog-admin button { margin: 12rpx 0; }
+.catalog-admin .row { display: flex; gap: 16rpx; align-items: center; }

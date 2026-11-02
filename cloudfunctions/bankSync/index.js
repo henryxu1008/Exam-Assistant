@@ -86,7 +86,7 @@ async function publish(event, actor) {
 
 exports.main = async (event = {}) => {
   const action = event.action || 'get'
-  if (['createDraft', 'getDraft', 'reviewDraft', 'publishDraft'].includes(action)) return workflow(event)
+  if (['getCatalogAccess', 'createDraft', 'getDraft', 'reviewDraft', 'publishDraft'].includes(action)) return workflow(event)
   if (action === 'get' || action === 'getPublished') {
     try {
       const bank = await readOptionalDoc(() => BANK.doc('bank').get())
