@@ -50,7 +50,7 @@ miniprogram-4/
 │   ├── questions.js      # 题库入口：直接 re-export utils/bank/index.js（对外 API 不变）
 │   ├── bank/
 │   │   ├── manifest.js   # 科目 / 章节清单（manifest 驱动，页面与统计口径都从这里取）
-│   │   ├── index.js      # 加载器：按科目懒加载分片 + 全部查询函数（统一判分 judge() 在此）
+│   │   ├── index.js      # 加载器：按科目懒加载分片 + 查询函数（导出共享 judge()）
 │   │   ├── gk.js         # 分片：公共基础知识（module.exports = [题目...]）
 │   │   ├── nl.js         # 分片：职业能力测验
 │   │   └── it.js         # 分片：专业知识
@@ -88,7 +88,10 @@ miniprogram-4/
 
 新题库使用不可变题目版本与发布快照。第一阶段支持管理员 bankSync.publish；启用独立审核流程后，改由编辑创建草稿、另一人审核、发布角色按修订号激活，旧单管理员路径被拒绝；纠错、撤回和回滚都保留旧归档。客户端只读取 getPublished，缓存落盘后才切换；练习会话和新作答保留原题快照，旧 v1 记录不推测版本。接口、权限、兼容和剩余范围见 [ADR 0013](docs/adr/0013-immutable-question-releases.md)。独立角色、来源记录、启用与兼容边界见 [ADR 0014](docs/adr/0014-independent-catalog-review.md)。本阶段未部署，真实环境未验收。
 
-支持 6 种题型，判分统一走 `utils/bank/index.js` 的 `judge(type, selected, answer)`：
+支持 6 种题型，端上经 `utils/bank/index.js` 导出 `shared/grading-domain.js` 的 `judge(type, selected, answer)`。
+新增版本化作答由 studySync 按原发布归档重新判分，归档失败或分数不符则整批拒绝、保留待传项；旧事实不重判。
+协议、服务端接收时间、旧数据与上线限制见 [ADR 0018](docs/adr/0018-published-question-grading.md)。
+1.2.0 / 1.3.0 客户端与服务端升级组合、可复现命令和原生验收项见 [协议升级指南](docs/grading-upgrade-acceptance.md)。
 
 | type | 题型 | 题数 | 作答方式 | 判分规则 |
 | --- | --- | --- | --- | --- |
@@ -146,7 +149,7 @@ miniprogram-4/
 
 服务端过期清理和登出均按读取时的 `(_id, token)` 条件原子撤销：旧请求读完后若已有新登录换发令牌，旧请求不再清除新会话；过期令牌即使清理写入失败也不会被接受。
 
-学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。作答经 commitAttempts / commitVersionedAttempts 按业务键事务去重；客户端先将作答与待传队列一起落盘，验证提交 ID 与云端事实映射后才持久出队。新协议每批最多 32 条，每批确认独立保存进度，最后一批发布完整会话/设置快照；题目和每日计数按已接受事实累计。首次全量恢复后按服务端序号增量读取作答；恢复分页校验同一修订号，完整恢复结果与游标一起落盘。登录、前台和网络恢复事件共享有界同步任务；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
+学习档案与流水经 `studySync` 同步到 `studyStats` / `attempts`。作答经 commitAttempts / commitVersionedAttempts 按业务键事务去重；客户端先将作答与待传队列一起落盘，验证提交 ID、云端事实和判分证据后才持久出队。版本化批次每批最多 24 条（questionProtocol:2），纯历史批次最多 32 条；每批确认独立保存进度，最后一批发布完整会话/设置快照。题目和每日计数按已接受事实累计，历史基线与旧 v1 提交保持未验证。首次全量恢复后按服务端序号增量读取作答；恢复分页校验同一修订号，完整恢复结果与游标一起落盘。登录、前台和网络恢复事件共享有界同步任务；清空以服务端 dataEpoch 阻断其他设备旧快照。题库写入仅允许管理员。
 
 持久 outbox 与按 ID 确认对应 #7 第一阶段；作答增量恢复及生命周期触发对应第二阶段，协议、旧写入器兼容和索引验收见 [ADR 0011](docs/adr/0011-incremental-recovery-and-lifecycle-sync.md)。第三阶段业务幂等、规范 ID、事实计数和只读对账见 [ADR 0012](docs/adr/0012-business-idempotency-and-readonly-reconciliation.md)。旧聚合仍保留历史基线；真实环境/历史差异验收、题目不可变版本与仓储拆分分别跟踪在 #7、#5、#11。原有事务/权限边界见 [ADR 0009](docs/adr/0009-sync-integrity-and-resource-permissions.md)，队列契约、旧数据重放、同步写盘成本及发布/回滚约束见 [ADR 0010](docs/adr/0010-durable-attempt-outbox.md)。
 

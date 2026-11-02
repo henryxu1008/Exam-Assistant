@@ -130,11 +130,12 @@ test('旧流水无法从当前题库推断版本，新快照必须与事实身�
 test('新作答快照经真实提交/恢复入口保留，伪改版本或丢失快照时整批拒绝', async () => {
   const { makeHarness } = require('./support/study-sync-harness.js')
   const h = makeHarness(), bank = domain.buildRelease(fixture())
+  h.questions.set(bank.releaseId, { kind: 'questionBankRelease', bank, publishedAt: 1 })
   const q = { ...bank.questions.gk[0], bankReleaseId: bank.releaseId }
   const fact = { id: 'local', sessionId: 'session', clientOpId: 'op', questionId: q.id, questionVersionId: q.versionId,
     selected: ['A'], answer: q.answer, score: 1, costMs: 10, createdAt: 1, bankReleaseId: bank.releaseId, questionSnapshot: q,
     projection: { version: 1, subject: q.subject, chapter: q.chapter, date: '2026-11-01' } }
-  const commit = attempts => h.main({ action: 'commitVersionedAttempts', questionProtocol: 1, attemptProtocol: 2, token: 'tokA', dataEpoch: 0, attempts })
+  const commit = attempts => h.main({ action: 'commitVersionedAttempts', questionProtocol: 2, attemptProtocol: 2, token: 'tokA', dataEpoch: 0, attempts })
   assert.equal((await h.main({ action: 'commitAttempts', attemptProtocol: 2, token: 'tokA', attempts: [fact] })).error, 'QUESTION_PROTOCOL_REQUIRED')
   const result = await commit([fact])
   assert.equal(result.ok, true)

@@ -26,7 +26,7 @@ test('CSV/JSON 导入、独立审核、发布、真实学习同步、纠错与�
   assert.equal((await ops.publisher.published()).bank, null)
   await assert.rejects(ops.publisher.publish({ draftId: first.draftId, expectedRevision: 0 }), /DRAFT_NOT_APPROVED/)
   await publish(ops, first.draftId, 0)
-  const learning = makeHarness(), bankProxy = { getSubjects: () => [{ name: '专业知识' }] }
+  const learning = makeHarness({ questionDocuments: ops.h.documents }), bankProxy = { getSubjects: () => [{ name: '专业知识' }] }
   const consumer = device(learning, undefined, true, bankProxy)
   try {
     const original = consumer.wx.cloud.callFunction

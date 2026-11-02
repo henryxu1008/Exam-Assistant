@@ -7,6 +7,7 @@
 const bank = require('./questions.js')
 const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
+const grading = require('../shared/grading-domain.js')
 const { createLocalRepository } = require('./local-repository.js')
 const localStorageListeners = new Set()
 function effectiveLocalStatus(status) {
@@ -831,7 +832,8 @@ function pushToCloud() {
       const currentOperations = new Map(attemptOutbox.pending(state).map(a => [a.id, a]))
       const unsent = operations.filter(a => currentOperations.has(a.id) && attemptDomain.canonical(a) === attemptDomain.canonical(currentOperations.get(a.id)))
       const batches = []
-      for (let i = 0; i < unsent.length; i += 32) batches.push(unsent.slice(i, i + 32))
+      const batchSize = unsent.some(grading.isVersioned) ? grading.MAX_VERSIONED_BATCH : 32
+      for (let i = 0; i < unsent.length; i += batchSize) batches.push(unsent.slice(i, i + batchSize))
       if (!batches.length) batches.push([])
       for (let index = 0; index < batches.length; index++) {
         if (isStaleContext(ctx)) return
@@ -839,8 +841,8 @@ function pushToCloud() {
         const result = await new Promise(resolve => {
           try {
             callCloud({ name: config.functions.studySync,
-              data: { token: ctx.token, action: sent.some(a => a.questionSnapshot) ? 'commitVersionedAttempts' : 'commitAttempts',
-                  ...(sent.some(a => a.questionSnapshot) ? { questionProtocol: 1 } : {}), attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
+              data: { token: ctx.token, action: sent.some(grading.isVersioned) ? 'commitVersionedAttempts' : 'commitAttempts',
+                  ...(sent.some(grading.isVersioned) ? { questionProtocol: grading.QUESTION_PROTOCOL } : {}), attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
                 ...(index === batches.length - 1 ? { stats: payloadForSend() } : {}), attempts: sent },
               success: res => resolve(res && res.result), fail: () => resolve(null) })
           } catch (e) { resolve(null) }
@@ -895,7 +897,7 @@ const runSync = createSyncCoordinator({
       if (tail === cloudWriteChain) break
     }
     const failure = lastPushFailure && !isStaleContext(lastPushFailure.ctx) ? lastPushFailure.error : null
-    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure)) {
+    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure) || grading.NON_RETRYABLE_ERRORS.includes(failure)) {
       throw Object.assign(new Error(failure), { code: failure, retryable: false })
     }
     return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&

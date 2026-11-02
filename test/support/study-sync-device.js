@@ -3,7 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 
-function device(server, saved, cloudReady = true, questionBank) {
+function device(server, saved, cloudReady = true, questionBank, { sourceRoot = path.join(__dirname, '../..') } = {}) {
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
@@ -80,16 +80,12 @@ function device(server, saved, cloudReady = true, questionBank) {
     static now() { return controls.now === null ? Date.now() : controls.now }
   }
   const module = { exports: {} }
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../utils/store.js'), 'utf8'), {
+  vm.runInNewContext(fs.readFileSync(path.join(sourceRoot, 'utils/store.js'), 'utf8'), {
     module, wx, console, setTimeout, clearTimeout, Date: DeviceDate,
     require(name) {
       if (name === './questions.js') return questionBank || { getSubjects: () => [{ name: '公基' }] }
-      if (name === './local-repository.js') return require('../../utils/local-repository.js')
-      if (name === './sync-coordinator.js') return require('../../utils/sync-coordinator.js')
-      if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
-      if (name === './config.js') return require('../../utils/config.js')
-      if (name === '../shared/attempt-domain.js') return require('../../shared/attempt-domain.js')
-      if (name === '../shared/stats-merge.js') return require('../../shared/stats-merge.js')
+      if (['./local-repository.js', './sync-coordinator.js', './attempt-outbox.js', './config.js',
+        '../shared/attempt-domain.js', '../shared/grading-domain.js', '../shared/stats-merge.js'].includes(name)) return require(path.resolve(sourceRoot, 'utils', name))
       throw new Error('Unexpected module ' + name)
     }
   })
