@@ -210,6 +210,38 @@ test('管理页从文件导入 700 题，分批上传、逐页审核并发布', 
   } finally { consumer.store.__clearFlushTimer() }
 })
 
+test('超过单记录容量的分页题库可以逐题编辑、重启恢复并提交完整快照', async t => {
+  const ops = operators(), imported = JSON.parse(sample), first = imported.bank.questions.it[0], source = imported.sources[first.id]
+  imported.bank.schemaVersion = 4; imported.bank.manifest.exams = [{ id: 'exam', name: '考试' }]; imported.bank.manifest.subjects[0].examId = 'exam'
+  imported.bank.questions.it = Array.from({ length: 700 }, (_, i) => ({ ...first, id: 'q' + String(i).padStart(4, '0'), stem: first.stem + 'x'.repeat(1200) }))
+  imported.sources = Object.fromEntries(imported.bank.questions.it.map(q => [q.id, source]))
+  assert.ok(Buffer.byteLength(JSON.stringify(imported)) > 800000)
+  const prepared = ops.editor.preparePaged(JSON.stringify(imported))
+  const draft = await ops.editor.submitPaged(prepared, { submissionId: 'editor-base', rightsConfirmed: true, basePublication: null })
+  for (const page of prepared.publicPages) await ops.reviewer.getPagedDraftPage(draft.draftId, page.index)
+  await ops.reviewer.reviewPaged({ draftId: draft.draftId, decision: 'approve', note: '合成来源', sourceVerified: true })
+  await ops.publisher.publishPaged({ draftId: draft.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor), done = async () => { for (let i = 0; p.data.busy && i < 10000; i++) await settle(); assert.equal(p.data.busy, false) }
+  await settle(); p.onLoadEditor(); await done()
+  assert.equal(p.data.error, ''); assert.equal(p._workspace.bank.questions.it.length, 700)
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  p.onEditQuestion({ currentTarget: { dataset: { id: 'q0000' } } })
+  const editedStem = '改'.repeat(7001)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: editedStem } }); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  p._workspace = null; p.onRestoreEditor(); assert.equal(p._workspace.bank.questions.it.length, 700)
+  assert.equal(p._workspace.bank.questions.it.find(q => q.id === 'q0000').stem, editedStem)
+  p.onPrepareEditor(); assert.equal(p.data.pagedReady, true)
+  assert.equal(p._pagedPrepared.root.totalQuestions, 700)
+  assert.deepEqual(p._pagedPrepared.privatePages.flatMap(x => Object.keys(x.sources)).sort(), Object.keys(imported.sources).sort())
+  input(p, 'pagedSubmissionId', 'editor-change')
+  p.onConfirm({ currentTarget: { dataset: { field: 'pagedRights' } }, detail: { value: ['rights'] } })
+  p.onSubmitPaged(); await done()
+  assert.equal(ops.h.documents.get(p.data.draftId).state, 'sealed')
+  assert.equal(ops.h.bank().publicationRevision, 1)
+})
+
 test('大题库文件含非法 UTF-8 或长度不符时拒绝导入', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   const oldChoose = wx.chooseMessageFile, oldFs = wx.getFileSystemManager

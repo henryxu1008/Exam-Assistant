@@ -158,7 +158,7 @@ miniprogram-4/
 ## 题库运营与存储基线
 
 离线检查：`npm run catalog:check -- --input docs/examples/catalog-import.csv --format csv`。
-小程序管理页为 `pages/catalog-admin/catalog-admin`，具备目录角色的账号可从个人页进入；v3 支持可视化维护和 JSON/CSV 全量导入。v4 支持完整 JSON 文件分片上传、逐页独立审核和原子发布，学习端分片缓存及原发布判分；首版最多 20 页、每页 100 题、总计 2000 题，另有页大小和登记容量限制。v4 可视化逐题编辑尚未支持；详细操作与限制见 [运营指南](docs/catalog-operations.md) 和 [ADR 0020](docs/adr/0020-paged-catalog.md)。
+小程序管理页为 `pages/catalog-admin/catalog-admin`，具备目录角色的账号可从个人页进入；v3 支持可视化维护和 JSON/CSV 全量导入。v4 支持完整 JSON 文件分片上传、逐页独立审核和原子发布，学习端分片缓存及原发布判分；首版最多 20 页、每页 100 题、总计 2000 题，另有页大小和登记容量限制。v4 支持基于已发布内容逐题编辑，并可由创建人丢弃未封存的私有暂存；详细操作与限制见 [运营指南](docs/catalog-operations.md) 和 [ADR 0020](docs/adr/0020-paged-catalog.md)。
 接口权限仍由服务端检查；用法、大小限制与隔离环境验收步骤见 [运营指南](docs/catalog-operations.md)。
 
 合成存储基线：`npm run bench:learning -- --sizes 1000,10000 --runs 5`，只用进程内存储、不访问云。

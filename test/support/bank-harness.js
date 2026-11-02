@@ -47,6 +47,12 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
             if (fail.write && (typeof fail.write !== 'function' || fail.write(name, id))) throw new Error('injected write failure')
             source[name].set(id, clone(data))
             return { stats: { updated: 1 } }
+          },
+          async remove() {
+            if (trace) trace.push({ operation: 'remove', name, id })
+            if (fail.write && (typeof fail.write !== 'function' || fail.write(name, id))) throw new Error('injected write failure')
+            source[name].delete(id)
+            return { stats: { removed: 1 } }
           }
         }
       },

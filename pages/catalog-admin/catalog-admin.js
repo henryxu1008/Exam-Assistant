@@ -167,10 +167,20 @@ Page({
   onSubmitPaged() {
     if (!this._pagedPrepared) { this.setData({ error: 'PREFLIGHT_REQUIRED' }); return }
     this._run(live => this._client.submitPaged(this._pagedPrepared, { submissionId: this.data.pagedSubmissionId, rightsConfirmed: this.data.pagedRights,
-      basePublication: this._pagedBase, onProgress: (done, total) => { if (live()) this.setData({ pagedReport: `已上传 ${done} / ${total} 页，尚未发布。` }) } }, live), result => {
+      basePublication: this._pagedBase, onStarted: (draftId, total) => { if (live()) this.setData({ draftId, pagedReport: `草稿 ${draftId} 已上传 0 / ${total} 页，尚未发布。` }) },
+      onProgress: (done, total, draftId) => { if (live()) this.setData({ draftId, pagedReport: `草稿 ${draftId} 已上传 ${done} / ${total} 页，尚未发布。` }) } }, live), result => {
       this._draft = null; this._reviewRows = null; this._reviewSeen = null
       this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) })
     })
+  },
+  onAbandonPagedDraft() {
+    if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
+    const draftId = this.data.draftId, generation = this._generation, ctx = this._context
+    if (!/^qpd_[a-f0-9]{64}$/.test(draftId || '')) { this.setData({ error: 'BAD_DRAFT_ID' }); return }
+    wx.showModal({ title: '丢弃未封存的暂存草稿', content: '仅可丢弃本人尚在上传的草稿，并删除其私有来源暂存；已封存或发布的草稿不会删除。此操作无法撤销。', success: result => {
+      if (!result.confirm || generation !== this._generation || !this._active || ctx !== this._context || draftId !== this.data.draftId || !this._client.current(ctx)) return
+      this._run(() => this._client.abandonPagedDraft(draftId), value => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], result: JSON.stringify(value, null, 2) }) })
+    } })
   },
   onReadDraft() {
     if (/^qpd_/.test(this.data.draftId)) {
@@ -272,8 +282,8 @@ Page({
         ['selectedExam', 'selectedSubject', 'selectedChapter', 'editingId'].some(k => typeof saved.ui[k] !== 'string') ||
         typeof saved.ui.editorDirty !== 'boolean' || typeof saved.ui.questionFormDirty !== 'boolean' || !Number.isSafeInteger(saved.ui.questionPage) || saved.ui.questionPage < 1) throw Object.assign(new Error('LOCAL_DRAFT_INVALID'), { code: 'LOCAL_DRAFT_INVALID' })
       this._workspace = saved.workspace; this._checkpointToken = saved.token; this._editorDirty = saved.ui.editorDirty; this._questionFormDirty = saved.ui.questionFormDirty
-      this._prepared = null; this._preparedBase = null
-      this.setData({ ...saved.ui, ready: false, rightsConfirmed: false, report: '', error: '',
+      this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null
+      this.setData({ ...saved.ui, ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '', error: '',
         questionTypeName: (questionTypes.find(x => x.value === saved.ui.form.type) || {}).name || saved.ui.form.type,
         sourceTypeName: (sourceTypes.find(x => x.value === saved.ui.form.sourceKind) || {}).name || saved.ui.form.sourceKind })
       this._renderEditor()
@@ -289,8 +299,8 @@ Page({
     wx.showModal({ title: '丢弃本机编辑', content: '仅删除本账号保存在本机的编辑内容；已提交的云端草稿不受影响。', success: result => {
       if (!result.confirm || generation !== this._generation || !this._active || ctx !== this._context || !this._client.current(ctx)) return
       try {
-        this._checkpoint.clear(saved.token); this._checkpointToken = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._prepared = null; this._preparedBase = null
-        this.setData({ editorReady: false, exams: [], subjects: [], chapters: [], questions: [], selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), ready: false, rightsConfirmed: false, error: '' })
+        this._checkpoint.clear(saved.token); this._checkpointToken = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null
+        this.setData({ editorReady: false, exams: [], subjects: [], chapters: [], questions: [], selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), ready: false, rightsConfirmed: false, pagedReady: false, pagedRights: false, pagedReport: '', error: '' })
       } catch (e) { this.setData({ error: e.code || 'LOCAL_DRAFT_CLEANUP_FAILED' }) }
     } })
   },
@@ -320,18 +330,22 @@ Page({
     this._readEditor()
   },
   _readEditor() {
-    this._run(async () => {
+    this._run(async live => {
       const current = await this._client.pagedCurrent()
-      if (current.root) throw Object.assign(new Error('PAGED_EDITOR_FILE_REQUIRED'), { code: 'PAGED_EDITOR_FILE_REQUIRED' })
-      return this._client.activeDraft()
-    }, result => {
-      if (result.draft && result.draft.bank.schemaVersion !== 3) { this.setData({ error: 'LEGACY_IDENTITY_MIGRATION_REQUIRED' }); return }
+      if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
+      return { result: await this._client.activeDraft() }
+    }, loaded => {
+      if (loaded.workspace) {
+        if (!editor.validWorkspace(loaded.workspace)) throw Object.assign(new Error('INVALID_PUBLISHED_DRAFT'), { code: 'INVALID_PUBLISHED_DRAFT' })
+      }
+      const result = loaded.result
+      if (result && result.draft && result.draft.bank.schemaVersion !== 3) { this.setData({ error: 'LEGACY_IDENTITY_MIGRATION_REQUIRED' }); return }
       const bytes = utf8Bytes(JSON.stringify(result))
-      if (bytes > 800000) { this.setData({ error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
-      const workspace = editor.openWorkspace(result), ui = this._editorUI({ selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', questionPage: 1, form: editorForm(), editorDirty: false, questionFormDirty: false })
+      if (result && bytes > 800000) { this.setData({ error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
+      const workspace = loaded.workspace || editor.openWorkspace(result), ui = this._editorUI({ selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', questionPage: 1, form: editorForm(), editorDirty: false, questionFormDirty: false })
       const token = this._checkpointToken ? this._checkpoint.saveWorkspace(this._checkpointToken, workspace, ui) : this._checkpoint.create(workspace, ui)
-      this._workspace = workspace; this._checkpointToken = token; this._prepared = null; this._preparedBase = null; this._editorDirty = false; this._questionFormDirty = false
-      this.setData({ ...ui, questionTypeName: '单选题', sourceTypeName: '原创', ready: false, rightsConfirmed: false, report: '' })
+      this._workspace = workspace; this._checkpointToken = token; this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._editorDirty = false; this._questionFormDirty = false
+      this.setData({ ...ui, questionTypeName: '单选题', sourceTypeName: '原创', ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '' })
       this._renderEditor()
     })
   },
@@ -340,13 +354,13 @@ Page({
     const field = e.currentTarget.dataset.field
     if (!Object.prototype.hasOwnProperty.call(this.data.form, field)) return
     const value = e.detail.value
-    if (utf8Bytes(value) > 20000) { this.setData({ error: 'INPUT_TOO_LARGE_FOR_PAGE' }); return }
+    if (utf8Bytes(value) > 120000) { this.setData({ error: 'INPUT_TOO_LARGE_FOR_PAGE' }); return }
     const questionFormDirty = this._questionFormDirty || ['questionId', 'type', 'stem', 'options', 'answer', 'explain', 'pitfall', 'keyPoint', 'tags', 'level', 'sourceKind', 'sourceTitle', 'sourceReference', 'sourcePermission', 'sourceAttribution', 'sourceGenerator'].includes(field)
     const form = { ...this.data.form, [field]: value }
     if (!this._saveEditorForm(this._editorUI({ form, questionFormDirty: !!questionFormDirty, editorDirty: true }))) return
     this._questionFormDirty = !!questionFormDirty; this._editorDirty = true
-    this._prepared = null; this._preparedBase = null
-    this.setData({ form, ready: false, rightsConfirmed: false, report: '',
+    this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null
+    this.setData({ form, ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '',
       ...(field === 'type' ? { questionTypeName: (questionTypes.find(item => item.value === value) || {}).name || value } : {}),
       ...(field === 'sourceKind' ? { sourceTypeName: (sourceTypes.find(item => item.value === value) || {}).name || value } : {}) })
   },
@@ -372,13 +386,13 @@ Page({
     if (this.data.busy || !this.data.canEdit || !this._workspace || !this._active || !this._client.current(this._context)) return
     try {
       const next = editor.change(this._workspace, action)
-      if (utf8Bytes(JSON.stringify(next)) > 800000) throw Object.assign(new Error('DRAFT_TOO_LARGE_FOR_PAGE'), { code: 'DRAFT_TOO_LARGE_FOR_PAGE' })
+      if (next.bank.schemaVersion === 3 && utf8Bytes(JSON.stringify(next)) > 800000) throw Object.assign(new Error('DRAFT_TOO_LARGE_FOR_PAGE'), { code: 'DRAFT_TOO_LARGE_FOR_PAGE' })
       const ui = this._editorUI({ editorDirty: true, ...uiPatch })
       const token = this._checkpoint.saveWorkspace(this._checkpointToken, next, ui)
-      this._workspace = next; this._checkpointToken = token; this._prepared = null; this._preparedBase = null
+      this._workspace = next; this._checkpointToken = token; this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null
       this._editorDirty = true
       this._questionFormDirty = ui.questionFormDirty
-      this.setData({ ...uiPatch, ready: false, rightsConfirmed: false, report: '', error: '' }); this._renderEditor(); return true
+      this.setData({ ...uiPatch, ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '', error: '' }); this._renderEditor(); return true
     } catch (e) { this.setData({ error: /^[A-Z_]+$/.test(e.code || '') ? e.code : 'OPERATION_FAILED' }); return false }
   },
   onEditorAction(e) {
@@ -458,9 +472,16 @@ Page({
     if (this.data.busy || !this.data.canEdit || !this._workspace || !this._active || !this._client.current(this._context)) return
     if (this._questionFormDirty) { this.setData({ ready: false, error: 'SAVE_QUESTION_REQUIRED' }); return }
     try {
+      if (this._workspace.bank.schemaVersion === 4) {
+        this._pagedPrepared = editor.prepare(this._workspace); this._pagedBase = this._workspace.basePublication
+        this._prepared = null; this._preparedBase = null
+        this.setData({ ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
+          pagedReport: `编辑内容已校验：${this._pagedPrepared.root.totalQuestions} 题、${this._pagedPrepared.root.pages.length} 页。请在下方填写提交 ID 并确认发布权。`, error: '' })
+        return
+      }
       this._prepared = editor.prepare(this._workspace); this._preparedBase = this._workspace.basePublication || undefined
       const bank = this._prepared.bank, count = Object.values(bank.questions).reduce((sum, rows) => sum + rows.length, 0)
       this.setData({ ready: true, rightsConfirmed: false, report: `内容校验通过：${bank.manifest.exams.length} 个考试、${bank.manifest.subjects.length} 个科目、${count} 道题。请核对来源、填写提交 ID 并确认发布权。`, error: '' })
-    } catch (e) { this._prepared = null; this._preparedBase = null; this.setData({ ready: false, error: e.code || 'BAD_BANK' }) }
+    } catch (e) { this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this.setData({ ready: false, pagedReady: false, pagedRights: false, error: e.code || 'BAD_BANK' }) }
   }
 })

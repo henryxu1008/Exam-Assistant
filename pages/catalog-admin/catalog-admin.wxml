@@ -43,17 +43,17 @@
         <input value="{{form.answer}}" data-field="answer" bindinput="onEditorInput" maxlength="-1" placeholder="答案" />
         <input value="{{form.level}}" data-field="level" bindinput="onEditorInput" placeholder="难度 1、2 或 3" />
         <textarea value="{{form.explain}}" data-field="explain" bindinput="onEditorInput" maxlength="-1" placeholder="解析" />
-        <input value="{{form.pitfall}}" data-field="pitfall" bindinput="onEditorInput" placeholder="易错点" />
-        <input value="{{form.keyPoint}}" data-field="keyPoint" bindinput="onEditorInput" placeholder="知识要点" />
+        <input value="{{form.pitfall}}" data-field="pitfall" bindinput="onEditorInput" maxlength="-1" placeholder="易错点" />
+        <input value="{{form.keyPoint}}" data-field="keyPoint" bindinput="onEditorInput" maxlength="-1" placeholder="知识要点" />
         <input value="{{form.tags}}" data-field="tags" bindinput="onEditorInput" maxlength="-1" placeholder="标签：英文逗号分隔，或 JSON: 数组" />
         <view class="title">来源与授权</view>
         <view class="hint">AI 生成题须填写生成工具。</view>
         <picker range="{{sourceTypes}}" range-key="name" data-field="sourceKind" bindchange="onEditorChoice"><view class="picker">选择来源：{{sourceTypeName}} ›</view></picker>
-        <input value="{{form.sourceTitle}}" data-field="sourceTitle" bindinput="onEditorInput" placeholder="来源名称" />
-        <input value="{{form.sourceReference}}" data-field="sourceReference" bindinput="onEditorInput" placeholder="来源引用" />
-        <input value="{{form.sourcePermission}}" data-field="sourcePermission" bindinput="onEditorInput" placeholder="授权说明" />
-        <input value="{{form.sourceAttribution}}" data-field="sourceAttribution" bindinput="onEditorInput" placeholder="署名" />
-        <input value="{{form.sourceGenerator}}" data-field="sourceGenerator" bindinput="onEditorInput" placeholder="AI 生成工具（如适用）" />
+        <input value="{{form.sourceTitle}}" data-field="sourceTitle" bindinput="onEditorInput" maxlength="-1" placeholder="来源名称" />
+        <input value="{{form.sourceReference}}" data-field="sourceReference" bindinput="onEditorInput" maxlength="-1" placeholder="来源引用" />
+        <input value="{{form.sourcePermission}}" data-field="sourcePermission" bindinput="onEditorInput" maxlength="-1" placeholder="授权说明" />
+        <input value="{{form.sourceAttribution}}" data-field="sourceAttribution" bindinput="onEditorInput" maxlength="-1" placeholder="署名" />
+        <input value="{{form.sourceGenerator}}" data-field="sourceGenerator" bindinput="onEditorInput" maxlength="-1" placeholder="AI 生成工具（如适用）" />
         <button bindtap="onSaveQuestion">保存题目到当前编辑内容</button>
         <button bindtap="onPrepareEditor">检查完整题库并准备草稿</button>
       </block>
@@ -81,6 +81,7 @@
     <view class="card">
       <view class="title">2. 查看与独立审核</view>
       <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />
+      <button wx:if="{{canEdit}}" bindtap="onAbandonPagedDraft" disabled="{{busy}}">丢弃本人未封存的分页暂存</button>
       <button bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
       <text class="report" selectable="true">{{preview}}</text>
       <view wx:for="{{reviewItems}}" wx:key="id" class="question-row"><text class="report" selectable="true">{{item.text}}</text></view>
