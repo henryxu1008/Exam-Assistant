@@ -45,7 +45,7 @@
         <textarea value="{{form.explain}}" data-field="explain" bindinput="onEditorInput" maxlength="-1" placeholder="解析" />
         <input value="{{form.pitfall}}" data-field="pitfall" bindinput="onEditorInput" placeholder="易错点" />
         <input value="{{form.keyPoint}}" data-field="keyPoint" bindinput="onEditorInput" placeholder="知识要点" />
-        <input value="{{form.tags}}" data-field="tags" bindinput="onEditorInput" placeholder="标签，英文逗号分隔" />
+        <input value="{{form.tags}}" data-field="tags" bindinput="onEditorInput" maxlength="-1" placeholder="标签：英文逗号分隔，或 JSON: 数组" />
         <view class="title">来源与授权</view>
         <view class="hint">AI 生成题须填写生成工具。</view>
         <picker range="{{sourceTypes}}" range-key="name" data-field="sourceKind" bindchange="onEditorChoice"><view class="picker">选择来源：{{sourceTypeName}} ›</view></picker>

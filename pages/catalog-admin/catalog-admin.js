@@ -319,7 +319,7 @@ Page({
     const s = this._workspace.sources[q.id], f = this.data.form
     const form = { ...f, questionId: q.id, type: q.type, stem: q.stem,
       options: 'JSON:' + JSON.stringify(q.options), answer: q.type === 'fill' ? 'JSON:' + JSON.stringify(q.answer) : q.answer.join(','),
-      explain: q.explain, pitfall: q.pitfall, keyPoint: q.keyPoint, tags: q.tags.join(','), level: String(q.level),
+      explain: q.explain, pitfall: q.pitfall, keyPoint: q.keyPoint, tags: 'JSON:' + JSON.stringify(q.tags), level: String(q.level),
       sourceKind: s.kind, sourceTitle: s.title, sourceReference: s.reference, sourcePermission: s.permission, sourceAttribution: s.attribution, sourceGenerator: s.generator || '' }
     if (!this._saveEditorForm(this._editorUI({ editingId: q.id, form }))) return
     this.setData({ editingId: q.id, questionTypeName: (questionTypes.find(item => item.value === q.type) || {}).name || q.type,
@@ -349,7 +349,7 @@ Page({
       })
       const answer = f.type === 'fill' ? f.answer.startsWith('JSON:') ? jsonArray(f.answer, 'BAD_ANSWER') : f.answer.split(';').map(part => { const a = part.split('|').map(x => x.trim()); return a.length === 1 ? a[0] : a }) : f.answer.split(',').map(x => x.trim()).filter(Boolean)
       const question = { id: f.questionId, type: f.type, stem: f.stem, options, answer, explain: f.explain, pitfall: f.pitfall, keyPoint: f.keyPoint,
-        tags: f.tags.split(',').map(x => x.trim()).filter(Boolean), level: Number(f.level) }
+        tags: f.tags.startsWith('JSON:') ? jsonArray(f.tags, 'BAD_QUESTION') : f.tags.split(',').map(x => x.trim()).filter(Boolean), level: Number(f.level) }
       const source = { kind: f.sourceKind, title: f.sourceTitle, reference: f.sourceReference, permission: f.sourcePermission, attribution: f.sourceAttribution, ...(f.sourceKind === 'ai_generated' ? { generator: f.sourceGenerator } : {}) }
       this._changeEditor({ type: 'saveQuestion', subjectKey: this.data.selectedSubject, chapterKey: this.data.selectedChapter, existingId: this.data.editingId, question, source },
         { questionFormDirty: false, editingId: question.id })

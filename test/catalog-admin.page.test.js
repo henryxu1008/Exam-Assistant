@@ -145,6 +145,26 @@ test('编辑填空题时保留答案里的分隔符和空格', async t => {
   assert.equal(p.data.error, 'BAD_ANSWER'); assert.equal(JSON.stringify(p._workspace), before)
 })
 
+test('已有标签包含逗号、空格和 30 项时编辑保存可无损往返', async t => {
+  const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
+  q.tags = ['TCP,UDP', ' spaced ', ...Array.from({ length: 28 }, (_, i) => 'tag-' + i)]
+  const old = await ops.editor.submitDraft(imported, { submissionId: 'tags-roundtrip', rightsConfirmed: true })
+  await ops.approve(old.draftId); await ops.publisher.publishExam({ draftId: old.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  const version = p._workspace.bank.questions.it.find(item => item.id === q.id).versionId
+  p.onEditQuestion({ currentTarget: { dataset: { id: q.id } } }); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  assert.equal(p._workspace.bank.questions.it.find(item => item.id === q.id).versionId, version)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '仅修改题面' } }); p.onSaveQuestion()
+  assert.deepEqual(p._workspace.bank.questions.it.find(item => item.id === q.id).tags, q.tags)
+  const before = JSON.stringify(p._workspace)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'tags' } }, detail: { value: 'JSON:{bad}' } }); p.onSaveQuestion()
+  assert.equal(p.data.error, 'BAD_QUESTION'); assert.equal(JSON.stringify(p._workspace), before)
+})
+
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
   const ops = operators()
   let session = { logged: true, openid: 'editor', token: 'editor' }, release
