@@ -6,7 +6,7 @@
       <view class="ai-logo">AI</view>
       <view class="grow">
         <view class="card-title">AI 学习助教</view>
-        <view class="card-sub">结合你的真实答题数据作答</view>
+        <view class="card-sub">{{scopeLabel}}</view>
       </view>
     </view>
     <text class="head-clear" bindtap="onClear">清空</text>

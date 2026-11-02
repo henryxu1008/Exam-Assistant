@@ -169,10 +169,12 @@ function onPracticeRestored(listener) {
 // 当前进程内的对话代次：账号切换或删除历史即递增，阻止缓存页面和旧异步回复复用。
 // 不随普通消息追加变化；A→B→A 也必须产生新代次，不能只比较 openid。
 let aiConversationVersion = 0
+let aiStudyScopeVersion = 0
 
 function getAiConversationVersion() {
   return aiConversationVersion
 }
+function getAiStudyScopeVersion() { return aiStudyScopeVersion }
 
 /** 读取当前隔离作用域（openid 或 'anon'） */
 function getUserScope() {
@@ -560,6 +562,7 @@ function pullFromCloud(onDone, options = {}) {
     const practiceChanged = reset || JSON.stringify(before.practiceSession) !== JSON.stringify(next.practiceSession)
     if (reset) { cloudSyncGeneration += 1; setPendingPush(ctx.scope, false) }
     if (practiceChanged) practiceGeneration += 1
+    if (reset || ['currentExam', 'currentSubject'].some(k => (before.settings || {})[k] !== (next.settings || {})[k])) aiStudyScopeVersion += 1
     if (reset || JSON.stringify(before.aiMessages || []) + '|' + Number(before.aiEpoch || 0) !==
       JSON.stringify(next.aiMessages || []) + '|' + Number(next.aiEpoch || 0)) aiConversationVersion += 1
     // 拉取写盘与上传分开：增量恢复不能制造无意义的快照回声和新修订。
@@ -1018,6 +1021,7 @@ function saveSettings(patch) {
   const next = nextFieldVersion(versions)
   Object.keys(patch || {}).forEach((field) => {
     if (values[field] === patch[field]) return
+    if (field === 'currentExam' || field === 'currentSubject') aiStudyScopeVersion += 1
     values[field] = patch[field]
     versions[field] = next
   })
@@ -1344,7 +1348,7 @@ function getAiMessages() {
 
 function pushAiMessage(msg) {
   const s = load()
-  s.aiMessages = s.aiMessages.concat([Object.assign({ time: Date.now() }, msg)]).slice(-60)
+  s.aiMessages = s.aiMessages.concat([Object.assign({ time: Date.now(), messageId: newId('ai_msg') }, msg)]).slice(-60)
   persist()
   return s.aiMessages
 }
@@ -1637,6 +1641,7 @@ module.exports = {
   getWrongRecords,
   getAiMessages,
   getAiConversationVersion,
+  getAiStudyScopeVersion,
   pushAiMessage,
   clearAiMessages,
   clearAll,

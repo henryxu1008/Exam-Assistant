@@ -59,6 +59,30 @@ test('chat 正确率查询返回含真实数据的要点', () => {
   assert.ok(r.bullets.some((b) => /正确率/.test(b)), '应基于真实数据给出正确率要点')
 })
 
+test('当前题目使用已选版本，损坏或跨科目的快照不会被替换为当前题库版本', async (t) => {
+  const ai = require('../utils/ai.js')
+  const bank = require('../utils/questions.js')
+  const store = require('../utils/store.js')
+  const question = bank.getAllQuestions().find(q => q.subject === store.getCurrentSubject())
+  assert.ok(question)
+  const sent = []
+  t.mock.method(bank, 'findQuestion', () => { throw new Error('不应查找新版本') })
+  t.mock.method(wx.cloud, 'callFunction', p => { sent.push(p); return Promise.resolve({ result: { content: 'ok' } }) })
+  ai.REMOTE_LLM.enabled = true
+  try {
+    const result = await ai.requestLLM([{ role: 'user', content: '这道题怎么解' }], store.getCurrentSubject(),
+      { questionId: question.id, questionSnapshot: question })
+    assert.equal(result, 'ok')
+    assert.ok(sent[0].data.messages.some(m => m.content.includes(question.versionId) && m.content.includes(question.stem)))
+    const invalid = Object.assign({}, question, { stem: '篡改的题面' })
+    assert.equal(await ai.requestLLM([{ role: 'user', content: '解题' }], store.getCurrentSubject(),
+      { questionId: question.id, questionSnapshot: invalid }), null)
+    assert.equal(sent.length, 1)
+    assert.match(ai.chat('这道题怎么解', { questionId: question.id, questionSnapshot: invalid }).reply, /请先/)
+    assert.equal(await ai.requestLLM([{ role: 'user', content: '解题' }], '不是当前科目', {}), null)
+  } finally { ai.REMOTE_LLM.enabled = false }
+})
+
 test('评审 P2：个性化查询走本地引擎，页面落到含真实数据的回复', (t) => {
   t.mock.method(require('../utils/user.js'), 'requireLogin', () => true)
   const ai = require('../utils/ai.js')

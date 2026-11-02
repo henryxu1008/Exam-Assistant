@@ -35,6 +35,13 @@ function baseState(over) {
   )
 }
 
+test('不同考试同一毫秒产生的对话不会在跨设备合并时丢失', () => {
+  const a = { messageId: 'a', time: 10, studyScopeKey: '["a","s"]', text: '甲' }
+  const b = { messageId: 'b', time: 10, studyScopeKey: '["b","s"]', text: '乙' }
+  const merged = mergeStats(baseState({ aiMessages: [a] }), baseState({ aiMessages: [a, b] }))
+  assert.deepEqual(merged.aiMessages.map(m => m.messageId).sort(), ['a', 'b'])
+})
+
 /* ------------------------------------------------------------------ *
  * P1 4423125072：清空对话必须能传播，而不是被并集复原
  * ------------------------------------------------------------------ */

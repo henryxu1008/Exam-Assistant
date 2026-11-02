@@ -22,6 +22,27 @@ const REMOTE_LLM = {
   cloudFunction: 'aiTutor' // 云函数名（需自行开通云开发并部署）
 }
 
+/** Resolve labels from the active catalog, retaining stable IDs for scope isolation. */
+function getStudyScope() {
+  const examId = typeof store.getCurrentExam === 'function' ? store.getCurrentExam() : ''
+  const subjectId = store.getCurrentSubject()
+  const exams = typeof bank.getExams === 'function' ? bank.getExams() : []
+  const subjects = bank.getSubjects(examId || undefined)
+  const exam = exams.find(item => item.id === examId), subject = subjects.find(item => item.name === subjectId)
+  return { examId: exam ? exam.id : '', examName: exam ? exam.name : '', subjectId: subject ? subject.name : '',
+    subjectName: subject ? (subject.label || subject.name) : '' }
+}
+
+function contextQuestion(ctx, subjectId) {
+  if (!ctx.questionId) return null
+  let q
+  try { q = ctx.questionSnapshot ? bank.snapshotQuestion(ctx.questionSnapshot) : bank.findQuestion(ctx.questionId) } catch (e) {
+    // swallow: 无效题目快照不能回落到另一版本的题目。
+    return null
+  }
+  return q && q.id === ctx.questionId && q.subject === subjectId ? q : null
+}
+
 /**
  * 生成学习者当前数据快照（文本），供远端大模型回答个性化查询时使用。
  * 注入后，远程调用也能基于真实答题数据作答；同时本地引擎对这些查询走专属路径（见 ai.chat）。
@@ -78,6 +99,8 @@ function requestLLM(messages, subject, context) {
     // 透传当前科目，保证大模型回答只讲该科目（与全应用科目口径一致）
     // 端上助手消息 role 用 'ai'，云函数白名单只认 'user'/'assistant'/'system'，
     // 在此归一化，避免大模型侧把助手历史整段丢弃导致多轮上下文丢失
+    const scope = getStudyScope()
+    if (subject && subject !== scope.subjectId) { resolve(null); return }
     const payload = (messages || []).map((m) => ({
       role: m.role === 'ai' ? 'assistant' : m.role,
       content: m.content
@@ -86,14 +109,15 @@ function requestLLM(messages, subject, context) {
     // 否则远端只会收到一句「这道题怎么解？」而看不到题目（评审 P2：Include the selected question in remote explanation requests）
     const ctx = context || {}
     if (ctx.questionId) {
-      const q = bank.findQuestion(ctx.questionId)
+      const q = contextQuestion(ctx, scope.subjectId)
+      if (!q) { resolve(null); return }
       if (q) {
         const optText = (q.options || []).map((o) => `${o.key}. ${o.text}`).join('；')
         const ansText = answerText(q, q.answer)
         const userAns = Array.isArray(ctx.userAnswer) && ctx.userAnswer.length ? answerText(q, ctx.userAnswer) : '（未作答）'
         payload.unshift({
           role: 'system',
-          content: `【当前正在讲解的题目】科目：${typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(q.subject) : q.subject}｜章节：${chapterLabel(q.subject, q.chapter)}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
+          content: `【当前正在讲解的题目】版本：${q.versionId || '未提供'}｜科目：${typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(q.subject) : q.subject}｜章节：${chapterLabel(q.subject, q.chapter)}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
         })
       }
     }
@@ -109,7 +133,7 @@ function requestLLM(messages, subject, context) {
     wx.cloud
       .callFunction({
         name: REMOTE_LLM.cloudFunction,
-        data: { token, messages: payload, subject: subject || store.getCurrentSubject() }
+        data: { token, messages: payload, subject: scope.subjectName, studyScope: scope }
       })
       .then((res) => resolve((res && res.result && res.result.content) || null))
       .catch(() => resolve(null))
@@ -356,7 +380,7 @@ function chat(text, context) {
     return { reply: '想问点什么呢？可以直接说：我哪里最薄弱 / 帮我制定计划 / 这题怎么解。', bullets: [], cards: [] }
   }
   const ctx = context || {}
-  const q = ctx.questionId ? bank.findQuestion(ctx.questionId) : null
+  const q = contextQuestion(ctx, store.getCurrentSubject())
 
   // 1. 题目相关讲解：需要来源页传入当前题目，且用户确实在问这道题
   if (q && /这题|这道题|怎么解|讲一下|解析|为什么选/.test(input)) {
@@ -468,6 +492,7 @@ function chat(text, context) {
 
 module.exports = {
   REMOTE_LLM,
+  getStudyScope,
   requestLLM,
   learningSnapshot,
   isPersonalizedQuery,

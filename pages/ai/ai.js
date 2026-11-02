@@ -21,7 +21,8 @@ Page({
     quick: QUICK,
     input: '',
     loading: false,
-    scrollTo: ''
+    scrollTo: '',
+    scopeLabel: ''
   },
 
   onLoad() {
@@ -32,7 +33,11 @@ Page({
   _resetMessages() {
     this._invalidateReply()
     this._conversationVersion = store.getAiConversationVersion()
-    const list = store.getAiMessages().map((m) => this._decorate(m))
+    const scope = ai.getStudyScope()
+    this._studyScopeKey = JSON.stringify([scope.examId, scope.subjectId])
+    this._studyScopeVersion = store.getAiStudyScopeVersion()
+    const list = store.getAiMessages().filter((m) => m.studyScopeKey === this._studyScopeKey ||
+      (!m.studyScopeKey && !scope.examId)).map((m) => this._decorate(m))
     if (!list.length) {
       list.push(
         this._decorate({
@@ -47,12 +52,16 @@ Page({
         })
       )
     }
-    this.setData({ messages: list, input: '', loading: false, scrollTo: '' }, () => this._scrollToLast(list.length))
+    this.setData({ messages: list, input: '', loading: false, scrollTo: '',
+      scopeLabel: [scope.examName, scope.subjectName].filter(Boolean).join(' · ') || '未选择考试或科目' }, () => this._scrollToLast(list.length))
   },
 
   /** 页面缓存只可用于所属账号及尚未被清空的那轮对话。 */
   _syncConversation() {
-    if (this._conversationVersion !== store.getAiConversationVersion()) this._resetMessages()
+    const scope = ai.getStudyScope()
+    if (this._conversationVersion !== store.getAiConversationVersion() ||
+        this._studyScopeVersion !== store.getAiStudyScopeVersion() ||
+        this._studyScopeKey !== JSON.stringify([scope.examId, scope.subjectId])) this._resetMessages()
   },
 
   onShow() {
@@ -60,7 +69,7 @@ Page({
     // 待校验或未登录时不展示缓存历史；全局预填输入继续保留，认证后再消费。
     this._invalidateReply()
     this._conversationVersion = null
-    this.setData({ messages: [], input: '', loading: false, scrollTo: '' })
+    this.setData({ messages: [], input: '', loading: false, scrollTo: '', scopeLabel: '' })
   },
 
   _showConversation() {
@@ -110,7 +119,7 @@ Page({
       this._decorate({ role: 'user', text: content, bullets: [], cards: [], time: Date.now() })
     ])
     this.setData({ messages, input: '', loading: true }, () => this._scrollToLast(messages.length))
-    store.pushAiMessage({ role: 'user', text: content, bullets: [], cards: [] })
+    store.pushAiMessage({ role: 'user', text: content, bullets: [], cards: [], studyScopeKey: this._studyScopeKey })
 
     const self = this
     // 个性化查询（正确率/薄弱/计划/错题/记忆方法）依赖真实答题数据，必须走本地引擎，
@@ -164,6 +173,7 @@ Page({
       cards: result.cards || [],
       mnemonic: extra ? extra.mnemonic : '',
       similar: extra ? extra.similar : [],
+      studyScopeKey: this._studyScopeKey,
       time: Date.now()
     }
     const next = self.data.messages.concat([self._decorate(reply)])
@@ -196,16 +206,18 @@ Page({
     if (!user.requireLogin()) return
     this._syncConversation()
     const version = this._conversationVersion
+    const scopeVersion = this._studyScopeVersion
     const self = this
     wx.showModal({
       title: '清空对话',
-      content: '将删除云端保存的全部对话记录',
+      content: '将删除该账号所有考试的对话记录',
       confirmText: '清空',
       confirmColor: '#e5484d',
       success(res) {
         if (!res.confirm) return
         // 确认框也属于打开时的账号/对话，不能删除切换后的另一个用户的数据。
-        if (version !== self._conversationVersion || version !== store.getAiConversationVersion()) return
+        if (version !== self._conversationVersion || version !== store.getAiConversationVersion() ||
+            scopeVersion !== store.getAiStudyScopeVersion()) return
         store.clearAiMessages()
         self._resetMessages()
       }
@@ -221,7 +233,11 @@ Page({
 
   /** onShow 尚未执行时也要检查仓储代次，防止旧回复写入新用户作用域。 */
   _isCurrentReply(token) {
-    return token === this._reqToken && this._conversationVersion === store.getAiConversationVersion()
+    if (token !== this._reqToken || this._conversationVersion !== store.getAiConversationVersion()) return false
+    const scope = ai.getStudyScope()
+    if (this._studyScopeVersion !== store.getAiStudyScopeVersion() ||
+        this._studyScopeKey !== JSON.stringify([scope.examId, scope.subjectId])) { this._syncConversation(); return false }
+    return true
   },
 
   /** 取消尚未触发的本地回复定时器，避免离页后仍执行 setData */

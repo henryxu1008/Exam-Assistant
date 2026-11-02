@@ -253,8 +253,9 @@ function mergeStats(base, incoming) {
     ;(R.aiMessages || []).concat(L.aiMessages || []).forEach((m) => {
       const t = m && m.time
       if (t == null) { ai.push(m); return }
-      if (seen[t]) return
-      seen[t] = true
+      const key = m && typeof m.messageId === 'string' && m.messageId ? 'id:' + m.messageId : 'time:' + t
+      if (seen[key]) return
+      seen[key] = true
       ai.push(m)
     })
     // 必须排序后再交给下游：AI 页取「最后 6 条」作模型上下文、

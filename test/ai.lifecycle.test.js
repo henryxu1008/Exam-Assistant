@@ -5,6 +5,7 @@ const assert = require('node:assert/strict')
 const store = require('../utils/store.js')
 const ai = require('../utils/ai.js')
 const user = require('../utils/user.js')
+const bank = require('../utils/questions.js')
 
 let definition
 const app = { globalData: {} }
@@ -76,6 +77,34 @@ function switchWithHistory(scope, text) {
   store.setUserScope(scope)
   save(text)
 }
+
+function mockExams(t) {
+  const exams = [{ id: 'exam-a', name: '考试甲' }, { id: 'exam-b', name: '考试乙' }]
+  const subjects = [{ name: 'subject-a', label: '同名科目', examId: 'exam-a' }, { name: 'subject-b', label: '同名科目', examId: 'exam-b' }]
+  t.mock.method(bank, 'getExams', () => exams)
+  t.mock.method(bank, 'getSubjects', id => id ? subjects.filter(s => s.examId === id) : subjects)
+}
+
+test('切换考试后对话历史及发送给模型的上下文按考试与科目隔离', async t => {
+  mockExams(t); store.setUserScope('A'); store.setCurrentExam('exam-a')
+  const page = makePage(); page.onShow(); page.send('甲考试问题', {})
+  requests[0].resolve('甲考试答案'); await settle()
+  store.setCurrentExam('exam-b'); page.onShow()
+  assert.ok(!texts(page).includes('甲考试问题')); assert.ok(!texts(page).includes('甲考试答案'))
+  page.send('乙考试问题', {})
+  assert.ok(!requests[1].args[0].some(m => m.content.includes('甲考试')))
+  requests[1].resolve('乙考试答案'); await settle()
+  store.setCurrentExam('exam-a'); page.onShow()
+  assert.ok(texts(page).includes('甲考试问题')); assert.ok(!texts(page).includes('乙考试答案'))
+})
+
+test('请求期间考试 A→B→A 也不能接受旧回复', async t => {
+  mockExams(t); store.setUserScope('A'); store.setCurrentExam('exam-a')
+  const page = makePage(); page.onShow(); page.send('甲考试问题', {})
+  store.setCurrentExam('exam-b'); store.setCurrentExam('exam-a')
+  requests[0].resolve('过时答案'); await settle()
+  assert.ok(!texts(page).includes('过时答案')); assert.ok(!savedTexts().includes('过时答案'))
+})
 
 test('匿名页登录后先重载用户历史，再且仅消费一次预填输入', () => {
   switchWithHistory('A', 'A 的历史')
