@@ -21,6 +21,7 @@ const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
 const questionDomain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
+const paged = require('./paged-catalog-domain.js')
 const grading = require('./grading-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
@@ -143,10 +144,12 @@ async function commitAttempts(event, openid) {
   const raw = Array.isArray(event.attempts) ? event.attempts : []
   if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'BAD_EPOCH' }
   // 新业务地址读 + 历史 ID 冲突检查 + 写；版本化批次另需发布归档读，24*4+2=98。
-  if (raw.length > (event.action === 'commitVersionedAttempts' ? grading.MAX_VERSIONED_BATCH : 32)) return { ok: false, error: 'BATCH_TOO_LARGE' }
+  const pagedProtocol = event.action === 'commitPagedAttempts'
+  // A paged fact can add one archive page read: 19*5+2 stays within 100 transaction operations.
+  if (raw.length > (pagedProtocol ? grading.MAX_PAGED_BATCH : event.action === 'commitVersionedAttempts' ? grading.MAX_VERSIONED_BATCH : 32)) return { ok: false, error: 'BATCH_TOO_LARGE' }
   if (raw.some(a => !a || typeof a.id !== 'string' || !a.id) || new Set(raw.map(a => a.id)).size !== raw.length) return { ok: false, error: 'BAD_ATTEMPT' }
   if (raw.some(a => a.projection !== undefined && !attemptDomain.validProjection(a))) return { ok: false, error: 'BAD_FACT_METADATA' }
-  if (raw.some(grading.isVersioned) && event.action !== 'commitVersionedAttempts') return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+  if (raw.some(grading.isVersioned) && event.action !== 'commitVersionedAttempts' && !pagedProtocol) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
   if (raw.some(a => grading.isVersioned(a) && !questionDomain.attemptQuestion(a))) return { ok: false, error: 'BAD_QUESTION_VERSION' }
   for (let round = 0; round < 3; round++) {
     let before, candidates
@@ -170,7 +173,7 @@ async function commitAttempts(event, openid) {
         let sequence = sequenceOf(existing)
         const receipts = [], created = []
         const fail = code => { const error = new Error(code); error.code = code; throw error }
-        const releases = new Map()
+        const releases = new Map(), releasePages = new Map()
         async function grade(submitted) {
           const releaseId = submitted.bankReleaseId
           if (!/^qb_[a-f0-9]{64}$/.test(releaseId || '')) fail('PUBLISHED_RELEASE_REQUIRED')
@@ -178,11 +181,32 @@ async function commitAttempts(event, openid) {
             let archive
             try { archive = await readExisting(() => tx.collection('questions').doc(releaseId).get()) } catch (e) { throw Object.assign(new Error('READ_RELEASE_FAILED'), { code: 'READ_RELEASE_FAILED' }) }
             if (!archive) fail('PUBLISHED_RELEASE_NOT_FOUND')
-            if (archive.kind !== 'questionBankRelease' || !(questionDomain.validRelease(archive.bank) || examDomain.validExamRelease(archive.bank)) || archive.bank.releaseId !== releaseId ||
-                !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_PUBLISHED_RELEASE')
-            releases.set(releaseId, archive.bank)
+            if (!Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_PUBLISHED_RELEASE')
+            if (archive.kind === 'pagedQuestionBankRelease') {
+              if (!pagedProtocol) fail('PAGED_PROTOCOL_REQUIRED')
+              if (!paged.validRoot(archive.root) || archive.root.releaseId !== releaseId) fail('INVALID_PUBLISHED_RELEASE')
+              releases.set(releaseId, { paged: true, root: archive.root })
+            } else {
+              if (archive.kind !== 'questionBankRelease' || !(questionDomain.validRelease(archive.bank) || examDomain.validExamRelease(archive.bank)) || archive.bank.releaseId !== releaseId) fail('INVALID_PUBLISHED_RELEASE')
+              releases.set(releaseId, { paged: false, bank: archive.bank })
+            }
           }
-          const question = Object.values(releases.get(releaseId).questions).flat().find(q => q.id === submitted.questionId && q.versionId === submitted.questionVersionId)
+          const release = releases.get(releaseId)
+          let question
+          if (release.paged) {
+            const index = paged.findPageIndex(release.root, submitted.questionId)
+            if (index < 0) fail('PUBLISHED_QUESTION_NOT_FOUND')
+            const pageKey = JSON.stringify([releaseId, index])
+            if (!releasePages.has(pageKey)) {
+              let doc
+              try { doc = await readExisting(() => tx.collection('questions').doc(paged.pageDocumentId(releaseId, index)).get()) }
+              catch (e) { throw Object.assign(new Error('READ_PAGED_PAGE_FAILED'), { code: 'READ_PAGED_PAGE_FAILED' }) }
+              if (!doc) fail('PUBLISHED_PAGE_NOT_FOUND')
+              if (doc.kind !== 'pagedQuestionBankPage' || !paged.validQuestionPage(release.root, doc.page) || doc.page.index !== index) fail('INVALID_PUBLISHED_PAGE')
+              releasePages.set(pageKey, doc.page)
+            }
+            question = paged.findQuestion(release.root, releasePages.get(pageKey), submitted.questionId, submitted.questionVersionId)
+          } else question = Object.values(release.bank.questions).flat().find(q => q.id === submitted.questionId && q.versionId === submitted.questionVersionId)
           if (!question) fail('PUBLISHED_QUESTION_NOT_FOUND')
           const trusted = questionDomain.snapshotQuestion({ ...question, bankReleaseId: releaseId })
           if (questionDomain.canonical(trusted) !== questionDomain.canonical(questionDomain.attemptQuestion(submitted))) fail('QUESTION_EVIDENCE_MISMATCH')
@@ -247,12 +271,12 @@ async function commitAttempts(event, openid) {
           deleted: !event.stats && !receipts.some(r => attemptDomain.validProjection(r.attempt)) && !!(existing && existing.deleted),
           lastDeleteId: existing && existing.lastDeleteId || null, updatedAt: Date.now() })
         await ref.set({ data: merged })
-        return { ok: true, dataEpoch, attemptProtocol: 2, questionProtocol: grading.QUESTION_PROTOCOL, gradingProtocol: 1, acceptedAttemptIds: raw.map(a => a.id), attemptReceipts: receipts,
+        return { ok: true, dataEpoch, attemptProtocol: 2, questionProtocol: pagedProtocol ? grading.PAGED_QUESTION_PROTOCOL : grading.QUESTION_PROTOCOL, gradingProtocol: 1, acceptedAttemptIds: raw.map(a => a.id), attemptReceipts: receipts,
           stats: sanitizeStats(merged), aiEpoch: aiEpochOf(merged), aiStale }
       })
       if (!result.retry) return result
     } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'PUBLISHED_RELEASE_REQUIRED', 'READ_RELEASE_FAILED',
-      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING', 'QUESTION_SCOPE_MISMATCH'].includes(e.code) ? e.code : 'TX_FAILED' } }
+      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING', 'QUESTION_SCOPE_MISMATCH', 'PAGED_PROTOCOL_REQUIRED', 'READ_PAGED_PAGE_FAILED', 'PUBLISHED_PAGE_NOT_FOUND', 'INVALID_PUBLISHED_PAGE'].includes(e.code) ? e.code : 'TX_FAILED' } }
   }
   return { ok: false, error: 'SYNC_RETRY_REQUIRED' }
 }
@@ -264,8 +288,9 @@ exports.main = async (event = {}) => {
   const openid = user.openid
   const action = event.action || 'get'
 
-  if (action === 'commitAttempts' || action === 'commitVersionedAttempts') {
+  if (action === 'commitAttempts' || action === 'commitVersionedAttempts' || action === 'commitPagedAttempts') {
     if (action === 'commitVersionedAttempts' && event.questionProtocol !== grading.QUESTION_PROTOCOL) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+    if (action === 'commitPagedAttempts' && event.questionProtocol !== grading.PAGED_QUESTION_PROTOCOL) return { ok: false, error: 'PAGED_PROTOCOL_REQUIRED' }
     return commitAttempts(event, openid)
   }
 

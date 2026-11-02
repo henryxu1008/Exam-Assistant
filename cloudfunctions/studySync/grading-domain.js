@@ -2,9 +2,12 @@
 const questionDomain = require('./question-domain.js')
 const QUESTION_PROTOCOL = 2
 const MAX_VERSIONED_BATCH = 24
+const PAGED_QUESTION_PROTOCOL = 3
+const MAX_PAGED_BATCH = 19
 // Stop this sync round; a later external trigger may retry after content/configuration is repaired.
 const NON_RETRYABLE_ERRORS = ['PUBLISHED_RELEASE_REQUIRED', 'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE',
-  'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING']
+  'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING',
+  'PAGED_PROTOCOL_REQUIRED', 'PUBLISHED_PAGE_NOT_FOUND', 'INVALID_PUBLISHED_PAGE']
 const normalizeText = value => String(value === undefined || value === null ? '' : value).replace(/\s+/g, '').toLowerCase()
 function judge(type, selected, answer) {
   const sel = Array.isArray(selected) ? selected.slice() : [], ans = Array.isArray(answer) ? answer.slice() : []
@@ -16,6 +19,7 @@ function judge(type, selected, answer) {
   return sel.length === ans.length && ans.every(key => sel.indexOf(key) > -1)
 }
 const isVersioned = attempt => !!attempt && (attempt.questionSnapshot !== undefined || attempt.bankReleaseId !== undefined || /^qv_/.test(attempt.questionVersionId || ''))
+const isPaged = attempt => !!(attempt && attempt.questionSnapshot && attempt.questionSnapshot.catalogProtocol === 4)
 function validSelection(question, selected) {
   if (!Array.isArray(selected) || !selected.length || selected.length > 30 || selected.some(value => typeof value !== 'string' || value.length > 10000)) return false
   if (question.type === 'fill') return selected.length === question.answer.length && selected.every(value => normalizeText(value).length > 0)
@@ -31,4 +35,4 @@ function validGrading(fact) {
     g.score === fact.score && Number.isSafeInteger(fact.serverReceivedAt) && fact.serverReceivedAt >= 0 &&
     validSelection(q, fact.selected) && g.score === (judge(q.type, fact.selected, q.answer) ? 1 : 0)
 }
-module.exports = { QUESTION_PROTOCOL, MAX_VERSIONED_BATCH, NON_RETRYABLE_ERRORS, normalizeText, judge, isVersioned, validSelection, validGrading }
+module.exports = { QUESTION_PROTOCOL, MAX_VERSIONED_BATCH, PAGED_QUESTION_PROTOCOL, MAX_PAGED_BATCH, NON_RETRYABLE_ERRORS, normalizeText, judge, isVersioned, isPaged, validSelection, validGrading }

@@ -69,6 +69,15 @@
       <checkbox-group data-field="rights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{rightsConfirmed}}" />我已核对来源并确认具有发布权</label></checkbox-group>
       <button bindtap="onSubmit" disabled="{{busy || !canEdit || !ready || !rightsConfirmed}}">提交草稿</button>
     </view>
+    <view class="card" wx:if="{{canEdit}}">
+      <view class="title">大题库文件导入</view>
+      <view class="hint">选择包含完整考试题库和逐题来源的 JSON 文件。导入会替换整个目录；上传完成后仍须逐页独立审核并发布。</view>
+      <button bindtap="onChoosePagedFile" disabled="{{busy}}">选择并校验 JSON 文件</button>
+      <text class="report" selectable="true">{{pagedReport}}</text>
+      <input disabled="{{busy}}" value="{{pagedSubmissionId}}" data-field="pagedSubmissionId" bindinput="onInput" placeholder="稳定提交 ID；断网后使用同一 ID 续传" />
+      <checkbox-group data-field="pagedRights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{pagedRights}}" />我已核对来源并确认具有发布权</label></checkbox-group>
+      <button bindtap="onSubmitPaged" disabled="{{busy || !pagedReady || !pagedRights}}">分批上传并提交审核</button>
+    </view>
     <view class="card">
       <view class="title">2. 查看与独立审核</view>
       <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />

@@ -23,10 +23,13 @@ const { readOptionalDoc } = require('./db-error.js')
 const BANK_FIELDS = ['manifest', 'questions']
 const domain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
+const paged = require('./paged-catalog-domain.js')
 const validRelease = bank => domain.validRelease(bank) || examDomain.validExamRelease(bank)
 const { createWorkflow, workflowRequired } = require('./workflow.js')
 const { checkIdentities } = require('./identity-registry.js')
+const { createPagedWorkflow } = require('./paged-workflow.js')
 const workflow = createWorkflow(db, activateBank)
+const pagedWorkflow = createPagedWorkflow(db)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
 const ADMIN_ACTOR_ID = 'admin'
@@ -53,6 +56,7 @@ async function adminActor(event) {
 async function activateBank(tx, bank, actor, expectedRevision, approval) {
   const collection = tx.collection('questions'), ref = collection.doc('bank')
   const current = await readOptionalDoc(() => ref.get())
+  if (current && current.schemaVersion === 4 && bank.schemaVersion !== 4) return { ok: false, error: 'PAGED_PROTOCOL_REQUIRED' }
   if (current && current.schemaVersion === 3 && bank.schemaVersion !== 3) return { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }
   if (!approval && await workflowRequired(collection, current)) return { ok: false, error: 'REVIEW_WORKFLOW_REQUIRED' }
   const revision = current && current.publicationRevision || 0
@@ -91,10 +95,34 @@ async function publish(event, actor) {
 
 exports.main = async (event = {}) => {
   const action = event.action || 'get'
+  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getPagedDraft', 'getPagedDraftPage', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) return pagedWorkflow(event)
   if (['getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft', 'publishDraft', 'publishExamDraft'].includes(action)) return workflow(event)
+  if (action === 'getPagedPublished') {
+    try {
+      const active = await readOptionalDoc(() => BANK.doc('bank').get())
+      if (!active || active.schemaVersion !== 4) return { ok: true, root: null, publicationRevision: active && active.publicationRevision || 0 }
+      if (!paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) return { ok: false, error: 'INVALID_RELEASE' }
+      return { ok: true, root: active.root, publicationRevision: active.publicationRevision }
+    } catch (e) { return { ok: false, error: 'READ_BANK_FAILED' } }
+  }
+  if (action === 'getPagedPage') {
+    if (!/^qb_[a-f0-9]{64}$/.test(event.releaseId || '') || !Number.isSafeInteger(event.index) || event.index < 0 || event.index >= paged.limits.MAX_PAGES) return { ok: false, error: 'BAD_PAGE_QUERY' }
+    try {
+      const release = await readOptionalDoc(() => BANK.doc(event.releaseId).get())
+      if (!release) return { ok: false, error: 'PUBLISHED_RELEASE_NOT_FOUND' }
+      if (release.kind !== 'pagedQuestionBankRelease' || !paged.validRoot(release.root) || release.root.releaseId !== event.releaseId ||
+          !Number.isSafeInteger(release.publishedAt) || release.publishedAt < 0) return { ok: false, error: 'INVALID_PUBLISHED_RELEASE' }
+      if (!release.root.pages[event.index]) return { ok: false, error: 'BAD_PAGE_QUERY' }
+      const doc = await readOptionalDoc(() => BANK.doc(paged.pageDocumentId(event.releaseId, event.index)).get())
+      if (!doc) return { ok: false, error: 'PUBLISHED_PAGE_NOT_FOUND' }
+      if (doc.kind !== 'pagedQuestionBankPage' || !paged.validQuestionPage(release.root, doc.page) || doc.page.index !== event.index) return { ok: false, error: 'INVALID_PUBLISHED_PAGE' }
+      return { ok: true, page: doc.page }
+    } catch (e) { return { ok: false, error: 'READ_PAGED_RELEASE_FAILED' } }
+  }
   if (action === 'get' || action === 'getPublished' || action === 'getExamPublished') {
     try {
       const bank = await readOptionalDoc(() => BANK.doc('bank').get())
+      if (bank && bank.schemaVersion === 4) return { ok: false, error: 'PAGED_PROTOCOL_REQUIRED' }
       if (bank && bank.schemaVersion === 3 && action !== 'getExamPublished') return { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }
       if (action === 'getExamPublished') {
         if (!bank || bank.schemaVersion !== 3) return { ok: true, bank: null, publicationRevision: bank && bank.publicationRevision || 0 }

@@ -1,0 +1,82 @@
+{
+  "bank": {
+    "manifest": {
+      "subjects": [
+        {
+          "key": "it",
+          "name": "专业知识",
+          "chapters": [
+            {
+              "key": "net",
+              "name": "网络基础"
+            }
+          ],
+          "examId": "exam-demo"
+        }
+      ],
+      "exams": [
+        {
+          "id": "exam-demo",
+          "name": "合成考试"
+        }
+      ]
+    },
+    "questions": {
+      "it": [
+        {
+          "id": "DEMO-1",
+          "subject": "专业知识",
+          "chapter": "网络基础",
+          "type": "single",
+          "stem": "合成样例：请选择甲。",
+          "options": [
+            {
+              "key": "A",
+              "text": "甲"
+            },
+            {
+              "key": "B",
+              "text": "乙"
+            }
+          ],
+          "answer": [
+            "A"
+          ],
+          "explain": "仅用于工具验收。"
+        },
+        {
+          "id": "DEMO-2",
+          "subject": "专业知识",
+          "chapter": "网络基础",
+          "type": "fill",
+          "stem": "合成样例：填写“协议”。\n这是第二行。",
+          "options": [],
+          "answer": [
+            [
+              "协议",
+              "protocol"
+            ]
+          ],
+          "explain": "仅用于离线与撤回验收。"
+        }
+      ]
+    },
+    "schemaVersion": 4
+  },
+  "sources": {
+    "DEMO-1": {
+      "kind": "original",
+      "title": "合成工具样例",
+      "reference": "synthetic:DEMO-1",
+      "permission": "仅供测试演示",
+      "attribution": "合成样例"
+    },
+    "DEMO-2": {
+      "kind": "original",
+      "title": "合成工具样例",
+      "reference": "synthetic:DEMO-2",
+      "permission": "仅供测试演示",
+      "attribution": "合成样例"
+    }
+  }
+}

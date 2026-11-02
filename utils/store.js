@@ -832,17 +832,17 @@ function pushToCloud() {
       const currentOperations = new Map(attemptOutbox.pending(state).map(a => [a.id, a]))
       const unsent = operations.filter(a => currentOperations.has(a.id) && attemptDomain.canonical(a) === attemptDomain.canonical(currentOperations.get(a.id)))
       const batches = []
-      const batchSize = unsent.some(grading.isVersioned) ? grading.MAX_VERSIONED_BATCH : 32
+      const batchSize = unsent.some(grading.isPaged) ? grading.MAX_PAGED_BATCH : unsent.some(grading.isVersioned) ? grading.MAX_VERSIONED_BATCH : 32
       for (let i = 0; i < unsent.length; i += batchSize) batches.push(unsent.slice(i, i + batchSize))
       if (!batches.length) batches.push([])
       for (let index = 0; index < batches.length; index++) {
         if (isStaleContext(ctx)) return
-        const sent = batches[index]
+        const sent = batches[index], pagedBatch = sent.some(grading.isPaged)
         const result = await new Promise(resolve => {
           try {
             callCloud({ name: config.functions.studySync,
-              data: { token: ctx.token, action: sent.some(grading.isVersioned) ? 'commitVersionedAttempts' : 'commitAttempts',
-                  ...(sent.some(grading.isVersioned) ? { questionProtocol: grading.QUESTION_PROTOCOL } : {}), attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
+              data: { token: ctx.token, action: pagedBatch ? 'commitPagedAttempts' : sent.some(grading.isVersioned) ? 'commitVersionedAttempts' : 'commitAttempts',
+                  ...(sent.some(grading.isVersioned) ? { questionProtocol: pagedBatch ? grading.PAGED_QUESTION_PROTOCOL : grading.QUESTION_PROTOCOL } : {}), attemptProtocol: 2, dataEpoch: ctx.dataEpoch,
                 ...(index === batches.length - 1 ? { stats: payloadForSend() } : {}), attempts: sent },
               success: res => resolve(res && res.result), fail: () => resolve(null) })
           } catch (e) { resolve(null) }

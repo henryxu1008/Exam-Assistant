@@ -189,7 +189,7 @@ function validateReceipts(result, sent, acceptedIds, snapshot = {}) {
   const expected = new Map(sent.map(a => [a.id, a])), ids = new Set(acceptedIds), seen = new Set(), facts = new Map()
   for (const receipt of result.attemptReceipts) {
     const fact = receipt && receipt.attempt, submitted = receipt && expected.get(receipt.submittedId)
-    if (grading.isVersioned(submitted) && (result.questionProtocol !== grading.QUESTION_PROTOCOL || result.gradingProtocol !== 1 ||
+    if (grading.isVersioned(submitted) && (result.questionProtocol !== (sent.some(grading.isPaged) ? grading.PAGED_QUESTION_PROTOCOL : grading.QUESTION_PROTOCOL) || result.gradingProtocol !== 1 ||
         !(receipt.gradingStatus === 'graded' ? grading.validGrading(fact) : receipt.gradingStatus === 'legacy_unverified' && fact && fact.grading === undefined && fact.serverReceivedAt === undefined))) return null
     if (!submitted || (waiting && canonical(waiting.get(receipt.submittedId)) !== canonical(submitted)) || !ids.has(receipt.submittedId) || seen.has(receipt.submittedId) || !fact || typeof fact.id !== 'string' || !fact.id ||
       businessKey(fact) !== businessKey(submitted) || !sameOperation(fact, submitted) ||
