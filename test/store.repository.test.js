@@ -78,3 +78,40 @@ test('匿名清空因旧根缺页校验失败时仍报告失败，不能把 read
   assert.equal(store.getLocalStorageStatus().state, 'read_error')
   assert.deepEqual(wx.getStorageSync('exam_quiz_data_v1__anon'), root)
 })
+
+test('活动检查点超预算时作答不完成，原待传流水和会话仍保留', t => {
+  const seed = history(), pending = { id: 'pending-original', sessionId: 's', questionId: 'old', clientOpId: 'old', selected: ['A'], evidence: 'x'.repeat(440000) }
+  seed.attempts = [pending]; seed.attemptOutbox.pending = [pending]
+  const store = freshStore(seed); wx.__cloudReady = false
+  t.after(() => store.__clearFlushTimer())
+  store.load(); store.__clearFlushTimer()
+  const before = store.exportLocalSnapshot()
+  let writes = 0
+  const write = wx.setStorageSync
+  t.mock.method(wx, 'setStorageSync', (key, value) => { if (/^exam_quiz_(data|history|ai_history|backup)_/.test(key)) writes++; return write(key, value) })
+  const result = store.submitAttempt(q('new'), ['A'.repeat(20000)], false, 100, 'new-operation')
+  assert.equal(result.ok, false); assert.equal(result.error, 'PERSIST_ATTEMPT_FAILED')
+  assert.equal(writes, 0)
+  assert.deepEqual(store.exportLocalSnapshot(), before)
+  assert.equal(store.getAttempts().length, 1)
+  assert.equal(store.getLocalStorageStatus().error, 'LOCAL_ENTRY_TOO_LARGE')
+})
+
+test('旧全局档案复制超预算不能落为空账号，保留源档案并允许修复后重试', t => {
+  const store = freshStore(); wx.__cloudReady = false
+  const statuses = [], unsubscribe = store.onLocalStorageChange(status => statuses.push(status))
+  t.after(unsubscribe)
+  t.after(() => store.__clearFlushTimer())
+  const legacy = { ...getDefaultState(), version: 2, aiMessages: [{ time: 1, text: 'x'.repeat(950000) }] }
+  wx.setStorageSync('exam_quiz_data_v1', legacy)
+  store.setUserScope('alice')
+  assert.throws(() => store.load(), /LOCAL_LEGACY_MIGRATION_FAILED/)
+  assert.equal(store.getLocalStorageStatus().state, 'read_error')
+  assert.equal(statuses.at(-1).state, 'read_error')
+  assert.deepEqual(wx.getStorageSync('exam_quiz_data_v1'), legacy)
+  assert.equal(wx.getStorageSync('exam_quiz_data_v1__alice'), '')
+  wx.setStorageSync('exam_quiz_data_v1', { ...legacy, aiMessages: [{ time: 1, text: '修复后的合成输入' }] })
+  assert.equal(store.retryLocalStorage().ok, true)
+  assert.equal(store.getAiMessages()[0].text, '修复后的合成输入')
+  assert.equal(wx.getStorageSync('exam_quiz_data_v1'), '')
+})

@@ -9,6 +9,13 @@ const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
 const { createLocalRepository } = require('./local-repository.js')
 const localStorageListeners = new Set()
+function effectiveLocalStatus(status) {
+  return { ...status, ...(scopeMigrationError ? { state: 'read_error', readError: 'LOCAL_LEGACY_MIGRATION_FAILED', error: 'LOCAL_LEGACY_MIGRATION_FAILED' } : {}) }
+}
+function notifyLocalStatus(status) {
+  const effective = effectiveLocalStatus(status)
+  localStorageListeners.forEach(listener => { try { listener(effective) } catch (e) { /* UI observers cannot affect storage. */ } })
+}
 const localRepository = createLocalRepository({
   getStorageSync: key => wx.getStorageSync(key),
   setStorageSync: (key, value) => wx.setStorageSync(key, value),
@@ -16,7 +23,7 @@ const localRepository = createLocalRepository({
   getStorageInfoSync: () => { if (typeof wx.getStorageInfoSync !== 'function') throw new Error('LOCAL_INVENTORY_UNAVAILABLE'); return wx.getStorageInfoSync() }
 }, (scope, status) => {
   if (scope !== userScope) return
-  localStorageListeners.forEach(listener => { try { listener(status) } catch (e) { /* UI observers cannot affect storage. */ } })
+  notifyLocalStatus(status)
 })
 const { createSyncCoordinator } = require('./sync-coordinator.js')
 const attemptDomain = require('../shared/attempt-domain.js')
@@ -129,6 +136,7 @@ let state = null
  * 切换账号必须调用 setUserScope 重置内存态并切到对应 key。
  */
 let userScope = 'anon'
+let scopeMigrationError = null
 
 /**
  * 云端同步代次：切换作用域或清空数据即递增（A→B→A 也算新代次，不能只比较 openid）。
@@ -189,6 +197,7 @@ function setUserScope(openid) {
   }
   localRepository.release(userScope)
   userScope = next
+  scopeMigrationError = null
   state = null
   aiConversationVersion += 1
   // 作用域已变，作废所有在途云端请求（其回包属于旧账号）
@@ -203,7 +212,11 @@ function setUserScope(openid) {
       const rawLegacy = wx.getStorageSync(legacy)
       const rawScoped = localRepository.read(userScope)
       if (rawLegacy && typeof rawLegacy === 'object' && (!rawScoped || rawScoped === '')) {
-        localRepository.write(userScope, rawLegacy)
+        try { localRepository.write(userScope, rawLegacy) } catch (e) {
+          scopeMigrationError = e.code || 'LOCAL_LEGACY_MIGRATION_FAILED'
+          notifyLocalStatus(localRepository.status(userScope))
+          throw e
+        }
         wx.removeStorageSync(legacy)
       } else if (rawLegacy && typeof rawLegacy === 'object') {
         wx.removeStorageSync(legacy)
@@ -270,6 +283,7 @@ function migrate(raw) {
 }
 
 function load(options = {}) {
+  if (scopeMigrationError) throw Object.assign(new Error('LOCAL_LEGACY_MIGRATION_FAILED'), { code: 'LOCAL_LEGACY_MIGRATION_FAILED' })
   if (state) return state
   try {
     const raw = localRepository.read(userScope)
@@ -1375,10 +1389,20 @@ function rollbackLocalStorage() {
 function retryLocalStorage() {
   const before = localRepository.status(userScope)
   if (before.commitUncertain) return { ok: false, error: 'LOCAL_RESTART_REQUIRED' }
-  if (before.state === 'write_error' && !dirty) return { ok: false, error: 'RETRY_ORIGINAL_OPERATION' }
+  if (!scopeMigrationError && before.state === 'write_error' && !dirty) return { ok: false, error: 'RETRY_ORIGINAL_OPERATION' }
   try {
     localRepository.release(userScope)
-    localRepository.read(userScope) // Verify all referenced evidence before reusing in-memory state.
+    const saved = localRepository.read(userScope) // Verify all referenced evidence before reusing in-memory state.
+    if (scopeMigrationError) {
+      if (!saved) {
+        const legacy = wx.getStorageSync(STORAGE_KEY)
+        if (!legacy || typeof legacy !== 'object') throw Object.assign(new Error('LOCAL_LEGACY_MIGRATION_FAILED'), { code: 'LOCAL_LEGACY_MIGRATION_FAILED' })
+        localRepository.write(userScope, legacy)
+      }
+      wx.removeStorageSync(STORAGE_KEY)
+      scopeMigrationError = null
+      notifyLocalStatus(localRepository.status(userScope))
+    }
     if (!state) load({ localOnly: true })
     localRepository.retryMigration(userScope)
     localRepository.write(userScope, state)
@@ -1475,8 +1499,9 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
     throw new TypeError('submitAttempt: question 非法')
   }
   const original = load()
-  const s = JSON.parse(JSON.stringify({ ...original, attempts: [] }))
+  const s = JSON.parse(JSON.stringify({ ...original, attempts: [], aiMessages: [] }))
   s.attempts = (original.attempts || []).slice() // Existing facts are immutable; do not clone confirmed history for each answer.
+  s.aiMessages = (original.aiMessages || []).slice() // Repository pages freeze messages; new/cleared conversations replace the array.
   const session = s.practiceSession
   if (context && !isPracticeContextCurrent(context)) {
     return { ok: false, error: 'STALE_PRACTICE_CONTEXT', record: null, attempt: null, dup: false }
@@ -1554,7 +1579,7 @@ module.exports = {
   todayKey,
   shortDate,
   getUserScope,
-  getLocalStorageStatus: () => localRepository.status(userScope),
+  getLocalStorageStatus: () => effectiveLocalStatus(localRepository.status(userScope)),
   onLocalStorageChange,
   retryLocalStorage,
   exportLocalSnapshot: () => localRepository.read(userScope),
