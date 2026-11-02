@@ -30,6 +30,13 @@ const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectNam
   type: 'single', stem: '', options: '', answer: '', explain: '', pitfall: '', keyPoint: '', tags: '', level: '1',
   sourceKind: 'original', sourceTitle: '', sourceReference: '', sourcePermission: '', sourceAttribution: '', sourceGenerator: '' })
 const resetQuestion = form => ({ ...editorForm(), examId: form.examId, examName: form.examName, subjectKey: form.subjectKey, subjectName: form.subjectName, chapterKey: form.chapterKey, chapterName: form.chapterName })
+function jsonArray(value, code) {
+  try {
+    const parsed = JSON.parse(value.slice(5))
+    if (Array.isArray(parsed)) return parsed
+  } catch (e) { /* Invalid structured input must be reported as a field error. */ }
+  throw Object.assign(new Error(code), { code })
+}
 const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: false, roleText: '', allowed: false, busy: false, inputText: '', format: 'json', report: '', ready: false,
   rightsConfirmed: false, sourceVerified: false, submissionId: '', draftId: '', note: '', revision: '', removeIds: '', preview: '', result: '', error: '',
   editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
@@ -311,7 +318,7 @@ Page({
     if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     const s = this._workspace.sources[q.id], f = this.data.form
     const form = { ...f, questionId: q.id, type: q.type, stem: q.stem,
-      options: q.options.map(o => o.key + '=' + o.text).join('\n'), answer: q.type === 'fill' ? q.answer.map(a => Array.isArray(a) ? a.join('|') : a).join(';') : q.answer.join(','),
+      options: 'JSON:' + JSON.stringify(q.options), answer: q.type === 'fill' ? 'JSON:' + JSON.stringify(q.answer) : q.answer.join(','),
       explain: q.explain, pitfall: q.pitfall, keyPoint: q.keyPoint, tags: q.tags.join(','), level: String(q.level),
       sourceKind: s.kind, sourceTitle: s.title, sourceReference: s.reference, sourcePermission: s.permission, sourceAttribution: s.attribution, sourceGenerator: s.generator || '' }
     if (!this._saveEditorForm(this._editorUI({ editingId: q.id, form }))) return
@@ -336,11 +343,11 @@ Page({
   onSaveQuestion() {
     const f = this.data.form
     try {
-      const options = f.type === 'fill' ? [] : f.options.split('\n').filter(line => line.trim()).map(line => {
+      const options = f.type === 'fill' ? [] : f.options.startsWith('JSON:') ? jsonArray(f.options, 'BAD_OPTIONS') : f.options.split('\n').filter(line => line.trim()).map(line => {
         const index = line.indexOf('='); if (index < 1) throw Object.assign(new Error('BAD_OPTIONS'), { code: 'BAD_OPTIONS' })
         return { key: line.slice(0, index).trim(), text: line.slice(index + 1).trim() }
       })
-      const answer = f.type === 'fill' ? f.answer.split(';').map(part => { const a = part.split('|').map(x => x.trim()); return a.length === 1 ? a[0] : a }) : f.answer.split(',').map(x => x.trim()).filter(Boolean)
+      const answer = f.type === 'fill' ? f.answer.startsWith('JSON:') ? jsonArray(f.answer, 'BAD_ANSWER') : f.answer.split(';').map(part => { const a = part.split('|').map(x => x.trim()); return a.length === 1 ? a[0] : a }) : f.answer.split(',').map(x => x.trim()).filter(Boolean)
       const question = { id: f.questionId, type: f.type, stem: f.stem, options, answer, explain: f.explain, pitfall: f.pitfall, keyPoint: f.keyPoint,
         tags: f.tags.split(',').map(x => x.trim()).filter(Boolean), level: Number(f.level) }
       const source = { kind: f.sourceKind, title: f.sourceTitle, reference: f.sourceReference, permission: f.sourcePermission, attribution: f.sourceAttribution, ...(f.sourceKind === 'ai_generated' ? { generator: f.sourceGenerator } : {}) }

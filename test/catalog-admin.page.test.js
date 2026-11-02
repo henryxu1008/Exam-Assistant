@@ -107,6 +107,44 @@ test('载入旧发布时提前提示身份迁移限制，不创建可能误导�
   assert.equal(p._workspace, null); assert.equal(p.data.editorReady, false)
 })
 
+test('编辑已有题目时保留带换行及首尾空格的选项原文', async t => {
+  const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
+  q.options[0].text = '  第一段\n第二段  '
+  const old = await ops.editor.submitDraft(imported, { submissionId: 'multiline-options', rightsConfirmed: true })
+  await ops.approve(old.draftId); await ops.publisher.publishExam({ draftId: old.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  const initialVersion = p._workspace.bank.questions.it.find(item => item.id === q.id).versionId
+  p.onEditQuestion({ currentTarget: { dataset: { id: q.id } } }); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  assert.equal(p._workspace.bank.questions.it.find(item => item.id === q.id).versionId, initialVersion)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '只改题面' } }); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  assert.deepEqual(p._workspace.bank.questions.it.find(item => item.id === q.id).options, q.options)
+  const before = JSON.stringify(p._workspace)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'options' } }, detail: { value: 'JSON:{bad}' } }); p.onSaveQuestion()
+  assert.equal(p.data.error, 'BAD_OPTIONS'); assert.equal(JSON.stringify(p._workspace), before)
+})
+
+test('编辑填空题时保留答案里的分隔符和空格', async t => {
+  const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
+  q.type = 'fill'; q.options = []; q.answer = ['TCP;IP', ['A|B', '  C  ']]
+  const old = await ops.editor.submitDraft(imported, { submissionId: 'fill-delimiters', rightsConfirmed: true })
+  await ops.approve(old.draftId); await ops.publisher.publishExam({ draftId: old.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  p.onEditQuestion({ currentTarget: { dataset: { id: q.id } } }); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  assert.deepEqual(p._workspace.bank.questions.it.find(item => item.id === q.id).answer, q.answer)
+  const before = JSON.stringify(p._workspace)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'answer' } }, detail: { value: 'JSON:{bad}' } }); p.onSaveQuestion()
+  assert.equal(p.data.error, 'BAD_ANSWER'); assert.equal(JSON.stringify(p._workspace), before)
+})
+
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
   const ops = operators()
   let session = { logged: true, openid: 'editor', token: 'editor' }, release

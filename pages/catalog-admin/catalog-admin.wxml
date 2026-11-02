@@ -35,12 +35,12 @@
         <view wx:for="{{questions}}" wx:key="id" class="question-row"><text>{{item.id}} · {{item.stem}}</text><view class="row"><button size="mini" data-id="{{item.id}}" bindtap="onEditQuestion">编辑</button><button size="mini" data-action="removeQuestion" data-id="{{item.id}}" bindtap="onRemoveEditor">移除</button></view></view>
         <view class="row wrap" wx:if="{{questionTotal}}"><button size="mini" data-delta="-1" bindtap="onQuestionPage" disabled="{{questionPage <= 1}}">上一页</button><text>第 {{questionPage}} / {{questionPages}} 页 · {{questionTotal}} 题</text><button size="mini" data-delta="1" bindtap="onQuestionPage" disabled="{{questionPage >= questionPages}}">下一页</button></view>
         <view class="row wrap"><button size="mini" bindtap="onNewQuestion">新增题目</button><button size="mini" bindtap="onDiscardQuestion">放弃题目表单修改</button></view>
-        <view class="hint">选项每行写 A=选项内容，答案用英文逗号分隔。填空多空用分号，同义答案用 | 分隔。</view>
+        <view class="hint">选项可每行写 A=选项内容；已有题目使用 JSON: 加数组，保留换行和空格。选择题答案用英文逗号分隔；填空可用分号、| 分隔，也可用 JSON: 加数组输入原文。</view>
         <input value="{{form.questionId}}" disabled="{{!!editingId}}" data-field="questionId" bindinput="onEditorInput" placeholder="题目 ID" />
         <picker range="{{questionTypes}}" range-key="name" data-field="type" bindchange="onEditorChoice"><view class="picker">选择题型：{{questionTypeName}} ›</view></picker>
         <textarea value="{{form.stem}}" data-field="stem" bindinput="onEditorInput" maxlength="-1" placeholder="题面" />
         <textarea value="{{form.options}}" data-field="options" bindinput="onEditorInput" maxlength="-1" placeholder="选项：每行一个，例如 A=选项内容" />
-        <input value="{{form.answer}}" data-field="answer" bindinput="onEditorInput" placeholder="答案" />
+        <input value="{{form.answer}}" data-field="answer" bindinput="onEditorInput" maxlength="-1" placeholder="答案" />
         <input value="{{form.level}}" data-field="level" bindinput="onEditorInput" placeholder="难度 1、2 或 3" />
         <textarea value="{{form.explain}}" data-field="explain" bindinput="onEditorInput" maxlength="-1" placeholder="解析" />
         <input value="{{form.pitfall}}" data-field="pitfall" bindinput="onEditorInput" placeholder="易错点" />
