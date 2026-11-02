@@ -81,10 +81,11 @@ test('来源审核跨页时必须查看所有题目才能批准', async t => {
 
 test('重复选择章节或翻页保留题目编辑绑定；切换章节清空旧题表单', async t => {
   const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
   imported.bank.manifest.subjects[0].chapters.push({ key: 'other', name: '其他章节' })
   for (let i = 0; i < 20; i++) { const id = 'P-' + i; imported.bank.questions.it.push({ ...q, id }); imported.sources[id] = imported.sources[q.id] }
   const d = await ops.editor.submitDraft(imported, { submissionId: 'nav-base', rightsConfirmed: true })
-  await ops.approve(d.draftId); await ops.publisher.publish({ draftId: d.draftId, expectedRevision: 0 })
+  await ops.approve(d.draftId); await ops.publisher.publishExam({ draftId: d.draftId, expectedRevision: 0 })
   const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
   const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
   select('subject', 'it'); select('chapter', 'net')
@@ -96,6 +97,14 @@ test('重复选择章节或翻页保留题目编辑绑定；切换章节清空�
   assert.equal(p._workspace.bank.questions.it.find(item => item.id === q.id).stem, '导航后编辑')
   select('chapter', 'other'); assert.equal(p.data.editingId, ''); assert.equal(p.data.form.questionId, ''); assert.equal(p.data.form.stem, '')
   p.onRestoreEditor(); assert.equal(p.data.selectedChapter, 'other'); assert.equal(p.data.form.stem, '')
+})
+
+test('载入旧发布时提前提示身份迁移限制，不创建可能误导的编辑副本', async t => {
+  const ops = operators(), old = await ops.editor.submitDraft(JSON.parse(sample), { submissionId: 'old-version', rightsConfirmed: true })
+  await ops.approve(old.draftId); await ops.publisher.publish({ draftId: old.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  assert.equal(p.data.error, 'LEGACY_IDENTITY_MIGRATION_REQUIRED')
+  assert.equal(p._workspace, null); assert.equal(p.data.editorReady, false)
 })
 
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
@@ -130,16 +139,16 @@ test('延迟登录回调不能越过新一轮页面生命周期，隐藏页不�
 
 test('可视化维护完整题库后必须独立审核发布，学习端读取考试归属并按发布归档判分', async t => {
   const ops = operators(), imported = JSON.parse(sample)
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
   const old = await ops.editor.submitDraft(imported, { submissionId: 'old', rightsConfirmed: true })
-  await ops.approve(old.draftId); await ops.publisher.publish({ draftId: old.draftId, expectedRevision: 0 })
+  await ops.approve(old.draftId); await ops.publisher.publishExam({ draftId: old.draftId, expectedRevision: 0 })
   const p = page(t, ops.editor); await settle()
   const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
   const action = name => p.onEditorAction({ currentTarget: { dataset: { action: name } } })
   const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
   p.onLoadEditor(); await settle()
   assert.equal(p.data.editorReady, true)
-  form('examId', 'arch'); form('examName', '架构师'); action('addExam'); select('exam', 'arch')
-  select('subject', 'it'); action('assignSubject'); select('chapter', 'net')
+  select('exam', 'arch'); select('subject', 'it'); select('chapter', 'net')
   for (const [field, value] of Object.entries({ questionId: 'DEMO-3', type: 'single', stem: '合成新增题', options: 'A=甲\nB=乙', answer: 'A',
     sourceKind: 'original', sourceTitle: '测试来源', sourceReference: 'synthetic:new', sourcePermission: '测试授权', sourceAttribution: '测试' })) form(field, value)
   p.onSaveQuestion(); assert.equal(p.data.questions.length, 3)
@@ -183,14 +192,13 @@ test('可视化维护完整题库后必须独立审核发布，学习端读取�
 
 test('编辑基线已变化时不能提交旧工作区，表单修改会作废先前准备结果', async t => {
   const ops = operators(), imported = JSON.parse(sample)
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
   const old = await ops.editor.submitDraft(imported, { submissionId: 'base', rightsConfirmed: true })
-  await ops.approve(old.draftId); await ops.publisher.publish({ draftId: old.draftId, expectedRevision: 0 })
+  await ops.approve(old.draftId); const base = await ops.publisher.publishExam({ draftId: old.draftId, expectedRevision: 0 })
   const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
   const f = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
-  f('examId', 'arch'); f('examName', '架构师'); p.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
   p.onSelectNode({ currentTarget: { dataset: { kind: 'exam', id: 'arch' } } })
   p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
-  p.onEditorAction({ currentTarget: { dataset: { action: 'assignSubject' } } })
   p.onPrepareEditor(); assert.equal(p.data.ready, true)
   p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
   p.onEditQuestion({ currentTarget: { dataset: { id: 'DEMO-1' } } })
@@ -198,9 +206,9 @@ test('编辑基线已变化时不能提交旧工作区，表单修改会作废�
   p.onPrepareEditor(); assert.equal(p.data.error, 'SAVE_QUESTION_REQUIRED')
   p.onSaveQuestion()
   p.onPrepareEditor(); assert.equal(p.data.ready, true)
-  const modified = JSON.parse(sample); modified.bank.questions.it[0].stem = '其他人新发布'
-  const other = await ops.editor.submitDraft(modified, { submissionId: 'other', rightsConfirmed: true })
-  await ops.approve(other.draftId); await ops.publisher.publish({ draftId: other.draftId, expectedRevision: 1 })
+  const modified = JSON.parse(JSON.stringify(imported)); modified.bank.questions.it[0].stem = '其他人新发布'
+  const other = await ops.editor.submitDraft(modified, { submissionId: 'other', rightsConfirmed: true, basePublication: { revision: 1, releaseId: base.releaseId } })
+  await ops.approve(other.draftId); await ops.publisher.publishExam({ draftId: other.draftId, expectedRevision: 1 })
   input(p, 'submissionId', 'stale'); p.onConfirm({ currentTarget: { dataset: { field: 'rights' } }, detail: { value: ['rights'] } })
   p.onSubmit(); await settle()
   assert.equal(p.data.error, 'STALE_BASE_RELEASE')

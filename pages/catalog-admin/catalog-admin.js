@@ -16,6 +16,8 @@ const errorMessages = {
   BAD_SOURCES: '请补充完整的题目来源与授权信息。', EXAM_IMPORT_NOT_SUPPORTED: '考试题库请使用可视化编辑；批量导入暂不支持。',
   SAVE_QUESTION_REQUIRED: '请先保存或放弃当前题目表单，再继续。', QUESTION_ID_IMMUTABLE: '已创建的题号不能修改。',
   QUESTION_ID_CONFLICT: '题号已存在或题目已不存在。', EXAM_NOT_EMPTY: '请先处理考试下的科目。', SUBJECT_NOT_EMPTY: '请先处理科目下的章节和题目。',
+  QUESTION_ID_RETIRED: '题号已撤回，不能再次使用。', QUESTION_SCOPE_IMMUTABLE: '已发布题目的科目和章节不能变更。',
+  LEGACY_IDENTITY_MIGRATION_REQUIRED: '旧题库身份与学习记录尚未迁移，无法直接发布为新版。', IDENTITY_REGISTRY_INVALID: '题号登记状态异常，发布已停止，请先核查。', IDENTITY_REGISTRY_FULL: '题号登记容量不足，发布已停止。',
   CHAPTER_NOT_EMPTY: '请先处理章节下的题目。', EXAM_NOT_FOUND: '请先选择考试。', SUBJECT_NOT_FOUND: '请先选择科目。', CHAPTER_NOT_FOUND: '请先选择章节。',
   RIGHTS_CONFIRMATION_REQUIRED: '请先核对来源并确认具有发布权。', PREFLIGHT_REQUIRED: '请先检查完整题库。',
   DRAFT_TOO_LARGE_FOR_PAGE: '完整题库和来源超出页面容量，未提交任何截断内容。', INPUT_TOO_LARGE_FOR_PAGE: '输入超出页面容量。', REVIEW_PAGES_REQUIRED: '请先逐页查看全部题目和来源。',
@@ -217,6 +219,7 @@ Page({
   },
   _readEditor() {
     this._run(() => this._client.activeDraft(), result => {
+      if (result.draft && result.draft.bank.schemaVersion !== 3) { this.setData({ error: 'LEGACY_IDENTITY_MIGRATION_REQUIRED' }); return }
       const bytes = utf8Bytes(JSON.stringify(result))
       if (bytes > 800000) { this.setData({ error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
       const workspace = editor.openWorkspace(result), ui = this._editorUI({ selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', questionPage: 1, form: editorForm(), editorDirty: false, questionFormDirty: false })

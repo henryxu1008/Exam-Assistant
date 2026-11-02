@@ -57,9 +57,16 @@ function withoutFactCounts(snapshot) {
   removeKeys(result, key => key.startsWith(PREFIX) || key === SERVER_KEY)
   return result
 }
+function assertQuestionScope(snapshot, questionId, subject, chapter) {
+  const record = snapshot && snapshot.records && snapshot.records[questionId]
+  if (record && (record.subject !== subject || record.chapter !== chapter)) {
+    throw Object.assign(new Error('QUESTION_SCOPE_MISMATCH'), { code: 'QUESTION_SCOPE_MISMATCH' })
+  }
+}
 function projectCounts(snapshot, attempt) {
   if (!validProjection(attempt)) return
   const p = attempt.projection, key = PREFIX + attempt.id
+  assertQuestionScope(snapshot, attempt.questionId, p.subject, p.chapter)
   if (!snapshot.records) snapshot.records = {}
   if (!snapshot.daily) snapshot.daily = {}
   const record = own(snapshot.records, attempt.questionId) ? snapshot.records[attempt.questionId]
@@ -93,6 +100,7 @@ function checkedCounter(values) {
 function addServerCounts(snapshot, attempt) {
   if (!validProjection(attempt) || attempt.projection.confirmed !== true) return
   const p = attempt.projection
+  assertQuestionScope(snapshot, attempt.questionId, p.subject, p.chapter)
   if (!snapshot.records) snapshot.records = {}
   if (!snapshot.daily) snapshot.daily = {}
   const record = own(snapshot.records, attempt.questionId) ? snapshot.records[attempt.questionId]
@@ -194,5 +202,5 @@ function validateReceipts(result, sent, acceptedIds, snapshot = {}) {
   }
   return receiptCountsPresent(result.stats, facts) ? result.attemptReceipts : null
 }
-module.exports = { PREFIX, SERVER_KEY, addServerCounts, businessKey, sameOperation, validProjection, withoutFactCounts, projectCounts,
+module.exports = { PREFIX, SERVER_KEY, addServerCounts, assertQuestionScope, businessKey, sameOperation, validProjection, withoutFactCounts, projectCounts,
   resolveAttempt, resolveRestored, validateReceipts, canonical }

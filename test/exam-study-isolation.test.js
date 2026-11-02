@@ -7,6 +7,7 @@ const examDomain = require('../shared/exam-catalog-domain.js')
 const { device } = require('./support/study-sync-device.js')
 const { makeHarness } = require('./support/study-sync-harness.js')
 const source = require('../docs/examples/catalog-import.json')
+const { fact, commit } = require('./support/grading-fixture.js')
 const copy = value => JSON.parse(JSON.stringify(value))
 
 test('两个考试的同名科目使用不同身份，切换后题目和统计互不串用', async () => {
@@ -43,5 +44,34 @@ test('两个考试的同名科目使用不同身份，切换后题目和统计�
     const daily = Object.values(h.studyStats.get('alice').daily)[0]
     assert.equal(daily.chapters[qa.chapter].total, 1)
     assert.equal(daily.chapters[qb.chapter].total, 1)
+  } finally { d.store.__clearFlushTimer() }
+})
+
+test('已有学习记录与新题身份不一致时，服务端拒绝新流水并回滚全部写入', async () => {
+  const input = copy(source.bank)
+  input.schemaVersion = 3; input.manifest.exams = [{ id: 'a', name: '考试' }]; input.manifest.subjects[0].examId = 'a'
+  const release = examDomain.buildExamRelease(input), h = makeHarness()
+  h.questions.set(release.releaseId, { kind: 'questionBankRelease', bank: release, publishedAt: 1 })
+  const q = { ...release.questions.it[0], bankReleaseId: release.releaseId }
+  const old = { _id: 'alice', openid: 'alice', dataEpoch: 0, records: { [q.id]: { id: q.id, subject: '专业知识', chapter: '网络基础', attempts: 1, right: 1, wrong: 0 } }, daily: {} }
+  h.studyStats.set('alice', copy(old))
+  const result = await commit(h, [fact(q)])
+  assert.equal(result.ok, false); assert.equal(result.error, 'QUESTION_SCOPE_MISMATCH')
+  assert.equal(h.attempts.size, 0); assert.deepEqual(h.studyStats.get('alice'), old)
+})
+
+test('本机已有记录身份不一致时，不保存答案或修改本机统计', () => {
+  const h = makeHarness(), d = device(h, undefined, false)
+  try {
+    const q = { id: 'existing', subject: '旧科目', chapter: '旧章节', type: 'single', answer: ['A'] }
+    d.store.createPracticeSession({ subject: q.subject, questionIds: [q.id] })
+    assert.equal(d.store.submitAttempt(q, ['A'], true, 10, 'first').ok, true)
+    const before = JSON.stringify(d.store.load())
+    d.store.createPracticeSession({ subject: '新科目', questionIds: [q.id] })
+    const current = JSON.stringify(d.store.load())
+    const result = d.store.submitAttempt({ ...q, subject: '新科目', chapter: '新章节' }, ['A'], true, 10, 'second')
+    assert.equal(result.ok, false); assert.equal(result.error, 'QUESTION_SCOPE_MISMATCH')
+    assert.equal(JSON.stringify(d.store.load()), current)
+    assert.notEqual(before, current)
   } finally { d.store.__clearFlushTimer() }
 })

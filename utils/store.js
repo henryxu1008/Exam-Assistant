@@ -1090,6 +1090,7 @@ function recordAnswerInto(s, question, isCorrect, costMs, attempt) {
   if (!question || !question.id) {
     throw new TypeError('recordAnswer: question 非法')
   }
+  attemptDomain.assertQuestionScope(s, question.id, question.subject, question.chapter)
   const now = attempt ? attempt.createdAt : Date.now()
   const key = todayKey(new Date(now))
 
@@ -1540,6 +1541,8 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
   if (existing || (latest && latest.clientOpId === opId)) {
     return { ok: true, record: getRecord(question.id), attempt: existing || null, dup: true }
   }
+  try { attemptDomain.assertQuestionScope(s, question.id, question.subject, question.chapter) }
+  catch (e) { return { ok: false, error: 'QUESTION_SCOPE_MISMATCH', record: null, attempt: null, dup: false } }
 
   const pinned = session && session.questionSnapshots && session.questionSnapshots[question.id]
   if (session && session.questionSnapshots && Object.prototype.hasOwnProperty.call(session.questionSnapshots, question.id) &&

@@ -71,6 +71,58 @@ test('已发布题目的章节身份不可移动，改名不会改变身份', as
   assert.equal((await draft(h, changed, 'rename', base)).ok, true)
 })
 
+test('旧发布转换不得沿用题号悄悄改变学习记录归属', async () => {
+  const ops = operators(), old = await ops.editor.submitDraft(copy(sample), { submissionId: 'legacy', rightsConfirmed: true })
+  await ops.approve(old.draftId); const previous = await ops.publisher.publish({ draftId: old.draftId, expectedRevision: 0 })
+  const input = examInput(), before = copy(ops.h.bank())
+  const result = await draft(ops.h, input, 'unsafe-conversion', { revision: 1, releaseId: previous.releaseId })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'LEGACY_IDENTITY_MIGRATION_REQUIRED')
+  assert.deepEqual(ops.h.bank(), before)
+})
+
+test('已撤回题号永久保留，后续草稿不能重新启用或改变其身份', async () => {
+  const { h } = operators(), input = examInput()
+  const first = await draft(h, input, 'registry-first'); await approve(h, first.draftId)
+  const p1 = await publish(h, first.draftId, 0)
+  const reduced = copy(input), removed = reduced.bank.questions.it.shift(); delete reduced.sources[removed.id]
+  const d2 = await draft(h, reduced, 'registry-remove', { revision: 1, releaseId: p1.releaseId }); await approve(h, d2.draftId)
+  const p2 = await publish(h, d2.draftId, 1); assert.equal(p2.ok, true)
+  const result = await draft(h, input, 'registry-reuse', { revision: 2, releaseId: p2.releaseId })
+  assert.equal(result.ok, false); assert.equal(result.error, 'QUESTION_ID_RETIRED')
+  assert.equal((await h.main({ action: 'getExamPublished' })).publicationRevision, 2)
+})
+
+test('题号登记缺页、内容损坏及读失败均不能作为空登记继续', async () => {
+  const { h } = operators(), input = examInput()
+  const first = await draft(h, input, 'registry-test'); await approve(h, first.draftId)
+  const p = await publish(h, first.draftId, 0), base = { revision: 1, releaseId: p.releaseId }
+  const shardId = [...h.documents.keys()].find(id => /^bank_identity_[0-9a-f]$/.test(id)), shard = copy(h.documents.get(shardId))
+  h.documents.delete(shardId)
+  assert.equal((await draft(h, input, 'missing-registry', base)).error, 'IDENTITY_REGISTRY_INVALID')
+  h.documents.set(shardId, copy(shard)); h.documents.get(shardId).digest = 'tampered'
+  assert.equal((await draft(h, input, 'bad-registry', base)).error, 'IDENTITY_REGISTRY_INVALID')
+  h.documents.set(shardId, copy(shard)); h.fail.get = (name, id) => id === shardId
+  assert.equal((await draft(h, input, 'read-registry', base)).ok, false)
+  h.fail.get = null
+  assert.equal((await h.main({ action: 'getExamPublished' })).bank.releaseId, p.releaseId)
+})
+
+test('题号登记写入失败会回滚发布、归档和登记', async () => {
+  const { h } = operators(), input = examInput()
+  const first = await draft(h, input, 'registry-write-base'); await approve(h, first.draftId)
+  const p = await publish(h, first.draftId, 0), base = { revision: 1, releaseId: p.releaseId }
+  const changed = copy(input), q = { ...changed.bank.questions.it[0], id: 'ADDED' }
+  changed.bank.questions.it.push(q); changed.sources[q.id] = copy(changed.sources['DEMO-1'])
+  const d = await draft(h, changed, 'registry-write', base); await approve(h, d.draftId)
+  const before = JSON.stringify([...h.documents.entries()])
+  h.fail.write = (name, id) => id === 'bank_identity_registry'
+  const result = await publish(h, d.draftId, 1); h.fail.write = null
+  assert.equal(result.ok, false)
+  assert.equal(JSON.stringify([...h.documents.entries()]), before)
+  assert.equal((await publish(h, d.draftId, 1)).ok, true)
+})
+
 test('两个空题库起草并发时，后一个不能使用新修订覆盖首次发布', async () => {
   const { h } = operators(), a = examInput(), b = examInput()
   b.bank.questions.it[0].stem = '第二个首次草稿'

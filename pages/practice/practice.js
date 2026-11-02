@@ -434,6 +434,7 @@ Page({
     const res = store.submitAttempt(q, selected, correct, cost, clientOpId, this._practiceContext)
     if (!res.ok) {
       if (res.error === 'PERSIST_ATTEMPT_FAILED') wx.showToast({ title: '保存失败，请重试', icon: 'none' })
+      else if (res.error === 'QUESTION_SCOPE_MISMATCH') wx.showToast({ title: '题目归属与学习记录不一致，请联系管理员', icon: 'none' })
       else this._showPractice()
       return
     }

@@ -4,6 +4,7 @@ const { readOptionalDoc } = require('./db-error.js')
 const { submission, validDraft, validRoles } = require('./workflow-domain.js')
 const domain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
+const { checkIdentities } = require('./identity-registry.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const rolesFor = { createDraft: 'editors', createExamDraft: 'editors', reviewDraft: 'reviewers', publishDraft: 'publishers', publishExamDraft: 'publishers' }
 
@@ -57,6 +58,7 @@ function createWorkflow(db, activateBank) {
           if (payload.basePublication) {
             if (!active || active.publicationRevision !== payload.basePublication.revision || active.releaseId !== payload.basePublication.releaseId) fail('STALE_BASE_RELEASE')
           }
+          if (event.action === 'createExamDraft') await checkIdentities(collection, active, payload.bank, false)
           if (event.action === 'createExamDraft' && active && active.schemaVersion === 3) {
             const oldQuestions = new Map(Object.values(active.questions).flat().map(q => [q.id, q]))
             for (const q of Object.values(payload.bank.questions).flat()) {

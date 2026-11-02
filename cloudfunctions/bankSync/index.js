@@ -25,6 +25,7 @@ const domain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
 const validRelease = bank => domain.validRelease(bank) || examDomain.validExamRelease(bank)
 const { createWorkflow, workflowRequired } = require('./workflow.js')
+const { checkIdentities } = require('./identity-registry.js')
 const workflow = createWorkflow(db, activateBank)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
@@ -61,6 +62,7 @@ async function activateBank(tx, bank, actor, expectedRevision, approval) {
   const existing = await readOptionalDoc(() => releaseRef.get())
   if (existing && (existing.kind !== 'questionBankRelease' || !validRelease(existing.bank) ||
       domain.canonical(existing.bank) !== domain.canonical(bank))) return { ok: false, error: 'RELEASE_CONFLICT' }
+  if (bank.schemaVersion === 3) await checkIdentities(collection, current, bank, true)
   // The first publication archives the exact legacy bank. Never infer v1 attempt versions from it.
   if (current && current.schemaVersion !== 2 && current.schemaVersion !== 3) {
     const backupRef = collection.doc('bank_legacy_backup')

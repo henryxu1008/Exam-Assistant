@@ -237,6 +237,8 @@ async function commitAttempts(event, openid) {
           }
         }
         incoming.attempts = receipts.map(r => r.attempt)
+        for (const fact of created) if (attemptDomain.validProjection(fact))
+          attemptDomain.assertQuestionScope(existing, fact.questionId, fact.projection.subject, fact.projection.chapter)
         const merged = mergeStats(existing, incoming)
         delete merged.attempts
         for (const fact of created) attemptDomain.addServerCounts(merged, fact)
@@ -250,7 +252,7 @@ async function commitAttempts(event, openid) {
       })
       if (!result.retry) return result
     } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'PUBLISHED_RELEASE_REQUIRED', 'READ_RELEASE_FAILED',
-      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING'].includes(e.code) ? e.code : 'TX_FAILED' } }
+      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING', 'QUESTION_SCOPE_MISMATCH'].includes(e.code) ? e.code : 'TX_FAILED' } }
   }
   return { ok: false, error: 'SYNC_RETRY_REQUIRED' }
 }
