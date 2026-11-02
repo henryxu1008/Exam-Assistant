@@ -487,5 +487,35 @@
     "utils/storage-budget.js": "1d9d206ce234c0df96fa74417eebb747610fc95febd01ef0d6242d7f9b013dab",
     "utils/store.js": "f90ee3bd99de4bb4f13218bc7df466b9ff0653c123b286748f42905de618d109",
     "scripts/benchmark-learning-storage.js": "d56b30acc5b8a551c41ee0a3f2e9b487106595cb0ff3782fc07eb89f69992f6d"
+  },
+  "measuredCommit": "672b34ba4a3f67f2e7393fe9720e4ecc2b2a9a5d",
+  "postReviewVerification": {
+    "scope": "10000 attempts + 10000 AI messages; one sample; IO layout verification only",
+    "sourceFileSha256": {
+      "utils/local-repository.js": "8c6f6578b14d53ac335d51f45d52dfa1018dc90f18147f28a327ba841e8ca0a7",
+      "utils/local-backup.js": "d70b0779116306a44d16a5f54acddf4f2d9a68e4e79958bef8f7117a4be25545",
+      "utils/storage-budget.js": "1d9d206ce234c0df96fa74417eebb747610fc95febd01ef0d6242d7f9b013dab",
+      "utils/store.js": "f90ee3bd99de4bb4f13218bc7df466b9ff0653c123b286748f42905de618d109",
+      "scripts/benchmark-learning-storage.js": "d56b30acc5b8a551c41ee0a3f2e9b487106595cb0ff3782fc07eb89f69992f6d"
+    },
+    "sample": {
+      "beforeBytes": 56884,
+      "afterBytes": 60626,
+      "migrationMs": 12129.91,
+      "migrationWrittenBytes": 37515589,
+      "migrationMaxEntryBytes": 56884,
+      "maxEntryBytes": 60626,
+      "dataWrites": 1,
+      "writtenBytes": 60626,
+      "historyWrites": 0,
+      "historyWrittenBytes": 0,
+      "aiWrites": 0,
+      "aiWrittenBytes": 0,
+      "totalLocalBytes": 37519331,
+      "stringifyMs": 0.22,
+      "submitMs": 86.97,
+      "heapAfterMiB": 1002.74,
+      "heapDeltaMiB": -21.71
+    }
   }
 }

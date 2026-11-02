@@ -110,6 +110,22 @@ test('已有 AI 分段写新页失败必须失败，不使用旧备份或降级�
   assert.deepEqual(h.data.get(h.repo.rootKey('alice')), before)
   assert.equal(h.cold().read('alice').aiMessages.length, 1)
 })
+
+test('新准备 AI 页的热读对象深度只读，不能修改缓存后让冷热读分歧（评审 4438783098）', () => {
+  const h = harness(), original = snapshot(1)
+  original.aiMessages[0].bullets = ['保留']
+  h.repo.write('alice', original)
+  const warm = h.repo.read('alice'), row = warm.aiMessages[0]
+  assert.equal(Object.isFrozen(row), true)
+  assert.equal(Object.isFrozen(row.bullets), true)
+  assert.equal(Reflect.set(row, 'text', '未提交编辑'), false)
+  assert.equal(Reflect.set(row.bullets, 0, '未提交编辑'), false)
+  h.repo.write('alice', warm)
+  assert.deepEqual(h.repo.read('alice').aiMessages, h.cold().read('alice').aiMessages)
+  warm.aiMessages[0] = { ...row, text: '显式替换新消息值' }
+  h.repo.write('alice', warm)
+  assert.equal(h.cold().read('alice').aiMessages[0].text, '显式替换新消息值')
+})
 test('活动根超过单项预算时拒绝提交，不删已有待传项且不进入原生超限写入', () => {
   const h = harness(), original = snapshot(2)
   h.repo.write('alice', original)

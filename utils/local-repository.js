@@ -69,7 +69,7 @@ function createLocalRepository(storage, onStatusChange) {
   }
   function aiCache(pages, source) {
     const aiValues = pages.flatMap(p => p.values), aiRefs = new WeakMap()
-    pages.flatMap(p => p.rows).forEach((row, i) => { if (row && typeof row === 'object') aiRefs.set(row, aiValues[i]) })
+    pages.flatMap(p => p.rows).forEach((row, i) => { if (row && typeof row === 'object') aiRefs.set(freeze(row), aiValues[i]) })
     ;(source || []).forEach((row, i) => { if (row && typeof row === 'object') aiRefs.set(freeze(row), aiValues[i]) })
     return { aiPages: pages, aiValues, aiRefs }
   }
