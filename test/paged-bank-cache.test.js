@@ -47,3 +47,18 @@ test('读失败和已落盘页面损坏不冒充无缓存', () => {
   assert.equal(cache.install(v.root, 1, v.publicPages).ok, true)
   assert.equal(cache.read().status, 'ready')
 })
+
+test('损坏的根指针可以由完整发布修复，但读取失败不得覆盖已有内容', () => {
+  const wx = storage(), cache = createPagedCache(wx), first = catalog('first'), next = catalog('next')
+  assert.equal(cache.install(first.root, 1, first.publicPages).ok, true)
+  const pointerKey = 'exam_quiz_bank_paged_root_v1'
+  wx.data.get(pointerKey).root.releaseId = 'damaged'
+  assert.equal(cache.read().status, 'error')
+  assert.equal(cache.install(next.root, 2, next.publicPages).ok, true)
+  assert.equal(cache.read().source.releaseId, next.root.releaseId)
+  const before = JSON.stringify([...wx.data.entries()])
+  wx.fail.read = true
+  assert.equal(cache.install(first.root, 3, first.publicPages).error, 'PAGED_CACHE_READ_FAILED')
+  wx.fail.read = false; assert.equal(JSON.stringify([...wx.data.entries()]), before)
+  assert.equal(cache.install(first.root, 1, first.publicPages).error, 'STALE_PAGED_RELEASE')
+})

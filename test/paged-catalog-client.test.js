@@ -75,6 +75,18 @@ test('分片题目离线重启后仍固定协议和原发布，按 19 条分批�
   } finally { d.store.__clearFlushTimer() }
 })
 
+test('根指针损坏后重启可从云端完整修复并恢复题库', async () => {
+  const h = harness(), first = catalog('首版'), second = catalog('恢复'), storage = new Map()
+  const wx = { __cloudReady: true, getStorageSync: k => copy(storage.has(k) ? storage.get(k) : ''), setStorageSync: (k, v) => storage.set(k, copy(v)),
+    cloud: { callFunction: ({ data }) => h.main(data).then(result => ({ result })) } }
+  seed(h, first, 1); assert.equal(await loadBank(wx).loadCloudBank(), true)
+  storage.get('exam_quiz_bank_paged_root_v1').root.releaseId = 'broken'
+  const restarted = loadBank(wx); assert.equal(restarted.getAllQuestions().length, 0)
+  seed(h, second, 2); assert.equal(await restarted.loadCloudBank(), true)
+  assert.equal(restarted.getAllQuestions().length, 205)
+  assert.equal(loadBank(wx).findQuestion('q0000').bankReleaseId, second.root.releaseId)
+})
+
 test('旧后端拒绝分页协议或错误确认回包时保留待传事实，修复后可补传', async () => {
   const bh = harness(), v = catalog(), learning = makeHarness({ questionDocuments: bh.documents }); seed(bh, v, 1)
   let rejectPaged = true
