@@ -8,7 +8,7 @@ module.exports = {
   cloudEnv: 'cloud1-d4gye2rcib84f0347',
 
   /** 小程序当前版本号（用于云端强制更新校验） */
-  version: '1.0.0',
+  version: '1.1.0',
 
   /** 云函数名称 */
   functions: {

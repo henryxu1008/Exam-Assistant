@@ -26,13 +26,16 @@ function fixture(count, includeAI) {
 }
 function sample(count, includeAI) {
   const { state, q } = fixture(count, includeAI), storage = new Map([[key, JSON.stringify(state)]])
-  let writes = 0, writtenBytes = 0, stringifyMs = 0, lastBytes = 0, store
+  let allWrittenBytes = 0, writes = 0, writtenBytes = 0, historyWrites = 0, historyWrittenBytes = 0, stringifyMs = 0, lastBytes = 0, store
   const write = (name, value) => {
     const started = performance.now(), text = JSON.stringify(value), elapsed = performance.now() - started
     storage.set(name, text)
+    if (/^exam_quiz_(data|history|backup)_/.test(name)) allWrittenBytes += Buffer.byteLength(text)
+    if (name.startsWith('exam_quiz_history_v1__')) { historyWrites++; historyWrittenBytes += Buffer.byteLength(text) }
     if (name === key) { writes++; lastBytes = Buffer.byteLength(text); writtenBytes += lastBytes; stringifyMs += elapsed }
   }
   const wx = { __cloudReady: false,
+    getStorageInfoSync: () => ({ keys: [...storage.keys()] }),
     getStorageSync: name => storage.has(name) ? JSON.parse(storage.get(name)) : '',
     setStorageSync: write, setStorage: opts => { write(opts.key, opts.data); if (opts.success) opts.success() },
     removeStorageSync: name => storage.delete(name), cloud: { callFunction() { throw new Error('BENCHMARK_MUST_NOT_ACCESS_CLOUD') } } }
@@ -41,16 +44,19 @@ function sample(count, includeAI) {
     vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx, console, setTimeout, clearTimeout,
       require: name => require(path.resolve(path.dirname(file), name)) })
     store = module.exports; store.load()
+    allWrittenBytes = 0
+    const migrationStarted = performance.now()
     store.createPracticeSession({ subject: q.subject, questionIds: [q.id], questions: [q] }); store.flush()
+    const migrationMs = performance.now() - migrationStarted, migrationWrittenBytes = allWrittenBytes
     const beforeBytes = Buffer.byteLength(storage.get(key)), beforeHeap = process.memoryUsage().heapUsed
-    writes = 0; writtenBytes = 0; stringifyMs = 0
+    writes = 0; writtenBytes = 0; historyWrites = 0; historyWrittenBytes = 0; stringifyMs = 0
     const started = performance.now()
     const result = store.submitAttempt(q, q.answer, true, 100, 'synthetic-new-answer', store.getPracticeContext())
     const submitMs = performance.now() - started, afterHeap = process.memoryUsage().heapUsed
     if (!result.ok) throw new Error('BENCHMARK_SUBMIT_FAILED')
-    const saved = JSON.parse(storage.get(key))
+    const saved = store.exportLocalSnapshot()
     if (saved.attempts.length !== count + 1 || saved.attemptOutbox.pending.length !== 1 || saved.aiMessages.length !== (includeAI ? count : 0)) throw new Error('BENCHMARK_HISTORY_LOST')
-    return { beforeBytes, afterBytes: lastBytes, dataWrites: writes, writtenBytes, stringifyMs: round(stringifyMs), submitMs: round(submitMs),
+    return { beforeBytes, afterBytes: lastBytes, migrationMs: round(migrationMs), migrationWrittenBytes, dataWrites: writes, writtenBytes, historyWrites, historyWrittenBytes, totalLocalBytes: [...storage.values()].reduce((n, text) => n + Buffer.byteLength(text), 0), stringifyMs: round(stringifyMs), submitMs: round(submitMs),
       heapAfterMiB: round(afterHeap / 1048576), heapDeltaMiB: round((afterHeap - beforeHeap) / 1048576) }
   } finally { if (store) store.__clearFlushTimer() }
 }
@@ -66,7 +72,7 @@ function run({ sizes = [1000, 10000], runs = 5 } = {}) {
     const sorted = field => samples.map(s => s[field]).sort((a, b) => a - b)
     const p50 = field => sorted(field)[Math.floor(runs / 2)]
     scenarios.push({ attempts: count, aiMessages: includeAI ? count : 0, runs, beforeBytes: samples[0].beforeBytes,
-      afterBytes: samples[0].afterBytes, dataWritesPerAnswer: samples[0].dataWrites, writtenBytesPerAnswer: samples[0].writtenBytes,
+      afterBytes: samples[0].afterBytes, migrationP50Ms: p50('migrationMs'), migrationWrittenBytes: samples[0].migrationWrittenBytes, totalLocalBytes: samples[0].totalLocalBytes, historyWritesPerAnswer: samples[0].historyWrites, historyWrittenBytesPerAnswer: samples[0].historyWrittenBytes, dataWritesPerAnswer: samples[0].dataWrites, writtenBytesPerAnswer: samples[0].writtenBytes,
       submitP50Ms: p50('submitMs'), submitMaxMs: sorted('submitMs').at(-1), stringifyP50Ms: p50('stringifyMs'),
       observedHeapAfterMaxMiB: sorted('heapAfterMiB').at(-1), samples })
   }

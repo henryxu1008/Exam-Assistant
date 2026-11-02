@@ -874,7 +874,7 @@ test('云端合并结果会写入本地存储（而非只留在内存）', async
   await tick()
 
   assert.ok(store.getRecord('merged-q'), '内存态应含云端记录')
-  const persisted = global.wx.getStorageSync(`${DATA_KEY}__o1`)
+  const persisted = store.exportLocalSnapshot()
   assert.ok(persisted, '应已落盘到账号作用域 key')
   assert.ok(persisted.records['merged-q'], '合并结果必须持久化，否则离线重开即丢失')
   assert.deepStrictEqual(persisted.attempts.map((a) => a.id), ['a-cloud'])
