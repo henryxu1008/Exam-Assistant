@@ -6,6 +6,8 @@ const path = require('node:path')
 const user = require('../utils/user.js')
 const { operators } = require('./support/catalog-operators.js')
 const { createCatalogAdmin } = require('../utils/catalog-admin.js')
+const { createAiQuestionGenerator } = require('../utils/ai-question-generator.js')
+const aiDomain = require('../shared/ai-question-domain.js')
 let definition
 global.Page = value => { definition = value }
 require('../pages/catalog-admin/catalog-admin.js')
@@ -266,6 +268,40 @@ test('大题目列表使用有界摘要，编辑时从完整工作区读取原�
   p.onSaveQuestion(); assert.equal(p.data.error, '')
   assert.equal(p._workspace.bank.questions.it.find(q => q.id === 'large00').versionId, version)
   assert.deepEqual(p._workspace.sources.large00, workspace.sources.large00)
+})
+
+test('管理端生成候选题需填写来源并一次性加入当前工作区，不直接发布', async t => {
+  const ops = operators(), imported = JSON.parse(sample)
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'exam', name: '考试' }]; imported.bank.manifest.subjects[0].examId = 'exam'
+  const base = await ops.editor.submitDraft(imported, { submissionId: 'ai-base', rightsConfirmed: true })
+  await ops.approve(base.draftId); await ops.publisher.publishExam({ draftId: base.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  let calls = 0
+  p._aiClient = createAiQuestionGenerator({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async request => {
+    calls++
+    const items = Array.from({ length: request.count }, (_, i) => ({ type: request.type, level: request.level, stem: '合成 AI 候选题 ' + i,
+      options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成解析' }))
+    return { ok: true, generator: '合成模型', questions: aiDomain.normalize(items, request, 'editor') }
+  } })
+  const setAi = (field, value) => p.onAiInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  setAi('aiTopic', '网络基础'); setAi('aiCount', '2')
+  const before = p._workspace.bank.questions.it.length, revision = ops.h.bank().publicationRevision
+  p.onAiGenerate(); await settle(); assert.equal(calls, 1); assert.equal(p.data.aiResults.length, 2)
+  assert.equal(p._workspace.bank.questions.it.length, before)
+  p.onAiAdd(); assert.equal(p.data.error, 'AI_SOURCE_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before)
+  setAi('aiReference', '合成知识点'); setAi('aiPermission', '合成测试许可'); p.onAiAdd()
+  assert.equal(p.data.aiResults.length, 0); assert.equal(p._workspace.bank.questions.it.length, before + 2)
+  const generated = p._workspace.bank.questions.it.filter(q => q.id.startsWith('AI_'))
+  assert.equal(generated.length, 2); assert.equal(p._workspace.sources[generated[0].id].kind, 'ai_generated')
+  assert.equal(p._workspace.sources[generated[0].id].generator, '合成模型'); assert.equal(ops.h.bank().publicationRevision, revision)
+  p.onPrepareEditor(); assert.equal(p.data.ready, true)
+  p.onAiGenerate(); await settle(); assert.equal(p.data.aiResults.length, 2)
+  p._changeEditor({ type: 'renameChapter', subjectKey: 'it', chapterKey: 'net', name: '改名后章节' })
+  const afterChange = JSON.stringify(p._workspace)
+  p.onAiAdd(); assert.equal(p.data.error, 'AI_CANDIDATES_STALE'); assert.equal(JSON.stringify(p._workspace), afterChange)
+  p.onAiDiscard(); assert.equal(p.data.aiResults.length, 0)
 })
 
 test('大题库文件含非法 UTF-8 或长度不符时拒绝导入', async t => {

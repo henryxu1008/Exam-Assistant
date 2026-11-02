@@ -4,10 +4,13 @@ const editor = require('../../utils/catalog-editor.js')
 const { chapterIdentity } = require('../../shared/exam-catalog-domain.js')
 const paged = require('../../shared/paged-catalog-domain.js')
 const { createCatalogCheckpoint } = require('../../utils/catalog-checkpoint.js')
+const { runtimeAiQuestionGenerator } = require('../../utils/ai-question-generator.js')
+const { sha256 } = require('../../shared/question-domain.js')
 const utf8Bytes = value => encodeURIComponent(value).replace(/%[A-F0-9]{2}/g, 'x').length
 const questionTypes = [{ name: '单选题', value: 'single' }, { name: '多选题', value: 'multiple' }, { name: '判断题', value: 'judge' },
   { name: '不定项', value: 'uncertain' }, { name: '填空题', value: 'fill' }, { name: '排序题', value: 'sort' }]
 const sourceTypes = [{ name: '原创', value: 'original' }, { name: '授权', value: 'licensed' }, { name: '公有领域', value: 'public_domain' }, { name: 'AI 生成', value: 'ai_generated' }]
+const aiTypes = questionTypes.filter(item => ['single', 'multiple', 'judge'].includes(item.value))
 const errorMessages = {
   STALE_BASE_RELEASE: '题库已更新，请重新载入并核对后再编辑。', BASE_PUBLICATION_REQUIRED: '请先载入当前已发布题库。',
   NO_EDITABLE_PUBLISHED_DRAFT: '当前发布缺少可核对的草稿或来源，请先核查。', INVALID_PUBLISHED_DRAFT: '当前发布的草稿或来源校验失败。',
@@ -27,6 +30,9 @@ const errorMessages = {
   LOCAL_DRAFT_EXISTS: '本机有已保存的编辑内容，请先恢复或明确丢弃。', LOCAL_DRAFT_CHANGED: '本机编辑内容已在其他页面更新，请重新恢复。',
   LOCAL_DRAFT_READ_FAILED: '本机编辑内容读取失败，请保留现场并重试。', LOCAL_DRAFT_WRITE_FAILED: '本机保存失败，当前修改未被确认保存。',
   PAGED_RELEASE_IN_USE: '题目页仍被其他草稿或发布引用，未清理。', PAGED_REFERENCES_INVALID: '题目页引用登记异常，未清理。',
+  AI_GENERATION_DISABLED: 'AI 出题尚未启用或配置。', AI_QUOTA_EXCEEDED: '本日 AI 出题次数已用完。', BAD_AI_RESPONSE: 'AI 返回内容不符合题目规则，请重试。',
+  BAD_AI_REQUEST: '请检查知识点、题型、难度和生成数量。', DUPLICATE_AI_QUESTION: '候选题与已有题目重复，请丢弃后重新生成。', AI_CANDIDATES_PENDING: '请先处理或丢弃当前候选题。',
+  AI_CANDIDATES_STALE: '题库内容或章节已改变，请重新生成。', AI_SOURCE_REQUIRED: '加入题库前请填写依据及使用权说明。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -66,10 +72,11 @@ const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: 
   editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
   reviewItems: [], reviewPage: 1, reviewPages: 1, reviewAllSeen: false,
   pagedReady: false, pagedReport: '', pagedSubmissionId: '', pagedRights: false,
+  aiTopic: '', aiType: 'single', aiTypeName: '单选题', aiTypes, aiLevel: '1', aiCount: '3', aiReference: '', aiPermission: '', aiResults: [],
   questionTypeName: '单选题', sourceTypeName: '原创', errorMessages })
 Page({
   data: blank(),
-  onLoad() { this._client = runtimeClient(); this._generation = 0 },
+  onLoad() { this._client = runtimeClient(); this._aiClient = runtimeAiQuestionGenerator(); this._generation = 0 },
   onShow() {
     this._active = true
     this._generation += 1
@@ -80,7 +87,7 @@ Page({
       let ctx
       try { ctx = this._client.capture() } catch (e) { this.setData(blank()); return }
       if (!this._context || this._context.openid !== ctx.openid || this._context.token !== ctx.token) {
-        this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null
+        this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null; this._aiCandidates = null
         this._checkpoint = createCatalogCheckpoint(wx, ctx.openid)
         this.setData(blank())
       }
@@ -92,7 +99,7 @@ Page({
       })
     })
   },
-  onHide() { this._active = false; this._generation += 1 },
+  onHide() { this._active = false; this._generation += 1; this._aiCandidates = null; this.setData({ aiResults: [] }) },
   onUnload() { this.onHide(); this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._context = null; this._checkpoint = null; this._checkpointToken = null },
   async _run(task, apply) {
     if (this.data.busy || !this._active || !this._context || !this._client.current(this._context)) return
@@ -369,6 +376,52 @@ Page({
       this.setData({ ...ui, questionTypeName: '单选题', sourceTypeName: '原创', ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '' })
       this._renderEditor()
     })
+  },
+  onAiInput(e) {
+    if (this.data.busy || !this.data.canEdit || !this._workspace) return
+    const field = e.currentTarget.dataset.field, value = e.detail.value
+    if (!['aiTopic', 'aiLevel', 'aiCount', 'aiReference', 'aiPermission'].includes(field) || typeof value !== 'string') return
+    if (this._aiCandidates && ['aiTopic', 'aiLevel', 'aiCount'].includes(field)) { this.setData({ error: 'AI_CANDIDATES_PENDING' }); return }
+    if (value.length > (field === 'aiTopic' ? 300 : field === 'aiReference' || field === 'aiPermission' ? 1000 : 4)) { this.setData({ error: 'INPUT_TOO_LARGE_FOR_PAGE' }); return }
+    this.setData({ [field]: value, error: '' })
+  },
+  onAiType(e) {
+    if (this.data.busy || this._aiCandidates) { if (this._aiCandidates) this.setData({ error: 'AI_CANDIDATES_PENDING' }); return }
+    const selected = aiTypes[Number(e.detail.value)]
+    if (selected) this.setData({ aiType: selected.value, aiTypeName: selected.name, error: '' })
+  },
+  onAiGenerate() {
+    if (!this.data.canEdit || this.data.busy || !this._workspace || !this._active || !this._client.current(this._context)) return
+    if (this._aiCandidates) { this.setData({ error: 'AI_CANDIDATES_PENDING' }); return }
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    const workspace = this._workspace, subject = workspace.bank.manifest.subjects.find(s => s.key === this.data.selectedSubject)
+    const chapter = subject && subject.chapters.find(c => c.key === this.data.selectedChapter)
+    const exam = subject && workspace.bank.manifest.exams.find(e => e.id === subject.examId)
+    if (!subject || !chapter || !exam) { this.setData({ error: 'CHAPTER_NOT_FOUND' }); return }
+    const request = { requestId: 'a' + sha256(JSON.stringify([Date.now(), Math.random()])), subjectKey: subject.key, chapterKey: chapter.key,
+      examName: exam.name, subjectName: subject.name, chapterName: chapter.name, topic: this.data.aiTopic,
+      type: this.data.aiType, level: Number(this.data.aiLevel), count: Number(this.data.aiCount) }
+    this._run(async live => {
+      const result = await this._aiClient.generate(request, live)
+      if (workspace !== this._workspace || this.data.selectedSubject !== subject.key || this.data.selectedChapter !== chapter.key) throw Object.assign(new Error('AI_CANDIDATES_STALE'), { code: 'AI_CANDIDATES_STALE' })
+      return result
+    }, result => {
+      this._aiCandidates = { ...result, workspace, subjectKey: subject.key, chapterKey: chapter.key }
+      this.setData({ aiResults: result.questions.map(q => ({ id: q.id, stem: q.stem, options: q.options, answer: q.answer.join('、'), explain: q.explain })), error: '' })
+    })
+  },
+  onAiDiscard() { if (!this.data.busy) { this._aiCandidates = null; this.setData({ aiResults: [], error: '' }) } },
+  onAiAdd() {
+    if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
+    const batch = this._aiCandidates
+    if (!batch || batch.workspace !== this._workspace || batch.subjectKey !== this.data.selectedSubject || batch.chapterKey !== this.data.selectedChapter) { this.setData({ error: 'AI_CANDIDATES_STALE' }); return }
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    if (!this.data.aiReference.trim() || !this.data.aiPermission.trim()) { this.setData({ error: 'AI_SOURCE_REQUIRED' }); return }
+    const source = { kind: 'ai_generated', title: 'AI 生成练习题', reference: this.data.aiReference, permission: this.data.aiPermission,
+      attribution: 'AI 辅助生成，待人工核验', generator: batch.generator }
+    if (this._changeEditor({ type: 'addGeneratedQuestions', subjectKey: batch.subjectKey, chapterKey: batch.chapterKey, questions: batch.questions, source })) {
+      this._aiCandidates = null; this.setData({ aiResults: [], result: `已加入 ${batch.questions.length} 道候选题，请逐题核对后提交审核。` })
+    }
   },
   onEditorInput(e) {
     if (this.data.busy || !this.data.canEdit || !this._workspace) return

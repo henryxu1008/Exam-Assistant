@@ -20,11 +20,12 @@ const ROOT = path.resolve(__dirname, '..')
 
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
+  ['shared/ai-question-domain.js', 'cloudfunctions/aiQuestionGen/ai-question-domain.js'],
   ['shared/paged-catalog-domain.js', 'cloudfunctions/bankSync/paged-catalog-domain.js', 'cloudfunctions/studySync/paged-catalog-domain.js'],
-  ['shared/exam-catalog-domain.js', 'cloudfunctions/bankSync/exam-catalog-domain.js', 'cloudfunctions/studySync/exam-catalog-domain.js'],
+  ['shared/exam-catalog-domain.js', 'cloudfunctions/bankSync/exam-catalog-domain.js', 'cloudfunctions/studySync/exam-catalog-domain.js', 'cloudfunctions/aiQuestionGen/exam-catalog-domain.js'],
   ['shared/grading-domain.js', 'cloudfunctions/studySync/grading-domain.js'],
-  ['shared/workflow-domain.js', 'cloudfunctions/bankSync/workflow-domain.js', 'cloudfunctions/studySync/workflow-domain.js'],
-  ['shared/question-domain.js', 'cloudfunctions/bankSync/question-domain.js', 'cloudfunctions/studySync/question-domain.js'],
+  ['shared/workflow-domain.js', 'cloudfunctions/bankSync/workflow-domain.js', 'cloudfunctions/studySync/workflow-domain.js', 'cloudfunctions/aiQuestionGen/workflow-domain.js'],
+  ['shared/question-domain.js', 'cloudfunctions/bankSync/question-domain.js', 'cloudfunctions/studySync/question-domain.js', 'cloudfunctions/aiQuestionGen/question-domain.js'],
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],
   ['shared/attempt-domain.js', 'cloudfunctions/studySync/attempt-domain.js'],
   // studySync/auth.js 此前也是逐字节一致的副本，却没被登记，
@@ -34,7 +35,8 @@ const MAPPINGS = [
     'cloudfunctions/bankSync/auth.js',
     'cloudfunctions/initConfig/auth.js',
     'cloudfunctions/studySync/auth.js',
-    'cloudfunctions/aiTutor/auth.js'
+    'cloudfunctions/aiTutor/auth.js',
+    'cloudfunctions/aiQuestionGen/auth.js'
   ],
   // 「读失败不得当成不存在」的判定必须所有云函数一致：
   // initConfig 就是照抄了 studySync 的旧实现才带着同一个缺陷。
@@ -44,7 +46,8 @@ const MAPPINGS = [
     'cloudfunctions/aiTutor/db-error.js',
     'cloudfunctions/initConfig/db-error.js',
     'cloudfunctions/bankSync/db-error.js',
-    'cloudfunctions/userProfile/db-error.js'
+    'cloudfunctions/userProfile/db-error.js',
+    'cloudfunctions/aiQuestionGen/db-error.js'
   ]
 ]
 
