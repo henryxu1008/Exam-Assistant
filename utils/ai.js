@@ -14,6 +14,8 @@
 const bank = require('./questions.js')
 const store = require('./store.js')
 const analytics = require('./analytics.js')
+const chapterLabel = (subject, chapter) => typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(subject, chapter) : chapter
+const pointLabel = point => point.chapterLabel || point.chapter
 
 const REMOTE_LLM = {
   enabled: false, // 置为 true 后走真实大模型
@@ -35,7 +37,7 @@ function learningSnapshot() {
     `顽固错题 ${ov.stubbornCount} 道`
   ]
   if (weak.length) {
-    lines.push('最薄弱知识点：' + weak.map((w) => `${w.chapter}(${w.rate}%, 错${w.wrong})`).join('，'))
+    lines.push('最薄弱知识点：' + weak.map((w) => `${pointLabel(w)}(${w.rate}%, 错${w.wrong})`).join('，'))
   } else {
     lines.push('暂无明显薄弱知识点')
   }
@@ -91,7 +93,7 @@ function requestLLM(messages, subject, context) {
         const userAns = Array.isArray(ctx.userAnswer) && ctx.userAnswer.length ? answerText(q, ctx.userAnswer) : '（未作答）'
         payload.unshift({
           role: 'system',
-          content: `【当前正在讲解的题目】科目：${q.subject}｜章节：${q.chapter}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
+          content: `【当前正在讲解的题目】科目：${typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(q.subject) : q.subject}｜章节：${chapterLabel(q.subject, q.chapter)}\n题干：${q.stem}\n选项：${optText}\n用户作答：${userAns}\n标准答案：${ansText}\n请基于以上题目给出分步解析。`
         })
       }
     }
@@ -188,7 +190,7 @@ function explainQuestion(question, userAnswer) {
   const steps = [
     {
       title: '锁定考点',
-      text: `${question.subject} · ${question.chapter}${question.keyPoint ? ' —— ' + question.keyPoint : ''}`
+      text: `${typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(question.subject) : question.subject} · ${chapterLabel(question.subject, question.chapter)}${question.keyPoint ? ' —— ' + question.keyPoint : ''}`
     },
     {
       title: '分析思路',
@@ -237,7 +239,7 @@ function findSimilar(question, limit) {
   return scored.slice(0, n).map((i) => ({
     id: i.q.id,
     stem: i.q.stem,
-    chapter: i.q.chapter,
+    chapter: chapterLabel(i.q.subject, i.q.chapter),
     type: bank.typeName(i.q.type)
   }))
 }
@@ -262,7 +264,7 @@ function studyAdvice(snap) {
 
   if (weak.length) {
     advice.push(
-      `当前最薄弱的是「${weak[0].chapter}」（正确率 ${weak[0].rate}%，累计错 ${weak[0].wrong} 题），建议今天优先攻克它。`
+      `当前最薄弱的是「${pointLabel(weak[0])}」（正确率 ${weak[0].rate}%，累计错 ${weak[0].wrong} 题），建议今天优先攻克它。`
     )
   }
   if (ov.stubbornCount > 0) {
@@ -291,7 +293,7 @@ function dailyPlan() {
     plan.push(`先用 5 分钟复习 ${Math.min(10, due.length)} 道到期错题，激活记忆。`)
   }
   if (weak.length) {
-    const names = weak.slice(0, 2).map((w) => w.chapter).join('、')
+    const names = weak.slice(0, 2).map((w) => pointLabel(w)).join('、')
     plan.push(`集中攻克薄弱模块：${names}，每个模块 10 题起步。`)
   }
   plan.push(`完成剩余 ${Math.max(0, goal - (due.length || 0) - 10)} 题保持手感（今日目标 ${goal} 题）。`)
@@ -316,16 +318,16 @@ function diagnose() {
   }
   const bullets = []
   if (weak.length) {
-    bullets.push(`薄弱知识点 ${weak.length} 个：` + weak.map((w) => `${w.chapter}(${w.rate}%)`).join('，'))
+    bullets.push(`薄弱知识点 ${weak.length} 个：` + weak.map((w) => `${pointLabel(w)}(${w.rate}%)`).join('，'))
   } else {
     bullets.push('暂时没有明显薄弱知识点，各模块正确率都在 60% 以上，保持住！')
   }
   if (strong.length) {
-    bullets.push('掌握较好的模块：' + strong.map((s) => `${s.chapter}(${s.rate}%)`).join('，'))
+    bullets.push('掌握较好的模块：' + strong.map((s) => `${pointLabel(s)}(${s.rate}%)`).join('，'))
   }
   bullets.push(`近期的整体表现：累计 ${ov.total} 题，正确率 ${ov.rate}%，顽固错题 ${ov.stubbornCount} 道。`)
   const cards = weak.length
-    ? [{ text: `去练「${weak[0].chapter}」`, action: 'practice-weak' }, { text: '查看学情报告', action: 'goto-analysis' }]
+    ? [{ text: `去练「${pointLabel(weak[0])}」`, action: 'practice-weak' }, { text: '查看学情报告', action: 'goto-analysis' }]
     : [{ text: '随机刷一组题', action: 'practice-random' }]
   return {
     reply: '我结合了你的答题记录做了次体检，重点如下：',
@@ -360,7 +362,7 @@ function chat(text, context) {
   if (q && /这题|这道题|怎么解|讲一下|解析|为什么选/.test(input)) {
     const explained = explainQuestion(q, ctx.userAnswer || [])
     return {
-      reply: `${explained.headline}（${bank.typeName(q.type)}｜${q.chapter}）`,
+      reply: `${explained.headline}（${bank.typeName(q.type)}｜${chapterLabel(q.subject, q.chapter)}）`,
       bullets: explained.steps.map((s) => `${s.title}：${s.text}`),
       cards: [
         { text: '看记忆口诀', action: 'mnemonic' },
@@ -403,7 +405,7 @@ function chat(text, context) {
     const stubborn = analytics.stubbornQuestions(3)
     const bullets = [`错题本共 ${ov.wrongCount} 道，其中错 2 次以上的顽固错题 ${ov.stubbornCount} 道。`]
     stubborn.forEach((s) => {
-      bullets.push(`「${s.question.chapter}」已错 ${s.record.wrong} 次：${s.question.stem.slice(0, 26)}${s.question.stem.length > 26 ? '…' : ''}`)
+      bullets.push(`「${chapterLabel(s.question.subject, s.question.chapter)}」已错 ${s.record.wrong} 次：${s.question.stem.slice(0, 26)}${s.question.stem.length > 26 ? '…' : ''}`)
     })
     bullets.push('建议每天先清 5 道错题再刷新题，连续 3 天正确即可移出错题本。')
     return {
@@ -438,7 +440,7 @@ function chat(text, context) {
     if (weak.length) {
       weak.forEach((w) => {
         const sample = bank.filterQuestions({ chapter: w.chapter })[0]
-        bullets.push(`${w.chapter}：${sample ? buildMnemonic(sample) : '先看教材框架，再刷 10 题巩固。'}`)
+        bullets.push(`${pointLabel(w)}：${sample ? buildMnemonic(sample) : '先看教材框架，再刷 10 题巩固。'}`)
       })
     } else {
       bullets.push('建议用「错题三遍法」：当天讲一遍、隔天做一遍、周末总复习一遍。')

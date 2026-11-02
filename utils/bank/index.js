@@ -19,6 +19,7 @@
 const manifest = require('./manifest.js')
 const config = require('../config.js')
 const domain = require('../../shared/question-domain.js')
+const examDomain = require('../../shared/exam-catalog-domain.js')
 const { normalizeText, judge } = require('../../shared/grading-domain.js')
 
 const cache = {}
@@ -46,7 +47,7 @@ const CLOUD_BANK_KEY = 'exam_quiz_bank_published_v2'
 function loadPersistedCloudBank() {
   try {
     const raw = wx.getStorageSync(CLOUD_BANK_KEY)
-    if (domain.validRelease(raw) && Number.isSafeInteger(raw.publicationRevision) && raw.publicationRevision > 0) return raw
+    if ((domain.validRelease(raw) || examDomain.validExamRelease(raw)) && Number.isSafeInteger(raw.publicationRevision) && raw.publicationRevision > 0) return raw
   } catch (e) {
     /* ignore */
   }
@@ -83,23 +84,36 @@ function getAllQuestions() {
   return allQuestions().slice()
 }
 
-function getSubjects() {
+function getExams() { return JSON.parse(JSON.stringify(source.manifest.exams || [])) }
+function getSubjects(examId) {
   // 科目清单由 dataSource 驱动；count 按真实题目累计
-  return source.manifest.subjects.map((s) => ({
-    name: s.name,
-    count: (source.questions[s.key] || []).length
+  return source.manifest.subjects.filter(s => !examId || s.examId === examId).map((s) => ({
+    name: source.schemaVersion === 3 ? s.key : s.name,
+    ...(source.schemaVersion === 3 ? { label: s.name } : {}),
+    count: (source.questions[s.key] || []).length,
+    ...(s.examId ? { examId: s.examId } : {})
   }))
+}
+function getSubjectLabel(id) {
+  const subject = source.manifest.subjects.find(s => (source.schemaVersion === 3 ? s.key : s.name) === id)
+  return subject ? subject.name : id
 }
 
 function getChapters(subject) {
   // 章节清单由 dataSource 驱动
   if (!subject) {
     const all = []
-    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(c.name)))
+    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name)))
     return all
   }
-  const s = source.manifest.subjects.filter((x) => x.name === subject)[0]
-  return s ? s.chapters.map((c) => c.name) : []
+  const s = source.manifest.subjects.filter((x) => (source.schemaVersion === 3 ? x.key : x.name) === subject)[0]
+  return s ? s.chapters.map((c) => source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name) : []
+}
+function getChapterLabel(subjectId, chapterId) {
+  if (source.schemaVersion !== 3) return chapterId
+  const subject = source.manifest.subjects.find(s => s.key === subjectId)
+  const chapter = subject && subject.chapters.find(c => examDomain.chapterIdentity(subjectId, c.key) === chapterId)
+  return chapter ? chapter.name : chapterId
 }
 
 function getQuestionsByIds(ids) {
@@ -189,10 +203,10 @@ function answerPlain(question) {
 
 /** 用云端题库整体替换数据源（结构须为 {manifest, questions}）；成功返回 true */
 function swapSource(bank) {
-  if (!domain.validRelease(bank) || !Number.isSafeInteger(bank.publicationRevision) || bank.publicationRevision < 1 ||
+  if (!(domain.validRelease(bank) || examDomain.validExamRelease(bank)) || !Number.isSafeInteger(bank.publicationRevision) || bank.publicationRevision < 1 ||
       bank.publicationRevision < (source.publicationRevision || 0) ||
       (bank.publicationRevision === source.publicationRevision && bank.releaseId !== source.releaseId)) return false
-  const next = { ...domain.buildRelease(bank), publicationRevision: bank.publicationRevision }
+  const next = { ...(bank.schemaVersion === 3 ? examDomain.buildExamRelease(bank) : domain.buildRelease(bank)), publicationRevision: bank.publicationRevision }
   try { wx.setStorageSync(CLOUD_BANK_KEY, next) } catch (e) { return false }
   source = next
   _index = null
@@ -211,7 +225,11 @@ async function loadCloudBank() {
   if (!hasCloud()) return false
   try {
     const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getPublished' } })
-    const r = res && res.result
+    let r = res && res.result
+    if (r && r.error === 'EXAM_PROTOCOL_REQUIRED') {
+      const upgraded = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getExamPublished' } })
+      r = upgraded && upgraded.result
+    }
     if (r && r.ok && r.bank) return swapSource(r.bank)
   } catch (e) {
     /* ignore */
@@ -273,8 +291,11 @@ async function pushStaticBankToCloud(opt) {
 const api = {
   getAllQuestions,
   findQuestion,
+  getExams,
+  getSubjectLabel,
   getSubjects,
   getChapters,
+  getChapterLabel,
   getQuestionsByIds,
   filterQuestions,
   shuffle,

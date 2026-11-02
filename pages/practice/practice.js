@@ -62,6 +62,7 @@ Page({
   },
 
   _showPractice() {
+    this.setData({ subjects: bank.getSubjects(store.getCurrentExam()) })
     const curScope = store.getUserScope()
     const scopeChanged = this._scope && this._scope !== curScope
 
@@ -152,7 +153,7 @@ Page({
     this._sessionId = session.id
     this._practiceContext = store.getPracticeContext()
     this.setData({
-      mode, subject: session.subject, chapter: this._params.chapter, modeTitle: MODE_TITLES[mode],
+      mode, subject: session.subject, subjectLabel: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(session.subject) : session.subject, chapter: this._params.chapter, modeTitle: MODE_TITLES[mode],
       queue, total: queue.length, question: null, finished: false, summary: null,
       sessionCorrect: session.sessionCorrect || 0, sessionTotal: session.sessionTotal || 0,
       errorIds: session.errorIds || [], emptyTip: ''
@@ -221,6 +222,7 @@ Page({
     this.setData({
       mode,
       subject,
+      subjectLabel: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(subject) : subject,
       chapter,
       modeTitle: MODE_TITLES[mode],
       queue,
@@ -258,6 +260,7 @@ Page({
     const { mode, chapter, ids } = params
     // 科目统一从全局读取；下述数据源在 store / analytics 层已按当前科目过滤，无需二次过滤
     const subject = store.getCurrentSubject()
+    if (!subject && typeof store.getCurrentExam === 'function' && store.getCurrentExam()) return []
     let list = []
     if (mode === 'single') {
       // 指定题目：来源已是当前科目（错题本 / 学情 / 举一反三），不按科目二次过滤
@@ -431,6 +434,7 @@ Page({
     const res = store.submitAttempt(q, selected, correct, cost, clientOpId, this._practiceContext)
     if (!res.ok) {
       if (res.error === 'PERSIST_ATTEMPT_FAILED') wx.showToast({ title: '保存失败，请重试', icon: 'none' })
+      else if (res.error === 'QUESTION_SCOPE_MISMATCH') wx.showToast({ title: '题目归属与学习记录不一致，请联系管理员', icon: 'none' })
       else this._showPractice()
       return
     }
@@ -539,7 +543,7 @@ Page({
     const wrongList = errorIds
       .map((id) => bank.findQuestion(id))
       .filter(Boolean)
-      .map((q) => ({ id: q.id, stem: q.stem, chapter: q.chapter }))
+      .map((q) => ({ id: q.id, stem: q.stem, chapter: typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(q.subject, q.chapter) : q.chapter }))
     let comment = '继续保持这个节奏。'
     if (rate >= 90) comment = '这一组非常稳，可以尝试提高难度或限时作答。'
     else if (rate >= 70) comment = '整体不错，错题建议立刻看 AI 讲解再复盘一遍。'

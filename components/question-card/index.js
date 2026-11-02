@@ -73,6 +73,8 @@ Component({
 
       const patch = {
         type,
+        subjectLabel: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(q.subject) : q.subject,
+        chapterLabel: typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(q.subject, q.chapter) : q.chapter,
         typeName: bank.typeName(type),
         levelText: ['', '基础', '进阶', '拔高'][q.level] || '基础',
         isRight,

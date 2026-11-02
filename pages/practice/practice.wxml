@@ -5,7 +5,7 @@
     <view class="row between">
       <view class="row">
         <text class="tag">{{modeTitle}}</text>
-        <text class="tag tag-gray" wx:if="{{subject}}">{{subject}}</text>
+        <text class="tag tag-gray" wx:if="{{subject}}">{{subjectLabel || subject}}</text>
       </view>
       <text class="small muted">{{idx + 1}} / {{total}} · 本组正确 {{sessionCorrect}} 题</text>
     </view>
@@ -22,7 +22,7 @@
       wx:key="name"
       data-subject="{{item.name}}"
       bindtap="onSubjectChange"
-    >{{item.name}}</view>
+    >{{item.label || item.name}}</view>
   </scroll-view>
 
   <!-- 答题 -->

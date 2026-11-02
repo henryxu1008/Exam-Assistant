@@ -39,7 +39,7 @@ test('同题两端独立作答累计贡献，收藏等可编辑字段独立决�
 
 test('共享历史只计一次，新贡献在三端合并和再次作答后仍收敛', () => {
   const seed = {
-    version: 3, records: { q1: { id: 'q1', attempts: 5, right: 3, wrong: 2 } }
+    version: 3, records: { q1: { id: 'q1', subject: q('q1', 'chapter').subject, chapter: 'chapter', attempts: 5, right: 3, wrong: 2 } }
   }
   const a = answerOnDevice('A', false, seed)
   const b = answerOnDevice('B', true, seed)

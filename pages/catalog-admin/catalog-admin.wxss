@@ -7,3 +7,7 @@
 .catalog-admin .error { color: #aa2631; margin: 16rpx 0; }
 .catalog-admin button { margin: 12rpx 0; }
 .catalog-admin .row { display: flex; gap: 16rpx; align-items: center; }
+.catalog-admin .wrap { flex-wrap: wrap; }
+.catalog-admin .hint { color: #586274; font-size: 25rpx; line-height: 1.6; margin: 16rpx 0; }
+.catalog-admin .question-row { border-bottom: 1rpx solid #e4e8ef; padding: 16rpx 0; overflow-wrap: anywhere; }
+.catalog-admin .picker { padding: 22rpx 0; border-bottom: 1rpx solid #d7dce5; }

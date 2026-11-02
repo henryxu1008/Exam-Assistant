@@ -20,6 +20,7 @@ const { findByToken } = require('./auth.js')
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
 const questionDomain = require('./question-domain.js')
+const examDomain = require('./exam-catalog-domain.js')
 const grading = require('./grading-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
@@ -177,7 +178,7 @@ async function commitAttempts(event, openid) {
             let archive
             try { archive = await readExisting(() => tx.collection('questions').doc(releaseId).get()) } catch (e) { throw Object.assign(new Error('READ_RELEASE_FAILED'), { code: 'READ_RELEASE_FAILED' }) }
             if (!archive) fail('PUBLISHED_RELEASE_NOT_FOUND')
-            if (archive.kind !== 'questionBankRelease' || !questionDomain.validRelease(archive.bank) || archive.bank.releaseId !== releaseId ||
+            if (archive.kind !== 'questionBankRelease' || !(questionDomain.validRelease(archive.bank) || examDomain.validExamRelease(archive.bank)) || archive.bank.releaseId !== releaseId ||
                 !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_PUBLISHED_RELEASE')
             releases.set(releaseId, archive.bank)
           }
@@ -236,6 +237,8 @@ async function commitAttempts(event, openid) {
           }
         }
         incoming.attempts = receipts.map(r => r.attempt)
+        for (const fact of created) if (attemptDomain.validProjection(fact))
+          attemptDomain.assertQuestionScope(existing, fact.questionId, fact.projection.subject, fact.projection.chapter)
         const merged = mergeStats(existing, incoming)
         delete merged.attempts
         for (const fact of created) attemptDomain.addServerCounts(merged, fact)
@@ -249,7 +252,7 @@ async function commitAttempts(event, openid) {
       })
       if (!result.retry) return result
     } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'PUBLISHED_RELEASE_REQUIRED', 'READ_RELEASE_FAILED',
-      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING'].includes(e.code) ? e.code : 'TX_FAILED' } }
+      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING', 'QUESTION_SCOPE_MISMATCH'].includes(e.code) ? e.code : 'TX_FAILED' } }
   }
   return { ok: false, error: 'SYNC_RETRY_REQUIRED' }
 }

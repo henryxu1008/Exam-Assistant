@@ -5,6 +5,7 @@ const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const user = require('../../utils/user.js')
 const config = require('../../utils/config.js')
+const { runtimeClient } = require('../../utils/catalog-admin.js')
 const { storageStatusView, isStorageReadable } = require('../../utils/storage-status.js')
 
 const GOALS = [10, 20, 30, 50, 80]
@@ -45,7 +46,8 @@ Page({
     levelText: 1,
     version: config.version,
     localStorage: storageStatusView(),
-    storageReadable: true
+    storageReadable: true,
+    catalogAccess: false
   },
 
   onLoad() {
@@ -57,7 +59,7 @@ Page({
     })
   },
 
-  onHide() { this._visible = false },
+  onHide() { this._visible = false; this._catalogGeneration = (this._catalogGeneration || 0) + 1; this.setData({ catalogAccess: false }) },
 
   onUnload() {
     this.onHide()
@@ -67,8 +69,19 @@ Page({
 
   onShow() {
     this._visible = true
-    user.requireLogin(() => this.refresh())
+    user.requireLogin(() => { if (this._visible) { this.refresh(); this.refreshCatalogAccess() } })
   },
+
+  async refreshCatalogAccess() {
+    const generation = this._catalogGeneration = (this._catalogGeneration || 0) + 1
+    this.setData({ catalogAccess: false })
+    try {
+      const client = runtimeClient(), ctx = client.capture(), result = await client.access()
+      if (this._visible && generation === this._catalogGeneration && client.current(ctx)) this.setData({ catalogAccess: Array.isArray(result.roles) && result.roles.length > 0 })
+    } catch (e) { /* swallow: failed permission lookup hides the optional management entry. */ }
+  },
+
+  goCatalogAdmin() { if (this.data.catalogAccess) wx.navigateTo({ url: '/pages/catalog-admin/catalog-admin' }) },
 
   onPullDownRefresh() {
     user.requireLogin(() => this.refresh())

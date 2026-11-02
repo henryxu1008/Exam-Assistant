@@ -96,7 +96,7 @@
           bindtap="onChapterPractice"
         >
           <view class="row between">
-            <text class="strong ellipsis grow">{{item.chapter}}</text>
+            <text class="strong ellipsis grow">{{item.chapterLabel || item.chapter}}</text>
             <text class="tag {{item.rate >= 85 ? 'tag-green' : item.rate >= 60 ? '' : 'tag-red'}}">{{item.rate}}%</text>
           </view>
           <view class="bar chapter-bar">
@@ -126,7 +126,7 @@
           bindtap="onChapterPractice"
         >
           <view class="row between">
-            <text class="strong">{{item.chapter}}</text>
+            <text class="strong">{{item.chapterLabel || item.chapter}}</text>
             <text class="tag tag-red">{{item.rate}}%</text>
           </view>
           <view class="small muted">已练 {{item.attempts}} 题 · 错 {{item.wrong}} 题</view>
@@ -141,7 +141,7 @@
       <view class="card-sub">这些模块可以拉长复习间隔</view>
       <view class="strong-list">
         <view class="strong-item" wx:for="{{strong}}" wx:key="key">
-          <text class="grow ellipsis">{{item.chapter}}</text>
+          <text class="grow ellipsis">{{item.chapterLabel || item.chapter}}</text>
           <text class="tag tag-green">{{item.rate}}%</text>
         </view>
       </view>
@@ -159,7 +159,7 @@
       <view class="stubborn-list">
         <view class="stubborn-item" wx:for="{{stubborn}}" wx:key="id">
           <view class="row">
-            <text class="tag tag-gray">{{item.chapter}}</text>
+            <text class="tag tag-gray">{{item.chapterLabel || item.chapter}}</text>
             <text class="tag tag-red">错 {{item.wrong}} 次</text>
             <text class="small muted">{{item.days ? item.days + ' 天前' : '今天'}}</text>
           </view>

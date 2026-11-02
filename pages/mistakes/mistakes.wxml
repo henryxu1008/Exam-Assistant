@@ -40,14 +40,14 @@
       wx:key="name"
       data-subject="{{item.name}}"
       bindtap="onSubjectChange"
-    >{{item.name}}</view>
+    >{{item.label || item.name}}</view>
   </scroll-view>
 
   <!-- 列表 -->
   <view class="q-item" wx:for="{{list}}" wx:key="id">
     <view class="row q-head">
-      <text class="tag tag-gray">{{item.subject}}</text>
-      <text class="tag">{{item.chapter}}</text>
+      <text class="tag tag-gray">{{item.subjectLabel}}</text>
+      <text class="tag">{{item.chapterLabel}}</text>
       <text class="tag tag-gray">{{item.typeName}}</text>
       <text class="q-wrong">错 {{item.wrong}} 次</text>
     </view>

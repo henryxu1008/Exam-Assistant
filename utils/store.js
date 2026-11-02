@@ -897,7 +897,7 @@ const runSync = createSyncCoordinator({
       if (tail === cloudWriteChain) break
     }
     const failure = lastPushFailure && !isStaleContext(lastPushFailure.ctx) ? lastPushFailure.error : null
-    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure) || grading.NON_RETRYABLE_ERRORS.includes(failure)) {
+    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'QUESTION_SCOPE_MISMATCH', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure) || grading.NON_RETRYABLE_ERRORS.includes(failure)) {
       throw Object.assign(new Error(failure), { code: failure, retryable: false })
     }
     return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&
@@ -1031,9 +1031,25 @@ function saveSettings(patch) {
  * 当前科目：全应用统一口径（刷题 / 错题 / 学情 / AI 都只统计该科目）。
  * 未设置或值不在题库中时，回落到题库首个科目，保证「始终处于某个具体科目下」。
  */
+function getCurrentExam() {
+  const exams = typeof bank.getExams === 'function' ? bank.getExams() : []
+  if (!exams.length) return ''
+  const settings = load().settings
+  if (exams.some(e => e.id === settings.currentExam)) return settings.currentExam
+  const selected = bank.getSubjects().find(s => s.name === settings.currentSubject)
+  return selected && selected.examId || exams[0].id
+}
+function setCurrentExam(id) {
+  const exams = typeof bank.getExams === 'function' ? bank.getExams() : []
+  if (!exams.some(e => e.id === id)) return getCurrentExam()
+  const subjects = bank.getSubjects(id), previous = load().settings.currentSubject
+  saveSettings({ currentExam: id, currentSubject: subjects.some(s => s.name === previous) ? previous : (subjects[0] ? subjects[0].name : '') })
+  flush()
+  return id
+}
 function getCurrentSubject() {
   const saved = load().settings.currentSubject
-  const subjects = bank.getSubjects()
+  const subjects = bank.getSubjects(getCurrentExam())
   if (subjects.some((s) => s.name === saved)) return saved
   return subjects.length ? subjects[0].name : ''
 }
@@ -1041,8 +1057,9 @@ function getCurrentSubject() {
 /** 切换当前科目；传入题库中不存在的科目时忽略，返回实际生效的科目 */
 function setCurrentSubject(name) {
   const subjects = bank.getSubjects()
-  if (!subjects.some((s) => s.name === name)) return getCurrentSubject()
-  saveSettings({ currentSubject: name })
+  const selected = subjects.find((s) => s.name === name)
+  if (!selected) return getCurrentSubject()
+  saveSettings({ currentSubject: name, ...(selected.examId ? { currentExam: selected.examId } : {}) })
   flush() // 切换是显式操作，立即落盘
   return name
 }
@@ -1073,6 +1090,7 @@ function recordAnswerInto(s, question, isCorrect, costMs, attempt) {
   if (!question || !question.id) {
     throw new TypeError('recordAnswer: question 非法')
   }
+  attemptDomain.assertQuestionScope(s, question.id, question.subject, question.chapter)
   const now = attempt ? attempt.createdAt : Date.now()
   const key = todayKey(new Date(now))
 
@@ -1523,6 +1541,8 @@ function submitAttempt(question, selected, isCorrect, costMs, clientOpId, contex
   if (existing || (latest && latest.clientOpId === opId)) {
     return { ok: true, record: getRecord(question.id), attempt: existing || null, dup: true }
   }
+  try { attemptDomain.assertQuestionScope(s, question.id, question.subject, question.chapter) }
+  catch (e) { return { ok: false, error: 'QUESTION_SCOPE_MISMATCH', record: null, attempt: null, dup: false } }
 
   const pinned = session && session.questionSnapshots && session.questionSnapshots[question.id]
   if (session && session.questionSnapshots && Object.prototype.hasOwnProperty.call(session.questionSnapshots, question.id) &&
@@ -1598,6 +1618,8 @@ module.exports = {
   mergeStats,
   getSettings,
   saveSettings,
+  getCurrentExam,
+  setCurrentExam,
   getCurrentSubject,
   setCurrentSubject,
   getRecords,

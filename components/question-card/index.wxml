@@ -2,8 +2,8 @@
   <view class="qc-head">
     <view class="row wrap">
       <text class="tag">{{typeName}}</text>
-      <text class="tag tag-gray">{{question.subject}}</text>
-      <text class="tag tag-gray">{{question.chapter}}</text>
+      <text class="tag tag-gray">{{subjectLabel || question.subject}}</text>
+      <text class="tag tag-gray">{{chapterLabel || question.chapter}}</text>
       <text class="tag tag-orange">{{levelText}}</text>
     </view>
     <view class="qc-star {{starred ? 'on' : ''}}" bindtap="onStar">{{starred ? '★' : '☆'}}</view>

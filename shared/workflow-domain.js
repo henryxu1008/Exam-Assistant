@@ -1,5 +1,6 @@
 /** Immutable submission content and provenance. Declarations are evidence records, not legal verification. */
 const domain = require('./question-domain.js')
+const examDomain = require('./exam-catalog-domain.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const text = (v, max) => typeof v === 'string' && v.trim().length > 0 && v.length <= max
 function sourcesFor(bank, input) {
@@ -23,7 +24,10 @@ const payloadDigest = (bank, sources, basePublication) => domain.sha256(domain.c
 function submission(event, actor) {
   if (typeof event.submissionId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(event.submissionId)) fail('BAD_SUBMISSION_ID')
   if (event.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
-  const bank = domain.buildRelease(event.bank), sources = sourcesFor(bank, event.sources)
+  if (event.action !== 'createExamDraft' && event.bank && (event.bank.schemaVersion === 3 || (event.bank.manifest &&
+    (event.bank.manifest.exams !== undefined || (Array.isArray(event.bank.manifest.subjects) && event.bank.manifest.subjects.some(s => s && s.examId !== undefined)))))) fail('EXAM_PROTOCOL_REQUIRED')
+  const bank = event.action === 'createExamDraft' ? examDomain.buildExamRelease(event.bank) : domain.buildRelease(event.bank)
+  const sources = sourcesFor(bank, event.sources)
   if (event.basePublication !== undefined && !validBase(event.basePublication)) fail('BAD_BASE_PUBLICATION')
   const basePublication = event.basePublication ? { revision: event.basePublication.revision, releaseId: event.basePublication.releaseId } : undefined
   return { kind: 'bankDraft', draftId: draftAddress(actor, event.submissionId), submissionId: event.submissionId,
@@ -31,7 +35,7 @@ function submission(event, actor) {
 }
 function validDraft(draft) {
   try {
-    return draft && draft.kind === 'bankDraft' && domain.validRelease(draft.bank) && draft.rightsConfirmed === true &&
+    return draft && draft.kind === 'bankDraft' && (domain.validRelease(draft.bank) || examDomain.validExamRelease(draft.bank)) && draft.rightsConfirmed === true &&
       typeof draft.submissionId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(draft.submissionId) && text(draft.createdBy, 160) &&
       draft.draftId === draftAddress(draft.createdBy, draft.submissionId) &&
       domain.canonical(draft.sources) === domain.canonical(sourcesFor(draft.bank, draft.sources)) &&

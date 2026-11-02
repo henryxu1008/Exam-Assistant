@@ -14,7 +14,7 @@ function client(storage = new Map()) {
     storage.set(key, clone(value))
   }, cloud: { async callFunction(opts) {
     controls.requests.push(opts.data)
-    const response = clone(controls.response)
+    const response = clone(controls.responses ? controls.responses[opts.data.action] : controls.response)
     if (controls.wait) await controls.wait
     return { result: response }
   } } }
@@ -71,4 +71,25 @@ test('延迟旧响应不能倒退题库修订；管理员回滚以新修订切�
   c.controls.response = { ...old, bank: { ...old.bank, publicationRevision: 3 } }
   assert.equal(await c.bank.loadCloudBank(), true)
   assert.equal(c.bank.getAllQuestions()[0].stem, input().questions.gk[0].stem)
+})
+
+test('考试题库完整验证并缓存，离线重启保留考试归属，读取失败不替换已有发布', async () => {
+  const exam = require('../shared/exam-catalog-domain.js'), bank = input()
+  bank.schemaVersion = 3; bank.manifest = clone(bank.manifest)
+  bank.manifest.exams = [{ id: 'exam-a', name: '合成考试' }]
+  bank.manifest.subjects.forEach(s => { s.examId = 'exam-a' })
+  const release = exam.buildExamRelease(bank), c = client()
+  c.controls.responses = { getPublished: { ok: false, error: 'EXAM_PROTOCOL_REQUIRED' }, getExamPublished: { ok: true, bank: { ...release, publicationRevision: 2 } } }
+  assert.equal(await c.bank.loadCloudBank(), true)
+  assert.equal(c.bank.getExams()[0].id, 'exam-a')
+  assert.equal(c.bank.getSubjects('exam-a').length, 3)
+  const restored = client(c.storage); restored.wx.__cloudReady = false
+  assert.equal(restored.bank.getExams()[0].name, '合成考试')
+  c.controls.responses.getExamPublished = { ok: false, error: 'READ_BANK_FAILED' }
+  assert.equal(await c.bank.loadCloudBank(), false)
+  assert.equal(c.bank.getExams()[0].id, 'exam-a')
+  const corrupt = clone(release); corrupt.manifest.exams[0].name = '篡改'
+  c.controls.responses.getExamPublished = { ok: true, bank: { ...corrupt, publicationRevision: 3 } }
+  assert.equal(await c.bank.loadCloudBank(), false)
+  assert.equal(c.bank.getExams()[0].name, '合成考试')
 })
