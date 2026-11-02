@@ -13,7 +13,7 @@ function profile(store) {
     getApp: () => ({ globalData: {} }),
     Page: value => { page = value },
     wx: { showModal: value => { modal = value }, showToast: value => toasts.push(value) },
-    require: name => name === '../../utils/store.js' ? store : {}
+    require: name => name === '../../utils/store.js' ? store : name === '../../utils/storage-status.js' ? require('../utils/storage-status.js') : {}
   })
   let refreshed = 0
   page.refresh = () => { refreshed += 1 }

@@ -31,7 +31,7 @@ function device(server, saved, cloudReady = true, questionBank) {
       }
       storage.set(key, clone(value))
     },
-    getStorageInfoSync: () => ({ keys: [...storage.keys()] }),
+    getStorageInfoSync: () => ({ keys: [...storage.keys()], currentSize: 0, limitSize: 1048576 }),
     removeStorageSync: key => {
       if (controls.failDeleteRemove && key.startsWith('exam_quiz_pending_delete_v1__')) throw new Error('injected pending marker remove failure')
       storage.delete(key)

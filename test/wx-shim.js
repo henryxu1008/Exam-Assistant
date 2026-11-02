@@ -65,7 +65,7 @@ function setRaw(key, obj) {
 }
 
 global.wx = {
-  getStorageInfoSync: () => ({ keys: [...mem.keys()] }),
+  getStorageInfoSync: () => ({ keys: [...mem.keys()], currentSize: 0, limitSize: 1048576 }),
   getStorageSync,
   setStorageSync,
   setStorage,

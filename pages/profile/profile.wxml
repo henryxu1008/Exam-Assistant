@@ -1,5 +1,10 @@
 <!--pages/profile/profile.wxml-->
 <view class="page profile">
+  <view class="card storage-status storage-{{localStorage.tone}}" role="status" aria-live="polite">
+    <view class="card-title">{{localStorage.title}}</view>
+    <view class="card-sub">{{localStorage.detail}}</view>
+    <button wx:if="{{localStorage.retry}}" class="storage-retry" bindtap="onRetryStorage">重试本地保存检查</button>
+  </view>
   <!-- 用户信息 -->
   <view class="card user-card">
     <!-- 已登录 -->
@@ -32,7 +37,7 @@
       <view class="guest-tip small muted">登录后才能查看完整学习档案</view>
     </block>
 
-    <view class="row user-meta">
+    <view class="row user-meta" wx:if="{{storageReadable}}">
       <view class="user-meta-item">
         <text class="user-meta-num">{{studyDays}}</text>
         <text class="small muted">学习天数</text>
@@ -53,7 +58,7 @@
   </view>
 
   <!-- 今日进度 -->
-  <view class="card today-card">
+  <view class="card today-card" wx:if="{{storageReadable}}">
     <view class="row between">
       <view>
         <view class="card-title">今日进度</view>
@@ -73,7 +78,7 @@
   <view class="card">
     <view class="card-title">学习设置</view>
     <view class="card-sub">每日目标决定首页进度条与 AI 计划的建议题量</view>
-    <view class="goal-row">
+    <view class="goal-row" wx:if="{{storageReadable}}">
       <view
         class="goal-chip {{goal === item ? 'on' : ''}}"
         wx:for="{{goals}}"
@@ -88,7 +93,7 @@
         <view class="setting-title">答对后自动下一题</view>
         <view class="small muted">开启后正确作答会停留 1.2 秒自动跳转</view>
       </view>
-      <switch checked="{{autoNext}}" color="#3d6bff" bindchange="onAutoNext" />
+      <switch checked="{{autoNext}}" disabled="{{!storageReadable}}" color="#3d6bff" bindchange="onAutoNext" />
     </view>
 
     <view class="setting">
@@ -96,7 +101,7 @@
         <view class="setting-title">默认展开解析</view>
         <view class="small muted">提交答案后立即显示考点与易错提示</view>
       </view>
-      <switch checked="{{aiExplain}}" color="#3d6bff" bindchange="onAiExplain" />
+      <switch checked="{{aiExplain}}" disabled="{{!storageReadable}}" color="#3d6bff" bindchange="onAiExplain" />
     </view>
   </view>
 
@@ -106,7 +111,7 @@
       <view class="card-title">学习档案</view>
       <text class="small muted">共 {{bankInfo.total}} 题题库</text>
     </view>
-    <view class="archive">
+    <view class="archive" wx:if="{{storageReadable}}">
       <view class="archive-item" bindtap="goMistakes">
         <text class="archive-num">{{overview.wrongCount}}</text>
         <text class="small muted">错题收录</text>
@@ -124,7 +129,7 @@
         <text class="small muted">已掌握</text>
       </view>
     </view>
-    <view class="row between archive-meta">
+    <view class="row between archive-meta" wx:if="{{storageReadable}}">
       <text class="small muted">累计学习时长 {{studyTimeText}}</text>
       <text class="small muted">{{bankInfo.subjects}} 个科目 · {{bankInfo.chapters}} 个知识点</text>
     </view>
@@ -169,19 +174,19 @@
     <view class="menu-item" wx:if="{{logged}}" bindtap="onLogout">
       <text class="menu-icon mi-gray">退</text>
       <text class="grow">退出登录</text>
-      <text class="small muted">清空学习数据 ›</text>
+      <text class="small muted">退出账号 ›</text>
     </view>
     <view class="menu-item" wx:else bindtap="goLogin">
       <text class="menu-icon mi-blue">登</text>
       <text class="grow">登录账号</text>
       <text class="small muted">微信一键登录 ›</text>
     </view>
-    <view class="menu-item danger" bindtap="onClearData">
+    <view class="menu-item danger" wx:if="{{storageReadable}}" bindtap="onClearData">
       <text class="menu-icon mi-red">清</text>
       <text class="grow">清空学习数据</text>
       <text class="small muted">不可恢复 ›</text>
     </view>
   </view>
 
-  <view class="foot-tip small muted">学习数据已同步到云端，换设备也能延续进度</view>
+  <view class="foot-tip small muted">换设备前请确认云端同步已完成</view>
 </view>

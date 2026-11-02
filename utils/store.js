@@ -8,11 +8,15 @@ const bank = require('./questions.js')
 const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
 const { createLocalRepository } = require('./local-repository.js')
+const localStorageListeners = new Set()
 const localRepository = createLocalRepository({
   getStorageSync: key => wx.getStorageSync(key),
   setStorageSync: (key, value) => wx.setStorageSync(key, value),
   removeStorageSync: key => wx.removeStorageSync(key),
   getStorageInfoSync: () => { if (typeof wx.getStorageInfoSync !== 'function') throw new Error('LOCAL_INVENTORY_UNAVAILABLE'); return wx.getStorageInfoSync() }
+}, (scope, status) => {
+  if (scope !== userScope) return
+  localStorageListeners.forEach(listener => { try { listener(status) } catch (e) { /* UI observers cannot affect storage. */ } })
 })
 const { createSyncCoordinator } = require('./sync-coordinator.js')
 const attemptDomain = require('../shared/attempt-domain.js')
@@ -265,7 +269,7 @@ function migrate(raw) {
   return v === CURRENT_VERSION ? data : null
 }
 
-function load() {
+function load(options = {}) {
   if (state) return state
   try {
     const raw = localRepository.read(userScope)
@@ -297,9 +301,11 @@ function load() {
     }
   } catch (e) { dirty = true } // 保留原档案；持久化/队列异常时禁止发送。
   // 启动时恢复一次；之后由登录、前台和网络事件通过协调器继续增量恢复。
-  if (isLogged() && getPendingDelete(userScope)) deleteCloud()
-  else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
-  else if (!bootPulled && isLogged()) pullFromCloud()
+  if (!options.localOnly) {
+    if (isLogged() && getPendingDelete(userScope)) deleteCloud()
+    else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
+    else if (!bootPulled && isLogged()) pullFromCloud()
+  }
   return state
 }
 
@@ -1339,7 +1345,7 @@ function clearAll() {
   persist()
   flush() // 清空当前作用域（不可逆）
   const localStatus = localRepository.status(userScope)
-  if (localStatus.state === 'write_error') return deletion ? { ok: true, pendingLocalReset: true, cleanupPending: true } : { ok: false, error: 'PERSIST_CLEAR_FAILED' }
+  if (localStatus.state !== 'ready') return deletion ? { ok: true, pendingLocalReset: true, cleanupPending: true } : { ok: false, error: 'PERSIST_CLEAR_FAILED' }
   return { ok: true, cleanupPending: localStatus.cleanupPending }
 }
 
@@ -1363,6 +1369,29 @@ function rollbackLocalStorage() {
   if (hasCloud() || dirty || activePull || queuedPushes.size || queuedAiClears.size || pendingDeleteQueued) return { ok: false, error: 'ROLLBACK_REQUIRES_OFFLINE_QUIESCENCE' }
   __clearFlushTimer()
   try { return { ...localRepository.rollback(userScope), restartRequired: true } } catch (e) { return { ok: false, error: e.code || 'LOCAL_ROLLBACK_FAILED' } }
+}
+
+/** Retry local persistence only. Never manufacture a failed answer or roll an ambiguous root back from memory. */
+function retryLocalStorage() {
+  const before = localRepository.status(userScope)
+  if (before.commitUncertain) return { ok: false, error: 'LOCAL_RESTART_REQUIRED' }
+  if (before.state === 'write_error' && !dirty) return { ok: false, error: 'RETRY_ORIGINAL_OPERATION' }
+  try {
+    localRepository.release(userScope)
+    localRepository.read(userScope) // Verify all referenced evidence before reusing in-memory state.
+    if (!state) load({ localOnly: true })
+    localRepository.retryMigration(userScope)
+    localRepository.write(userScope, state)
+    dirty = false
+    __clearFlushTimer()
+    const status = localRepository.status(userScope)
+    return { ok: !status.migrationDeferred && !status.cleanupPending, deferred: !!status.migrationDeferred, cleanupPending: status.cleanupPending }
+  } catch (e) { return { ok: false, error: e.code || 'LOCAL_RETRY_FAILED' } }
+}
+
+function onLocalStorageChange(listener) {
+  localStorageListeners.add(listener)
+  return () => localStorageListeners.delete(listener)
 }
 
 /* ============================================================
@@ -1526,6 +1555,8 @@ module.exports = {
   shortDate,
   getUserScope,
   getLocalStorageStatus: () => localRepository.status(userScope),
+  onLocalStorageChange,
+  retryLocalStorage,
   exportLocalSnapshot: () => localRepository.read(userScope),
   rollbackLocalStorage,
   getPracticeContext,
