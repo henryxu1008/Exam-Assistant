@@ -64,3 +64,21 @@ test('读取失败显示保留现场提示，修复介质后可本地重试；�
   assert.equal(ui.page.data.storageReadable, true)
   assert.equal(ui.toasts.at(-1).title, '本地保存检查完成')
 })
+
+test('已有内存缓存时缺页重试后仍隐藏学习控制，刷新不能绕过不可读保护（评审 4438549314）', t => {
+  const store = freshStore(history()); wx.__cloudReady = false
+  store.saveSettings({ dailyGoal: 50 }); store.flush(); store.__clearFlushTimer()
+  const ui = profile(store)
+  const key = wx.getStorageInfoSync().keys.find(k => k.startsWith('exam_quiz_history_v1__'))
+  const page = wx.getStorageSync(key), root = wx.getStorageSync('exam_quiz_data_v1__anon')
+  t.after(() => { ui.page.onUnload(); store.__clearFlushTimer() })
+  wx.removeStorageSync(key)
+  ui.page.onRetryStorage()
+  assert.equal(store.getLocalStorageStatus().state, 'read_error')
+  assert.equal(ui.page.data.storageReadable, false)
+  ui.page.refresh()
+  assert.equal(ui.page.data.storageReadable, false)
+  assert.deepEqual(wx.getStorageSync('exam_quiz_data_v1__anon'), root)
+  wx.setStorageSync(key, page); ui.page.onRetryStorage()
+  assert.equal(ui.page.data.storageReadable, true)
+})

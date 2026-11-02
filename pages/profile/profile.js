@@ -78,11 +78,13 @@ Page({
   refresh() {
     const profile = user.getProfile()
     this.setData({ logged: !!profile.logged, user: { nickName: profile.nickName || '', avatarUrl: profile.avatarUrl || '', exam: profile.exam || '' }, initial: user.initial(profile.nickName) })
+    let readable = true
     try { this.refreshLearningData() } catch (e) {
       if (store.getLocalStorageStatus().state !== 'read_error') throw e
-      this.setData({ storageReadable: false })
+      readable = false
     }
-    this.setData({ localStorage: storageStatusView(store.getLocalStorageStatus()) })
+    const status = store.getLocalStorageStatus()
+    this.setData({ localStorage: storageStatusView(status), storageReadable: readable && status.state !== 'read_error' })
   },
 
   refreshLearningData() {
@@ -106,7 +108,6 @@ Page({
     const goal = settings.dailyGoal || 30
 
     this.setData({
-      storageReadable: true,
       overview,
       starred,
       mastered,
