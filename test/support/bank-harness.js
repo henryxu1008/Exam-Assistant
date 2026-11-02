@@ -16,6 +16,7 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
   const fail = { get: null, write: null, query: null, beforeTransaction: null }
   const collections = {
     questions: new Map(),
+    aiQuestionUsage: new Map(),
     users: new Map([
       ['u1', { _id: 'u1', openid: 'normal-openid', token: USER_TOKEN, tokenAt: NOW }],
       ['u2', { _id: 'u2', openid: ADMIN_OPENID, token: ADMIN_TOKEN, tokenAt: NOW }],

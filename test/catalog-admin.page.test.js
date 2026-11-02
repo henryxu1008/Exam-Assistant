@@ -7,6 +7,7 @@ const user = require('../utils/user.js')
 const { operators } = require('./support/catalog-operators.js')
 const { createCatalogAdmin } = require('../utils/catalog-admin.js')
 const { createAiQuestionGenerator } = require('../utils/ai-question-generator.js')
+const { createService: createAiService } = require('../cloudfunctions/aiQuestionGen/service.js')
 const aiDomain = require('../shared/ai-question-domain.js')
 let definition
 global.Page = value => { definition = value }
@@ -302,6 +303,65 @@ test('管理端生成候选题需填写来源并一次性加入当前工作区�
   const afterChange = JSON.stringify(p._workspace)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_CANDIDATES_STALE'); assert.equal(JSON.stringify(p._workspace), afterChange)
   p.onAiDiscard(); assert.equal(p.data.aiResults.length, 0)
+})
+
+test('AI 候选题经编辑、独立审核和发布后才能进入学习题库', async t => {
+  const ops = operators(), imported = JSON.parse(sample)
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'exam', name: '合成考试' }]; imported.bank.manifest.subjects[0].examId = 'exam'
+  const base = await ops.editor.submitDraft(imported, { submissionId: 'ai-flow-base', rightsConfirmed: true })
+  await ops.approve(base.draftId); await ops.publisher.publishExam({ draftId: base.draftId, expectedRevision: 0 })
+  let modelCalls = 0
+  const service = createAiService({ db: ops.h.db, now: () => Date.parse('2026-10-30T06:00:00Z'),
+    config: { enabled: true, configured: true, globalCap: 5, userCap: 5, model: '合成模型' },
+    callModel: async request => { modelCalls++; return { questions: [{ type: request.type, level: request.level,
+      stem: '合成出题流程验收', options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成解析' }] } } })
+  const editor = page(t, ops.editor); await settle(); editor.onLoadEditor(); await settle()
+  editor.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
+  editor.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
+  editor._aiClient = createAiQuestionGenerator({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: service })
+  const aiInput = (field, value) => editor.onAiInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  aiInput('aiTopic', '网络基础'); aiInput('aiCount', '1')
+  editor.onAiGenerate(); await settle()
+  assert.equal(modelCalls, 1); assert.equal(editor.data.aiResults.length, 1)
+  const id = editor.data.aiResults[0].id
+  assert.ok(!ops.h.bank().questions.it.some(q => q.id === id), '候选不直接发布')
+  aiInput('aiReference', '合成测试依据'); aiInput('aiPermission', '合成测试许可'); editor.onAiAdd()
+  editor.onEditQuestion({ currentTarget: { dataset: { id } } })
+  editor.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '合成出题流程验收（人工修订）' } })
+  editor.onSaveQuestion(); assert.equal(editor.data.error, '')
+  editor.onPrepareEditor(); assert.equal(editor.data.ready, true)
+  input(editor, 'submissionId', 'ai-flow-draft'); editor.onConfirm({ currentTarget: { dataset: { field: 'rights' } }, detail: { value: ['rights'] } })
+  editor.onSubmit(); await settle()
+  const draftId = editor.data.draftId, draft = ops.h.documents.get(draftId)
+  assert.ok(draft, editor.data.error); assert.equal(draft.sources[id].kind, 'ai_generated')
+  assert.ok(!ops.h.bank().questions.it.some(q => q.id === id), '提交草稿不直接发布')
+  await assert.rejects(ops.editor.review({ draftId, decision: 'approve', note: '自审', sourceVerified: true }))
+  await assert.rejects(ops.editor.publishExam({ draftId, expectedRevision: 1 }))
+  const reviewer = page(t, ops.reviewer); await settle(); input(reviewer, 'draftId', draftId); reviewer.onReadDraft(); await settle()
+  assert.ok(reviewer.data.reviewItems.some(row => row.id === id && row.text.includes('合成模型') && row.text.includes('合成测试依据')))
+  input(reviewer, 'note', '已核验合成题和来源'); reviewer.onConfirm({ currentTarget: { dataset: { field: 'sources' } }, detail: { value: ['sources'] } })
+  reviewer.onReview({ currentTarget: { dataset: { decision: 'approve' } } }); await settle()
+  assert.equal(ops.h.documents.get(draftId).state, 'approved')
+  const publisher = page(t, ops.publisher); await settle(); input(publisher, 'draftId', draftId); publisher.onReadDraft(); await settle()
+  publisher.onReadRevision(); await settle(); assert.equal(publisher.data.revision, '1')
+  publisher.onPublish(); await settle(); assert.equal(ops.h.bank().publicationRevision, 2)
+  const { device } = require('./support/study-sync-device.js'), { makeHarness } = require('./support/study-sync-harness.js')
+  const vm = require('node:vm'), learning = makeHarness({ questionDocuments: ops.h.documents }), proxy = { getSubjects: () => [{ name: '专业知识' }] }
+  const consumer = device(learning, undefined, true, proxy)
+  try {
+    const original = consumer.wx.cloud.callFunction
+    consumer.wx.cloud.callFunction = opts => opts.name === 'bankSync' ? ops.h.main(opts.data).then(result => ({ result })) : original(opts)
+    const file = path.join(__dirname, '../utils/bank/index.js'), module = { exports: {} }
+    vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx: consumer.wx, require: name => require(path.resolve(path.dirname(file), name)) })
+    Object.assign(proxy, module.exports)
+    assert.equal(await proxy.loadCloudBank(), true)
+    const question = proxy.findQuestion(id)
+    assert.equal(question.stem, '合成出题流程验收（人工修订）')
+    consumer.store.createPracticeSession({ subject: question.subject, questionIds: [id], questions: [question] })
+    assert.equal(consumer.store.submitAttempt(question, ['A'], true, 10, 'learn').ok, true)
+    await consumer.settle()
+    assert.equal([...learning.attempts.values()][0].grading.source, 'published_archive')
+  } finally { consumer.store.__clearFlushTimer() }
 })
 
 test('大题库文件含非法 UTF-8 或长度不符时拒绝导入', async t => {
