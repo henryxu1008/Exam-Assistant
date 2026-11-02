@@ -65,3 +65,16 @@ test('保存结果不确定时通用重试不得用旧内存覆盖实际已提�
   assert.equal(store.getAttempts().length, 2)
   store.__clearFlushTimer()
 })
+
+test('匿名清空因旧根缺页校验失败时仍报告失败，不能把 read_error 当成保存成功', t => {
+  const store = freshStore(history()); wx.__cloudReady = false
+  store.saveSettings({ dailyGoal: 32 }); store.flush(); store.__clearFlushTimer()
+  t.mock.method(console, 'error', () => {})
+  t.after(() => store.__clearFlushTimer())
+  const root = wx.getStorageSync('exam_quiz_data_v1__anon')
+  const key = wx.getStorageInfoSync().keys.find(k => k.startsWith('exam_quiz_history_v1__'))
+  wx.removeStorageSync(key)
+  assert.equal(store.clearAll().ok, false)
+  assert.equal(store.getLocalStorageStatus().state, 'read_error')
+  assert.deepEqual(wx.getStorageSync('exam_quiz_data_v1__anon'), root)
+})

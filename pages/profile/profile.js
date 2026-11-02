@@ -5,7 +5,7 @@ const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const user = require('../../utils/user.js')
 const config = require('../../utils/config.js')
-const { storageStatusView } = require('../../utils/storage-status.js')
+const { storageStatusView, isStorageReadable } = require('../../utils/storage-status.js')
 
 const GOALS = [10, 20, 30, 50, 80]
 
@@ -53,7 +53,7 @@ Page({
       if (this._visible) user.requireLogin(() => { if (this._visible) this.refresh() })
     })
     this._unsubscribeStorage = store.onLocalStorageChange(status => {
-      if (this._visible) this.setData({ localStorage: storageStatusView(status), storageReadable: status.state !== 'read_error' })
+      if (this._visible) this.setData({ localStorage: storageStatusView(status), storageReadable: isStorageReadable(status) })
     })
   },
 
@@ -80,11 +80,11 @@ Page({
     this.setData({ logged: !!profile.logged, user: { nickName: profile.nickName || '', avatarUrl: profile.avatarUrl || '', exam: profile.exam || '' }, initial: user.initial(profile.nickName) })
     let readable = true
     try { this.refreshLearningData() } catch (e) {
-      if (store.getLocalStorageStatus().state !== 'read_error') throw e
+      if (isStorageReadable(store.getLocalStorageStatus())) throw e
       readable = false
     }
     const status = store.getLocalStorageStatus()
-    this.setData({ localStorage: storageStatusView(status), storageReadable: readable && status.state !== 'read_error' })
+    this.setData({ localStorage: storageStatusView(status), storageReadable: readable && isStorageReadable(status) })
   },
 
   refreshLearningData() {

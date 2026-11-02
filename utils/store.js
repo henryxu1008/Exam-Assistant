@@ -1345,7 +1345,7 @@ function clearAll() {
   persist()
   flush() // 清空当前作用域（不可逆）
   const localStatus = localRepository.status(userScope)
-  if (localStatus.state === 'write_error') return deletion ? { ok: true, pendingLocalReset: true, cleanupPending: true } : { ok: false, error: 'PERSIST_CLEAR_FAILED' }
+  if (localStatus.state !== 'ready') return deletion ? { ok: true, pendingLocalReset: true, cleanupPending: true } : { ok: false, error: 'PERSIST_CLEAR_FAILED' }
   return { ok: true, cleanupPending: localStatus.cleanupPending }
 }
 
