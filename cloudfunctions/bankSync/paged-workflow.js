@@ -16,6 +16,10 @@ const sourceId = (draft, index) => 'bps_' + sha256(JSON.stringify([draft, index]
 const stageId = (draft, bucket) => 'bpi_' + sha256(JSON.stringify([draft, bucket]))
 const visitId = (draft, actor) => 'bpv_' + sha256(JSON.stringify([draft, actor]))
 const reviewId = draft => 'bpr_' + sha256(draft)
+const refsId = releaseId => 'bpf_' + sha256(releaseId)
+const validRefs = (refs, root) => !!refs && refs.kind === 'pagedReleaseReferences' && refs.releaseId === root.releaseId &&
+  Number.isSafeInteger(refs.liveDrafts) && refs.liveDrafts >= 0 && refs.digest === digest({ releaseId: refs.releaseId, liveDrafts: refs.liveDrafts })
+const refsValue = (releaseId, liveDrafts) => ({ kind: 'pagedReleaseReferences', releaseId, liveDrafts, digest: digest({ releaseId, liveDrafts }) })
 const validBase = base => base === null || (base && Number.isSafeInteger(base.revision) && base.revision > 0 && /^qb_[a-f0-9]{64}$/.test(base.releaseId || ''))
 const payloadDigest = (root, evidence, base) => digest({ releaseId: root.releaseId, evidenceDigest: evidence.digest, basePublication: base })
 const publishedId = active => active && active.schemaVersion === 4 ? active.root && active.root.releaseId : active && active.releaseId
@@ -110,7 +114,7 @@ function createPagedWorkflow(db) {
         const roles = await readOptionalDoc(() => tx.collection('appConfig').doc('bankRoles').get())
         if (!validRoles(roles)) fail('ROLE_CONFIG_REQUIRED')
         const actor = identity.openid, collection = tx.collection('questions')
-        const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', getActivePagedDraft: 'editors', abandonPagedDraft: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
+        const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', getActivePagedDraft: 'editors', abandonPagedDraft: 'editors', cleanupPagedRelease: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
         if (required ? !roles[required].includes(actor) : !['editors', 'reviewers', 'publishers'].some(role => roles[role].includes(actor))) fail('NOT_CATALOG_ROLE')
         if (event.action === 'getActivePagedDraft') {
           const active = await readOptionalDoc(() => collection.doc('bank').get())
@@ -136,9 +140,15 @@ function createPagedWorkflow(db) {
           }
           const active = await readOptionalDoc(() => collection.doc('bank').get())
           checkBase(active, event.basePublication)
+          const refsRef = collection.doc(refsId(event.root.releaseId)), refs = await readOptionalDoc(() => refsRef.get())
+          if (refs && !validRefs(refs, event.root)) fail('PAGED_REFERENCES_INVALID')
+          if (!refs && await readOptionalDoc(() => collection.doc(event.root.releaseId).get())) fail('PAGED_REFERENCES_INVALID')
+          const liveDrafts = (refs ? refs.liveDrafts : 0) + 1
+          if (!Number.isSafeInteger(liveDrafts)) fail('PAGED_REFERENCES_INVALID')
           const draft = { kind: 'pagedCatalogDraft', draftId: id, submissionId: event.submissionId, createdBy: actor, createdAt: Date.now(), state: 'uploading',
             root: event.root, evidence: event.evidence, basePublication: event.basePublication, rightsConfirmed: true, payloadDigest: payload, uploaded: event.root.pages.map(() => false),
             uploadedCount: 0, identityCount: 0, identityBytes: 0, identityBuckets: [] }
+          await refsRef.set({ data: refsValue(event.root.releaseId, liveDrafts) })
           await ref.set({ data: draft })
           return { ok: true, draftId: id, state: draft.state }
         }
@@ -147,10 +157,33 @@ function createPagedWorkflow(db) {
         if (!draft) fail('DRAFT_NOT_FOUND')
         if (!validDraft(draft)) fail('INVALID_DRAFT')
         if (event.action === 'getPagedDraft') return { ok: true, draft }
+        if (event.action === 'cleanupPagedRelease') {
+          if (draft.createdBy !== actor || draft.state !== 'abandoned') fail('DRAFT_NOT_EDITABLE')
+          const refsRef = collection.doc(refsId(draft.root.releaseId)), refs = await readOptionalDoc(() => refsRef.get())
+          if (!validRefs(refs, draft.root)) fail('PAGED_REFERENCES_INVALID')
+          if (refs.liveDrafts !== 0) fail('PAGED_RELEASE_IN_USE')
+          const archive = await readOptionalDoc(() => collection.doc(draft.root.releaseId).get())
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (active && ((active.schemaVersion === 4 && !paged.validRoot(active.root)) || (active.schemaVersion === 3 && !exam.validExamRelease(active)) || ![3, 4].includes(active.schemaVersion))) fail('INVALID_ACTIVE_RELEASE')
+          if (archive || publishedId(active) === draft.root.releaseId) fail('PAGED_RELEASE_IN_USE')
+          const removable = []
+          for (const descriptor of draft.root.pages) {
+            const pageRef = collection.doc(paged.pageDocumentId(draft.root.releaseId, descriptor.index)), page = await readOptionalDoc(() => pageRef.get())
+            if (!page) continue
+            if (page.kind !== 'pagedQuestionBankPage' || !page.page || page.page.index !== descriptor.index || !paged.validQuestionPage(draft.root, page.page)) fail('PAGED_STAGE_CORRUPT')
+            removable.push(pageRef)
+          }
+          for (const item of removable) await item.remove()
+          // Every begin/abandon/cleanup writes this same document, forcing conflicting transactions to serialize.
+          await refsRef.set({ data: { ...refsValue(refs.releaseId, refs.liveDrafts), cleanedAt: Date.now() } })
+          return { ok: true, releaseId: draft.root.releaseId, removed: removable.length }
+        }
         if (event.action === 'abandonPagedDraft') {
           if (draft.createdBy !== actor) fail('DRAFT_NOT_EDITABLE')
           if (draft.state === 'abandoned') return { ok: true, draftId: draft.draftId, state: 'abandoned', replayed: true }
           if (draft.state !== 'uploading') fail('DRAFT_NOT_EDITABLE')
+          const refsRef = collection.doc(refsId(draft.root.releaseId)), refs = await readOptionalDoc(() => refsRef.get())
+          if (!validRefs(refs, draft.root) || refs.liveDrafts < 1) fail('PAGED_REFERENCES_INVALID')
           const removable = []
           for (let index = 0; index < draft.uploaded.length; index++) if (draft.uploaded[index]) {
             const pageRef = collection.doc(sourceId(draft.draftId, index)), source = await readOptionalDoc(() => pageRef.get())
@@ -164,6 +197,7 @@ function createPagedWorkflow(db) {
             removable.push(shardRef)
           }
           for (const item of removable) await item.remove()
+          await refsRef.set({ data: refsValue(refs.releaseId, refs.liveDrafts - 1) })
           await ref.set({ data: { ...draft, state: 'abandoned', abandonedAt: Date.now(), abandonedBy: actor } })
           return { ok: true, draftId: draft.draftId, state: 'abandoned' }
         }

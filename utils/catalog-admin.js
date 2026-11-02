@@ -105,6 +105,7 @@ function createCatalogAdmin({ getSession, call }) {
     submitPaged: (prepared, options, live) => submitPaged(prepared, options, capture(), live),
     getPagedDraft: draftId => request({ action: 'getPagedDraft', draftId }, capture()),
     abandonPagedDraft: draftId => request({ action: 'abandonPagedDraft', draftId }, capture()),
+    cleanupPagedRelease: draftId => request({ action: 'cleanupPagedRelease', draftId }, capture()),
     getPagedDraftPage: (draftId, index) => request({ action: 'getPagedDraftPage', draftId, index }, capture()),
     reviewPaged: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewPagedDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
     publishPaged: ({ draftId, expectedRevision }) => request({ action: 'publishPagedDraft', draftId, expectedRevision }, capture()),

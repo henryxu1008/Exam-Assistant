@@ -11,7 +11,7 @@
       <view class="title">可视化题库编辑</view>
       <view class="hint">先载入当前发布；编辑自动保存在本机当前账号下，提交后须独立审核。</view>
       <button bindtap="onLoadEditor" disabled="{{busy}}">载入当前题库和来源</button>
-      <view class="row wrap"><button size="mini" bindtap="onRestoreEditor" disabled="{{busy}}">恢复本机编辑</button><button size="mini" bindtap="onDiscardEditor" disabled="{{busy}}">丢弃本机编辑</button></view>
+      <view class="row wrap"><button size="mini" bindtap="onRestoreEditor" disabled="{{busy}}">恢复本机编辑</button><button size="mini" bindtap="onDiscardEditor" disabled="{{busy}}">丢弃本机编辑</button><button size="mini" bindtap="onCleanupEditorOrphans" disabled="{{busy}}">清理本机无引用分片</button></view>
       <block wx:if="{{editorReady}}">
         <view class="title">考试项目 · 已选择 {{selectedExam || '无'}}</view>
         <view class="row wrap"><button size="mini" wx:for="{{exams}}" wx:key="id" data-kind="exam" data-id="{{item.id}}" bindtap="onSelectNode">{{item.name}}</button></view>
@@ -82,6 +82,7 @@
       <view class="title">2. 查看与独立审核</view>
       <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />
       <button wx:if="{{canEdit}}" bindtap="onAbandonPagedDraft" disabled="{{busy}}">丢弃本人未封存的分页暂存</button>
+      <button wx:if="{{canEdit}}" bindtap="onCleanupPagedRelease" disabled="{{busy}}">清理已丢弃且无引用的题目暂存</button>
       <button bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
       <text class="report" selectable="true">{{preview}}</text>
       <view wx:for="{{reviewItems}}" wx:key="id" class="question-row"><text class="report" selectable="true">{{item.text}}</text></view>

@@ -4,6 +4,7 @@ const { createCatalogCheckpoint } = require('../utils/catalog-checkpoint.js')
 function storage() {
   const data = new Map(), fail = { read: false, write: false, afterWrite: false, remove: false }
   return { data, fail, getStorageSync: key => { if (fail.read) throw new Error('read'); return data.has(key) ? JSON.parse(JSON.stringify(data.get(key))) : '' },
+    getStorageInfoSync: () => ({ keys: [...data.keys()] }),
     setStorageSync: (key, value) => { if (fail.write) throw new Error('write'); data.set(key, JSON.parse(JSON.stringify(value))); if (fail.afterWrite) throw new Error('after write') },
     removeStorageSync: key => { if (fail.remove) throw new Error('remove'); data.delete(key) } }
 }
@@ -70,4 +71,25 @@ test('大型工作区分片提交，写入中断时旧根仍完整，重试及�
   token = a.saveWorkspace(token, workspace('d'.repeat(150000)), ui('new'))
   assert.equal(a.read().workspace.sources.value.length, 150000)
   a.clear(token); assert.equal(a.read(), null); assert.deepEqual(b.read().token, other)
+})
+
+test('只回收本账号失效分片，保护活动写入、已提交根和其他账号', () => {
+  const wx = storage(), a = createCatalogCheckpoint(wx, 'alice'), b = createCatalogCheckpoint(wx, 'bob')
+  let token = a.create(workspace('original'), ui('old')); b.create(workspace('bob'), ui('bob'))
+  const original = wx.setStorageSync
+  let invoked = false
+  wx.setStorageSync = (key, value) => {
+    original(key, value)
+    if (!invoked && key.includes('__part__')) { invoked = true; a.cleanupOrphans() }
+  }
+  token = a.saveWorkspace(token, workspace('new'.repeat(30000)), ui('new'))
+  wx.setStorageSync = original
+  assert.equal(a.read().workspace.sources.value.length, 90000)
+  let writes = 0
+  wx.setStorageSync = (key, value) => { if (key.includes('__part__') && ++writes === 2) throw new Error('full'); original(key, value) }
+  assert.throws(() => a.saveWorkspace(token, workspace('x'.repeat(120000)), ui('failed')), /LOCAL_DRAFT_WRITE_FAILED/)
+  wx.setStorageSync = original
+  assert.ok(a.cleanupOrphans().removed >= 1)
+  assert.equal(a.read().workspace.sources.value.length, 90000); assert.equal(b.read().workspace.sources.value, 'bob')
+  wx.fail.read = true; assert.throws(() => a.cleanupOrphans(), /LOCAL_DRAFT_READ_FAILED/)
 })

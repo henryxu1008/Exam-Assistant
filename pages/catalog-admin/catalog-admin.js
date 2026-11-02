@@ -26,6 +26,7 @@ const errorMessages = {
   EXAM_PROTOCOL_REQUIRED: '当前题库需要对应版本的管理程序。', UNSAVED_WORKSPACE_CHANGES: '请先提交或放弃当前编辑内容，再导入题库。', NETWORK_ERROR: '网络或服务暂不可用，请稍后重试。',
   LOCAL_DRAFT_EXISTS: '本机有已保存的编辑内容，请先恢复或明确丢弃。', LOCAL_DRAFT_CHANGED: '本机编辑内容已在其他页面更新，请重新恢复。',
   LOCAL_DRAFT_READ_FAILED: '本机编辑内容读取失败，请保留现场并重试。', LOCAL_DRAFT_WRITE_FAILED: '本机保存失败，当前修改未被确认保存。',
+  PAGED_RELEASE_IN_USE: '题目页仍被其他草稿或发布引用，未清理。', PAGED_REFERENCES_INVALID: '题目页引用登记异常，未清理。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -182,6 +183,15 @@ Page({
       this._run(() => this._client.abandonPagedDraft(draftId), value => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], result: JSON.stringify(value, null, 2) }) })
     } })
   },
+  onCleanupPagedRelease() {
+    if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
+    const draftId = this.data.draftId, generation = this._generation, ctx = this._context
+    if (!/^qpd_[a-f0-9]{64}$/.test(draftId || '')) { this.setData({ error: 'BAD_DRAFT_ID' }); return }
+    wx.showModal({ title: '清理未引用的题目暂存', content: '仅针对本人已丢弃的草稿；仍被其他草稿或任何发布引用时会拒绝清理。', success: result => {
+      if (!result.confirm || generation !== this._generation || !this._active || ctx !== this._context || draftId !== this.data.draftId || !this._client.current(ctx)) return
+      this._run(() => this._client.cleanupPagedRelease(draftId), value => this.setData({ result: JSON.stringify(value, null, 2) }))
+    } })
+  },
   onReadDraft() {
     if (/^qpd_/.test(this.data.draftId)) {
       this._run(async () => {
@@ -292,6 +302,13 @@ Page({
         sourceTypeName: (sourceTypes.find(x => x.value === saved.ui.form.sourceKind) || {}).name || saved.ui.form.sourceKind })
       this._renderEditor()
     } catch (e) { this.setData({ error: e.code || 'LOCAL_DRAFT_INVALID' }) }
+  },
+  onCleanupEditorOrphans() {
+    if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
+    try {
+      const result = this._checkpoint.cleanupOrphans()
+      this.setData({ result: `已清理 ${result.removed} 个本账号未引用的编辑分片。`, error: '' })
+    } catch (e) { this.setData({ error: e.code || 'LOCAL_DRAFT_CLEANUP_FAILED' }) }
   },
   onDiscardEditor() {
     if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return

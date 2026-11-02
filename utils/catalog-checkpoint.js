@@ -5,6 +5,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const size = value => encodeURIComponent(JSON.stringify(value)).replace(/%[A-F0-9]{2}/g, 'x').length
 const seal = value => ({ ...value, digest: sha256(JSON.stringify(value)) })
 const intact = value => { const { digest, ...body } = value; return typeof digest === 'string' && digest === sha256(JSON.stringify(body)) }
+const activeGenerations = new Set()
 function createCatalogCheckpoint(storage, openid) {
   if (typeof openid !== 'string' || !openid) fail('NO_TOKEN')
   const owner = sha256(openid), key = 'exam_catalog_editor_v1__' + owner, overlayKey = key + '__form'
@@ -66,6 +67,8 @@ function createCatalogCheckpoint(storage, openid) {
     }
     const chunks = parts.length
     if (chunks > 150) fail('LOCAL_DRAFT_TOO_LARGE')
+    activeGenerations.add(generation)
+    try {
     for (let i = 0; i < chunks; i++) write(key + '__part__' + generation + '__' + i,
       seal({ owner, generation, index: i, content: parts[i] }))
     if (expected) check(expected)
@@ -76,6 +79,7 @@ function createCatalogCheckpoint(storage, openid) {
     if (previous && previous.version === 2 && previous.owner === owner && intact(previous) && /^[a-f0-9]{64}$/.test(previous.generation || '') && Number.isSafeInteger(previous.chunks) && previous.chunks > 0 && previous.chunks <= 150) {
       for (let i = 0; i < previous.chunks; i++) { try { storage.removeStorageSync(key + '__part__' + previous.generation + '__' + i) } catch (e) { /* committed root remains valid */ } }
     }
+    } finally { activeGenerations.delete(generation) }
   }
   function saveWorkspace(expected, workspace, ui) {
     const old = check(expected), revision = old.token.revision + 1
@@ -100,6 +104,29 @@ function createCatalogCheckpoint(storage, openid) {
       if (get(partKey)) fail('LOCAL_DRAFT_CLEANUP_FAILED')
     }
   }
-  return { read, create, saveWorkspace, saveForm, clear }
+  function cleanupOrphans() {
+    // Refuse to reclaim anything if the committed checkpoint cannot be read and verified.
+    read()
+    const initialRoot = get(key)
+    let info
+    try { info = storage.getStorageInfoSync() } catch (e) { fail('LOCAL_DRAFT_READ_FAILED') }
+    if (!info || !Array.isArray(info.keys) || info.keys.some(k => typeof k !== 'string')) fail('LOCAL_DRAFT_READ_FAILED')
+    let removed = 0
+    const prefix = key + '__part__'
+    for (const name of info.keys) {
+      if (!name.startsWith(prefix)) continue
+      const match = /^([a-f0-9]{64})__(0|[1-9][0-9]*)$/.exec(name.slice(prefix.length))
+      if (!match || Number(match[2]) >= 150 || activeGenerations.has(match[1])) continue
+      const root = get(key)
+      if (!same(root, initialRoot)) fail('LOCAL_DRAFT_CHANGED')
+      if (root && (root.owner !== owner || ![1, 2].includes(root.version) || !intact(root))) fail('LOCAL_DRAFT_INVALID')
+      if (root && root.version === 2 && root.generation === match[1]) continue
+      try { storage.removeStorageSync(name) } catch (e) { fail('LOCAL_DRAFT_CLEANUP_FAILED') }
+      if (get(name)) fail('LOCAL_DRAFT_CLEANUP_FAILED')
+      removed++
+    }
+    return { removed }
+  }
+  return { read, create, saveWorkspace, saveForm, clear, cleanupOrphans }
 }
 module.exports = { createCatalogCheckpoint }
