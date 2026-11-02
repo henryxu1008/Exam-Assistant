@@ -260,8 +260,12 @@ Page({
     const chapter = subject && subject.chapters.find(c => c.key === this.data.selectedChapter)
     const rows = chapter ? w.bank.questions[subject.key].filter(q => q.chapter === chapterIdentity(subject.key, chapter.key)) : []
     const pages = Math.max(1, Math.ceil(rows.length / 20)), page = Math.max(1, Math.min(this.data.questionPage || 1, pages))
+    const summaries = rows.slice((page - 1) * 20, page * 20).map(q => {
+      const chars = Array.from(q.stem), stem = chars.slice(0, 120).join('') + (chars.length > 120 ? '…' : '')
+      return { id: q.id, stem }
+    })
     this.setData({ editorReady: !!w, exams: w ? w.bank.manifest.exams : [], subjects: w ? w.bank.manifest.subjects : [],
-      chapters: subject ? subject.chapters : [], questions: rows.slice((page - 1) * 20, page * 20), questionPage: page, questionPages: pages, questionTotal: rows.length })
+      chapters: subject ? subject.chapters : [], questions: summaries, questionPage: page, questionPages: pages, questionTotal: rows.length })
   },
   _editorUI(patch = {}) {
     return { form: this.data.form, selectedExam: this.data.selectedExam, selectedSubject: this.data.selectedSubject,
@@ -426,7 +430,10 @@ Page({
   },
   onEditQuestion(e) {
     if (!this._workspace || this.data.busy) return
-    const q = (this.data.questions || []).find(item => item.id === e.currentTarget.dataset.id)
+    const id = e.currentTarget.dataset.id
+    if (!(this.data.questions || []).some(item => item.id === id)) return
+    const rows = this._workspace.bank.questions[this.data.selectedSubject] || []
+    const q = rows.find(item => item.id === id && item.chapter === chapterIdentity(this.data.selectedSubject, this.data.selectedChapter))
     if (!q) return
     if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     const s = this._workspace.sources[q.id], f = this.data.form

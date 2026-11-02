@@ -242,6 +242,32 @@ test('超过单记录容量的分页题库可以逐题编辑、重启恢复并�
   assert.equal(ops.h.bank().publicationRevision, 1)
 })
 
+test('大题目列表使用有界摘要，编辑时从完整工作区读取原题和来源', async t => {
+  const ops = operators(), imported = JSON.parse(sample), first = imported.bank.questions.it[0], source = imported.sources[first.id]
+  imported.bank.schemaVersion = 4; imported.bank.manifest.exams = [{ id: 'exam', name: '考试' }]; imported.bank.manifest.subjects[0].examId = 'exam'
+  imported.bank.questions.it = Array.from({ length: 20 }, (_, i) => ({ ...first, id: 'large' + String(i).padStart(2, '0'), stem: '题'.repeat(20000) }))
+  imported.sources = Object.fromEntries(imported.bank.questions.it.map(q => [q.id, source]))
+  const prepared = ops.editor.preparePaged(JSON.stringify(imported))
+  assert.equal(prepared.root.pages.length, 20)
+  const questions = { it: prepared.publicPages.flatMap(page => page.questions) }, sources = Object.assign({}, ...prepared.privatePages.map(page => page.sources))
+  const p = page(t, ops.editor); await settle()
+  const workspace = { bank: { schemaVersion: 4, manifest: prepared.root.manifest, questions }, sources, basePublication: null }
+  const ui = p._editorUI({ selectedSubject: 'it', selectedChapter: 'net', questionPage: 1 })
+  p._checkpointToken = p._checkpoint.create(workspace, ui); p._workspace = workspace
+  p.setData({ selectedSubject: 'it', selectedChapter: 'net', questionPage: 1 })
+  let renderBytes = 0, setData = p.setData
+  p.setData = function (patch) { if (patch.questions) renderBytes = Buffer.byteLength(JSON.stringify(patch)); return setData.call(this, patch) }
+  p._renderEditor()
+  assert.ok(renderBytes < 100000, `列表更新负载 ${renderBytes} 字节应保持有界`)
+  assert.equal(p.data.questions.length, 20); assert.ok(p.data.questions[0].stem.length < 1000)
+  p.onEditQuestion({ currentTarget: { dataset: { id: 'large00' } } })
+  assert.equal(p.data.form.stem, workspace.bank.questions.it[0].stem)
+  const version = workspace.bank.questions.it[0].versionId
+  p.onSaveQuestion(); assert.equal(p.data.error, '')
+  assert.equal(p._workspace.bank.questions.it.find(q => q.id === 'large00').versionId, version)
+  assert.deepEqual(p._workspace.sources.large00, workspace.sources.large00)
+})
+
 test('大题库文件含非法 UTF-8 或长度不符时拒绝导入', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   const oldChoose = wx.chooseMessageFile, oldFs = wx.getFileSystemManager
