@@ -27,6 +27,7 @@ const errorMessages = {
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
   type: 'single', stem: '', options: '', answer: '', explain: '', pitfall: '', keyPoint: '', tags: '', level: '1',
   sourceKind: 'original', sourceTitle: '', sourceReference: '', sourcePermission: '', sourceAttribution: '', sourceGenerator: '' })
+const resetQuestion = form => ({ ...editorForm(), examId: form.examId, examName: form.examName, subjectKey: form.subjectKey, subjectName: form.subjectName, chapterKey: form.chapterKey, chapterName: form.chapterName })
 const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: false, roleText: '', allowed: false, busy: false, inputText: '', format: 'json', report: '', ready: false,
   rightsConfirmed: false, sourceVerified: false, submissionId: '', draftId: '', note: '', revision: '', removeIds: '', preview: '', result: '', error: '',
   editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
@@ -195,8 +196,8 @@ Page({
     const delta = Number(e.currentTarget.dataset.delta)
     if (delta !== -1 && delta !== 1) return
     const questionPage = Math.max(1, Math.min(this.data.questionPages, this.data.questionPage + delta))
-    if (!this._saveEditorForm(this._editorUI({ questionPage, editingId: '' }))) return
-    this.setData({ questionPage, editingId: '' })
+    if (!this._saveEditorForm(this._editorUI({ questionPage }))) return
+    this.setData({ questionPage })
     this._renderEditor()
   },
   onLoadEditor() {
@@ -248,9 +249,12 @@ Page({
   onSelectNode(e) {
     if (this.data.busy || !this._workspace) return
     const { kind, id } = e.currentTarget.dataset
+    if ((kind === 'subject' && id === this.data.selectedSubject) || (kind === 'chapter' && id === this.data.selectedChapter)) return
     if (this._questionFormDirty && (kind === 'subject' || kind === 'chapter')) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    const reset = { editingId: '', form: resetQuestion(this.data.form), questionTypeName: '单选题', sourceTypeName: '原创' }
     const patch = kind === 'exam' ? { selectedExam: id } : kind === 'subject' ? { selectedSubject: id, selectedChapter: '', editingId: '', questionPage: 1 }
       : kind === 'chapter' ? { selectedChapter: id, editingId: '', questionPage: 1 } : null
+    if (patch && kind !== 'exam') Object.assign(patch, reset)
     if (!patch || !this._saveEditorForm(this._editorUI(patch))) return
     this.setData(patch)
     this._renderEditor()
@@ -312,7 +316,7 @@ Page({
       sourceTypeName: (sourceTypes.find(item => item.value === s.kind) || {}).name || s.kind, form })
   },
   _resetQuestionForm() {
-    const form = { ...editorForm(), examId: this.data.form.examId, examName: this.data.form.examName, subjectKey: this.data.form.subjectKey, subjectName: this.data.form.subjectName, chapterKey: this.data.form.chapterKey, chapterName: this.data.form.chapterName }
+    const form = resetQuestion(this.data.form)
     if (!this._saveEditorForm(this._editorUI({ editingId: '', form, questionFormDirty: false }))) return
     this._questionFormDirty = false
     this.setData({ editingId: '', questionTypeName: '单选题', sourceTypeName: '原创', form, error: '' })

@@ -79,6 +79,25 @@ test('来源审核跨页时必须查看所有题目才能批准', async t => {
   assert.equal(ops.h.documents.get(draft.draftId).state, 'approved')
 })
 
+test('重复选择章节或翻页保留题目编辑绑定；切换章节清空旧题表单', async t => {
+  const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.manifest.subjects[0].chapters.push({ key: 'other', name: '其他章节' })
+  for (let i = 0; i < 20; i++) { const id = 'P-' + i; imported.bank.questions.it.push({ ...q, id }); imported.sources[id] = imported.sources[q.id] }
+  const d = await ops.editor.submitDraft(imported, { submissionId: 'nav-base', rightsConfirmed: true })
+  await ops.approve(d.draftId); await ops.publisher.publish({ draftId: d.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  select('subject', 'it'); select('chapter', 'net')
+  p.onEditQuestion({ currentTarget: { dataset: { id: q.id } } })
+  select('chapter', 'net'); assert.equal(p.data.editingId, q.id)
+  p.onQuestionPage({ currentTarget: { dataset: { delta: 1 } } }); assert.equal(p.data.editingId, q.id)
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '导航后编辑' } })
+  p.onSaveQuestion(); assert.equal(p.data.error, '')
+  assert.equal(p._workspace.bank.questions.it.find(item => item.id === q.id).stem, '导航后编辑')
+  select('chapter', 'other'); assert.equal(p.data.editingId, ''); assert.equal(p.data.form.questionId, ''); assert.equal(p.data.form.stem, '')
+  p.onRestoreEditor(); assert.equal(p.data.selectedChapter, 'other'); assert.equal(p.data.form.stem, '')
+})
+
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
   const ops = operators()
   let session = { logged: true, openid: 'editor', token: 'editor' }, release
