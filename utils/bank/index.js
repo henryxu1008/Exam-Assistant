@@ -243,8 +243,11 @@ async function loadPagedRelease() {
   if (!latest || !latest.ok || latest.publicationRevision !== active.publicationRevision || !paged.validRoot(latest.root) || latest.root.releaseId !== active.root.releaseId ||
       active.publicationRevision < (source.publicationRevision || 0) ||
       (active.publicationRevision === source.publicationRevision && active.root.releaseId !== source.releaseId)) return false
-  const result = createPagedCache(wx).install(active.root, active.publicationRevision, pages)
+  const cache = createPagedCache(wx)
+  cache.cleanup() // Optional: only removes unreferenced cache pages, never pending learning data.
+  const result = cache.install(active.root, active.publicationRevision, pages)
   if (!result.ok) return false
+  cache.cleanup()
   source = result.source; _index = null
   return true
 }

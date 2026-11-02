@@ -88,6 +88,42 @@ test('仅草稿创建人可原子丢弃未封存暂存，故障回滚并保留�
   assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: sealed.draftId })).error, 'DRAFT_NOT_EDITABLE')
 })
 
+test('共享题目页仅在所有草稿丢弃且没有发布时回收，故障回滚且可重新上传', async () => {
+  const { h } = operators(), v = catalog(205), first = await begin(h, v, 'gc-first'), second = await begin(h, v, 'gc-second')
+  await upload(h, first.draftId, v); await upload(h, second.draftId, v)
+  await call(h, 'editor', 'abandonPagedDraft', { draftId: first.draftId })
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).error, 'PAGED_RELEASE_IN_USE')
+  await call(h, 'editor', 'abandonPagedDraft', { draftId: second.draftId })
+  const before = JSON.stringify([...h.documents.entries()])
+  h.fail.write = (name, id) => id === paged.pageDocumentId(v.root.releaseId, 1)
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).ok, false)
+  h.fail.write = null; assert.equal(JSON.stringify([...h.documents.entries()]), before)
+  const cleaned = await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })
+  assert.equal(cleaned.removed, v.root.pages.length)
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).removed, 0)
+  const next = await begin(h, v, 'gc-third'); await upload(h, next.draftId, v)
+  await call(h, 'editor', 'sealPagedDraft', { draftId: next.draftId }); await review(h, next.draftId, v)
+  assert.equal((await call(h, 'publisher', 'publishPagedDraft', { draftId: next.draftId, expectedRevision: 0 })).ok, true)
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).error, 'PAGED_RELEASE_IN_USE')
+  for (const page of v.publicPages) assert.ok(h.documents.has(paged.pageDocumentId(v.root.releaseId, page.index)))
+})
+
+test('共享页回收与新草稿并发不会删除新草稿引用；登记损坏和读取故障均拒绝', async () => {
+  const { h } = operators(), v = catalog(3), first = await begin(h, v, 'gc-race-first')
+  await upload(h, first.draftId, v); await call(h, 'editor', 'abandonPagedDraft', { draftId: first.draftId })
+  const refsKey = [...h.documents.keys()].find(k => k.startsWith('bpf_')), refs = copy(h.documents.get(refsKey))
+  h.documents.get(refsKey).liveDrafts = 7
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).error, 'PAGED_REFERENCES_INVALID')
+  h.documents.set(refsKey, refs)
+  h.fail.get = (name, id) => id === v.root.releaseId
+  assert.equal((await call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })).ok, false)
+  h.fail.get = null
+  const [next, gc] = await Promise.all([begin(h, v, 'gc-race-next'), call(h, 'editor', 'cleanupPagedRelease', { draftId: first.draftId })])
+  assert.equal(next.ok, true); assert.equal(gc.error, 'PAGED_RELEASE_IN_USE')
+  for (const page of v.publicPages) assert.ok(h.documents.has(paged.pageDocumentId(v.root.releaseId, page.index)))
+  await upload(h, next.draftId, v); assert.equal((await call(h, 'editor', 'sealPagedDraft', { draftId: next.draftId })).ok, true)
+})
+
 test('分片经逐页上传、完整封存和独立审核后原子发布，公开接口不暴露来源', async () => {
   const { h } = operators(), v = catalog(), d = await begin(h, v, 'paged-first')
   assert.equal(d.ok, true)

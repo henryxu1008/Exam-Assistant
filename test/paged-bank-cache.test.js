@@ -13,6 +13,7 @@ function catalog(suffix = '') {
 function storage() {
   const data = new Map(), fail = { read: false, writeAt: 0, count: 0, afterWrite: false }
   return { data, fail, getStorageSync(k) { if (fail.read) throw new Error('read'); return data.has(k) ? copy(data.get(k)) : '' },
+    getStorageInfoSync() { return { keys: [...data.keys()] } }, removeStorageSync(k) { data.delete(k) },
     setStorageSync(k, v) { if (++fail.count === fail.writeAt) throw new Error('write'); data.set(k, copy(v)); if (fail.afterWrite) throw new Error('after') } }
 }
 
@@ -23,6 +24,22 @@ test('完整分片校验和落盘后才切换根，重启后可读完整题库',
   const recovered = createPagedCache(wx).read()
   assert.equal(recovered.status, 'ready'); assert.equal(recovered.source.questions.it.length, 201)
   assert.equal(recovered.source.releaseId, v.root.releaseId)
+})
+
+test('回收旧页与中断暂存时保护活动发布、其他存储和进行中的同一发布安装', () => {
+  const wx = storage(), cache = createPagedCache(wx), old = catalog('old'), next = catalog('next')
+  cache.install(old.root, 1, old.publicPages)
+  wx.data.set('exam_learning_pending', { keep: true })
+  const set = wx.setStorageSync.bind(wx); let called = false
+  wx.setStorageSync = (key, value) => {
+    set(key, value)
+    if (!called && key.includes(next.root.releaseId)) { called = true; assert.equal(cache.cleanup().ok, true) }
+  }
+  assert.equal(cache.install(next.root, 2, next.publicPages).ok, true)
+  assert.equal(cache.read().source.releaseId, next.root.releaseId)
+  assert.ok(cache.cleanup().removed > 0)
+  assert.ok(wx.data.has('exam_learning_pending')); assert.equal(cache.read().source.releaseId, next.root.releaseId)
+  wx.fail.read = true; assert.equal(cache.cleanup().ok, false)
 })
 
 test('缺页、损坏、过时发布及中途写入失败均不切换原根', () => {

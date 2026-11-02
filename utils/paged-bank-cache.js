@@ -5,6 +5,8 @@ const ROOT = 'exam_quiz_bank_paged_root_v1'
 const key = (root, index) => 'exam_quiz_bank_paged_v1__' + root.releaseId + '__' + index
 const same = (a, b) => canonical(a) === canonical(b)
 const absent = value => value === undefined || value === null || value === ''
+// All cache writers and the collector run synchronously in the mini-program's main JS context.
+const installing = new Set()
 function createPagedCache(storage) {
   const get = k => {
     try { return storage.getStorageSync(k) }
@@ -36,6 +38,7 @@ function createPagedCache(storage) {
     } catch (e) { return { status: 'error', error: e.code === 'PAGED_CACHE_READ_FAILED' ? e.code : 'INVALID_PAGED_CACHE' } }
   }
   function install(root, publicationRevision, pages) {
+    let installingId
     try {
       if (!paged.validRoot(root) || !Number.isSafeInteger(publicationRevision) || publicationRevision < 1 || !Array.isArray(pages) ||
           pages.length !== root.pages.length || pages.some((page, i) => !page || page.index !== i || !paged.validQuestionPage(root, page)) ||
@@ -43,6 +46,9 @@ function createPagedCache(storage) {
       let previous = pointerForInstall()
       const stale = p => p && (publicationRevision < p.publicationRevision || (publicationRevision === p.publicationRevision && root.releaseId !== p.root.releaseId))
       if (stale(previous)) return { ok: false, error: 'STALE_PAGED_RELEASE' }
+      if (installing.has(root.releaseId)) return { ok: false, error: 'PAGED_CACHE_BUSY' }
+      installingId = root.releaseId
+      installing.add(installingId)
       for (const page of pages) {
         const name = key(root, page.index), old = get(name)
         if (!same(old, page)) storage.setStorageSync(name, page)
@@ -56,7 +62,26 @@ function createPagedCache(storage) {
       if (!same(get(ROOT), next)) return { ok: false, error: 'PAGED_CACHE_WRITE_FAILED' }
       return { ok: true, source: assemble(root, publicationRevision, pages) }
     } catch (e) { return { ok: false, error: e.code === 'PAGED_CACHE_READ_FAILED' ? e.code : 'PAGED_CACHE_WRITE_FAILED' } }
+    finally { if (installingId) installing.delete(installingId) }
   }
-  return { read, install }
+  function cleanup() {
+    try {
+      if (read().status !== 'ready') return { ok: false, error: 'INVALID_PAGED_CACHE' }
+      const info = storage.getStorageInfoSync()
+      if (!info || !Array.isArray(info.keys) || info.keys.some(k => typeof k !== 'string')) return { ok: false, error: 'PAGED_CACHE_INVENTORY_FAILED' }
+      let removed = 0
+      for (const name of info.keys) {
+        const match = /^exam_quiz_bank_paged_v1__(qb_[a-f0-9]{64})__(0|[1-9][0-9]*)$/.exec(name)
+        if (!match || Number(match[2]) >= paged.limits.MAX_PAGES) continue
+        const current = pointer()
+        if (!current || current.root.releaseId === match[1] || installing.has(match[1])) continue
+        storage.removeStorageSync(name)
+        if (!absent(get(name))) return { ok: false, error: 'PAGED_CACHE_CLEANUP_FAILED', removed }
+        removed++
+      }
+      return { ok: true, removed }
+    } catch (e) { return { ok: false, error: e.code === 'PAGED_CACHE_READ_FAILED' ? e.code : 'PAGED_CACHE_CLEANUP_FAILED' } }
+  }
+  return { read, install, cleanup }
 }
 module.exports = { createPagedCache }
