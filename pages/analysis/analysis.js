@@ -153,7 +153,7 @@ Page({
     const q = bank.findQuestion(id)
     if (!q) return
     app.globalData.aiPreInput = '这道题怎么解？'
-    app.globalData.aiContext = { questionId: q.id, userAnswer: [] }
+    app.globalData.aiContext = { questionId: q.id, questionSnapshot: q, userAnswer: [] }
     wx.switchTab({ url: '/pages/ai/ai' })
   },
 
