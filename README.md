@@ -171,6 +171,11 @@ miniprogram-4/
 “我的”页显示本地保存/迁移/清理状态并提供本地检查重试。保存结果不确定时须重启核对，不能盲用旧内存或备份覆盖。
 配额与子进程中断测试、重试边界及微信隔离验收清单见 [ADR 0016](docs/adr/0016-storage-capacity-and-recovery.md)。
 
+AI 历史现可在本地按有序内容页保存，普通作答复用历史；学习仓储的每次写入有 900 KiB 单项工程预算，
+大迁移档案分块保留。超限明确失败且保留待传流水，已有 AI 分段损坏不降级。
+格式 v5、应用 1.2.0 兼容与回滚限制见 [ADR 0017](docs/adr/0017-paged-ai-history-and-entry-budgets.md)。
+云端 AI 同步与现有最近 60 条新增保留策略不变，真实微信验收仍待完成。
+
 ## 已知限制
 
 - **AI 助教默认走本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。已预留云函数 `aiTutor`（OpenAI 兼容 chat/completions 骨架，默认关闭、安全护栏齐全），接入真实模型时：① 在 `aiTutor` 的环境变量配置 `AI_TUTOR_ENABLED=true`、`LLM_ENDPOINT`、`LLM_API_KEY`（可选 `LLM_MODEL`）；② 把端上 `REMOTE_LLM.enabled` 改为 `true`。云函数未启用时端上自动回落本地引擎，互不影响。

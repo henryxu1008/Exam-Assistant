@@ -34,19 +34,23 @@ else if (action === 'clear') repo.clear('alice')
 else repo.rollback('alice')
 process.stdout.write(JSON.stringify({ mutations }))
 `
-for (const action of ['migrate', 'clear', 'rollback']) test(`${action} 每个存储修改前后直接退出进程，重启仍有完整权威档案`, t => {
+for (const action of ['migrate', 'clear', 'rollback', 'ai-migrate', 'ai-clear', 'ai-rollback']) test(`${action} 每个存储修改前后直接退出进程，重启仍有完整权威档案`, t => {
+  const operationKind = action.replace('ai-', '')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exam-repo-crash-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const file = path.join(dir, 'synthetic.json'), data = new Map(), repo = createLocalRepository(adapter(data))
   const original = { ...getDefaultState(), attempts: Array.from({ length: 65 }, (_, i) => ({ id: 'confirmed-' + i })), attemptOutbox: { version: 1, pending: [] } }
+  if (action.startsWith('ai-')) original.aiMessages = action === 'ai-migrate'
+    ? [{ time: 1, text: 'x'.repeat(480000) }, { time: 2, text: 'x'.repeat(480000) }]
+    : Array.from({ length: 65 }, (_, i) => ({ time: i, text: 'synthetic' }))
   const operation = { id: 'pending', selected: ['B'] }
   const candidate = { ...original, attempts: original.attempts.concat(operation), attemptOutbox: { version: 1, pending: [operation] } }
   data.set(repo.rootKey('alice'), original)
   data.set(repo.rootKey('bob'), { ...getDefaultState(), attempts: [{ id: 'bob' }] })
-  if (action !== 'migrate') repo.write('alice', candidate)
+  if (operationKind !== 'migrate') repo.write('alice', candidate)
   const initial = JSON.stringify({ data: [...data], candidate })
   fs.writeFileSync(file, initial)
-  const run = (stop, phase) => spawnSync(process.execPath, ['-e', worker, file, action, String(stop), phase], { encoding: 'utf8', timeout: 10000 })
+  const run = (stop, phase) => spawnSync(process.execPath, ['-e', worker, file, operationKind, String(stop), phase], { encoding: 'utf8', timeout: 10000 })
   const complete = run(0, 'after')
   assert.equal(complete.status, 0, complete.stderr)
   const count = JSON.parse(complete.stdout).mutations
@@ -59,15 +63,15 @@ for (const action of ['migrate', 'clear', 'rollback']) test(`${action} 每个存
     const recoveredData = new Map(JSON.parse(fs.readFileSync(file, 'utf8')).data)
     const cold = createLocalRepository(adapter(recoveredData)), restored = cold.read('alice')
     assert.equal(cold.read('bob').attempts[0].id, 'bob')
-    if (action === 'clear') {
+    if (operationKind === 'clear') {
       assert.ok(restored === null || restored.attempts.length === candidate.attempts.length)
       cold.clear('alice'); assert.equal(cold.read('alice'), null)
     } else {
-      if (action === 'migrate') assert.ok(restored.attempts.length === original.attempts.length || restored.attempts.length === candidate.attempts.length)
+      if (operationKind === 'migrate') assert.ok(restored.attempts.length === original.attempts.length || restored.attempts.length === candidate.attempts.length)
       else assert.equal(restored.attempts.length, candidate.attempts.length)
       assert.deepEqual(restored, restored.attempts.length === original.attempts.length ? original : candidate)
       assert.equal(restored.attemptOutbox.pending.length, restored.attempts.some(a => a.id === 'pending') ? 1 : 0)
-      if (action === 'migrate') cold.write('alice', candidate)
+      if (operationKind === 'migrate') cold.write('alice', candidate)
       else cold.rollback('alice')
       assert.equal(cold.read('alice').attempts.length, candidate.attempts.length)
       assert.equal(cold.read('alice').attemptOutbox.pending[0].id, 'pending')
