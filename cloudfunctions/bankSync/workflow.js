@@ -27,6 +27,7 @@ function createWorkflow(db, activateBank) {
         const roles = await readOptionalDoc(() => tx.collection('appConfig').doc('bankRoles').get())
         if (!validRoles(roles)) fail('ROLE_CONFIG_REQUIRED')
         const actor = identity.openid, role = rolesFor[event.action]
+        if (event.action === 'getCatalogAccess') return { ok: true, roles: ['editors', 'reviewers', 'publishers'].filter(r => roles[r].includes(actor)) }
         if (role ? !roles[role].includes(actor) : !['editors', 'reviewers', 'publishers'].some(r => roles[r].includes(actor))) fail('NOT_CATALOG_ROLE')
         const collection = tx.collection('questions')
         if (event.action === 'createDraft') {
@@ -35,6 +36,10 @@ function createWorkflow(db, activateBank) {
           if (existing) {
             if (!validDraft(existing) || existing.payloadDigest !== payload.payloadDigest) fail('DRAFT_OPERATION_CONFLICT')
             return { ok: true, draftId: existing.draftId, state: existing.state, replayed: true }
+          }
+          if (payload.basePublication) {
+            const active = await readOptionalDoc(() => collection.doc('bank').get())
+            if (!active || active.publicationRevision !== payload.basePublication.revision || active.releaseId !== payload.basePublication.releaseId) fail('STALE_BASE_RELEASE')
           }
           const required = await workflowRequired(collection)
           if (!required) await collection.doc('bank_workflow').set({ data: { version: 1, required: true, enabledAt: Date.now(), enabledBy: actor } })
@@ -71,6 +76,10 @@ function createWorkflow(db, activateBank) {
         const review = await readOptionalDoc(() => collection.doc(draft.draftId + '_review').get())
         if (!review || review.kind !== 'bankReview' || review.state !== 'approved' || review.reviewedBy !== draft.reviewedBy ||
             review.payloadDigest !== draft.payloadDigest || review.sourceVerified !== true) fail('INVALID_REVIEW_RECEIPT')
+        if (draft.basePublication) {
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (!active || event.expectedRevision !== draft.basePublication.revision || active.publicationRevision !== draft.basePublication.revision || active.releaseId !== draft.basePublication.releaseId) fail('STALE_BASE_RELEASE')
+        }
         const result = await activateBank(tx, draft.bank, actor, event.expectedRevision,
           { draftId: draft.draftId, reviewedBy: draft.reviewedBy, payloadDigest: draft.payloadDigest, sourceVerified: true })
         if (!result.ok) return result

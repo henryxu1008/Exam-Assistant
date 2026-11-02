@@ -96,3 +96,11 @@ legacy 路径保持 PUBLISH_FAILED / TX_FAILED；均不会返回假成功。
 后续数据保留和清理政策仍待定义。本阶段不改变客户端学习同步、原题快照、dataEpoch 或作答计数。
 
 CSV/逐行导入报告、管理界面、来源公开展示、大题库分页、权威判分仍未完成，Issue #5 不关闭。
+
+
+## 第三阶段工具补充
+
+运营工具和 JSON/CSV 行级预检见 `docs/catalog-operations.md`。getCatalogAccess 只返回当前个人的目录角色，
+不返回名单；共享来源校验模块由 shared/workflow-domain.js 与部署副本一致性检查维护。
+可选 basePublication 绑定撤回草稿的发布基线并计入摘要，创建/激活事务都验证该基线；
+旧草稿没有该字段时原摘要保持兼容。此约束防止基于旧完整快照的撤回覆盖后来新发布的题目。

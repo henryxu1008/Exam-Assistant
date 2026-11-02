@@ -1,0 +1,271 @@
+{
+  "scope": "synthetic_node_store_baseline",
+  "node": "v24.22.1",
+  "platform": "linux",
+  "arch": "x64",
+  "storage": "memory_with_JSON_serialization",
+  "sampling": "independent_node_process_per_sample",
+  "cloudCalls": 0,
+  "scenarios": [
+    {
+      "attempts": 1000,
+      "aiMessages": 0,
+      "runs": 5,
+      "beforeBytes": 1285859,
+      "afterBytes": 1289602,
+      "dataWritesPerAnswer": 1,
+      "writtenBytesPerAnswer": 1289602,
+      "submitP50Ms": 26.55,
+      "submitMaxMs": 46.45,
+      "stringifyP50Ms": 8.21,
+      "observedHeapAfterMaxMiB": 22.51,
+      "samples": [
+        {
+          "beforeBytes": 1285859,
+          "afterBytes": 1289602,
+          "dataWrites": 1,
+          "writtenBytes": 1289602,
+          "stringifyMs": 14.35,
+          "submitMs": 46.45,
+          "heapAfterMiB": 22.12,
+          "heapDeltaMiB": 6.29
+        },
+        {
+          "beforeBytes": 1285859,
+          "afterBytes": 1289602,
+          "dataWrites": 1,
+          "writtenBytes": 1289602,
+          "stringifyMs": 8.21,
+          "submitMs": 28.22,
+          "heapAfterMiB": 22.16,
+          "heapDeltaMiB": 6.3
+        },
+        {
+          "beforeBytes": 1285859,
+          "afterBytes": 1289602,
+          "dataWrites": 1,
+          "writtenBytes": 1289602,
+          "stringifyMs": 9.54,
+          "submitMs": 26.55,
+          "heapAfterMiB": 22.51,
+          "heapDeltaMiB": 6.3
+        },
+        {
+          "beforeBytes": 1285859,
+          "afterBytes": 1289602,
+          "dataWrites": 1,
+          "writtenBytes": 1289602,
+          "stringifyMs": 6.56,
+          "submitMs": 21.6,
+          "heapAfterMiB": 22.15,
+          "heapDeltaMiB": 6.32
+        },
+        {
+          "beforeBytes": 1285859,
+          "afterBytes": 1289602,
+          "dataWrites": 1,
+          "writtenBytes": 1289602,
+          "stringifyMs": 6.66,
+          "submitMs": 21.49,
+          "heapAfterMiB": 22.13,
+          "heapDeltaMiB": 6.31
+        }
+      ]
+    },
+    {
+      "attempts": 1000,
+      "aiMessages": 1000,
+      "runs": 5,
+      "beforeBytes": 1783248,
+      "afterBytes": 1786991,
+      "dataWritesPerAnswer": 1,
+      "writtenBytesPerAnswer": 1786991,
+      "submitP50Ms": 27.4,
+      "submitMaxMs": 29.7,
+      "stringifyP50Ms": 8.14,
+      "observedHeapAfterMaxMiB": 25.94,
+      "samples": [
+        {
+          "beforeBytes": 1783248,
+          "afterBytes": 1786991,
+          "dataWrites": 1,
+          "writtenBytes": 1786991,
+          "stringifyMs": 8.75,
+          "submitMs": 27.11,
+          "heapAfterMiB": 25.44,
+          "heapDeltaMiB": 7.65
+        },
+        {
+          "beforeBytes": 1783248,
+          "afterBytes": 1786991,
+          "dataWrites": 1,
+          "writtenBytes": 1786991,
+          "stringifyMs": 8.14,
+          "submitMs": 29.7,
+          "heapAfterMiB": 25.46,
+          "heapDeltaMiB": 7.65
+        },
+        {
+          "beforeBytes": 1783248,
+          "afterBytes": 1786991,
+          "dataWrites": 1,
+          "writtenBytes": 1786991,
+          "stringifyMs": 8.39,
+          "submitMs": 29.19,
+          "heapAfterMiB": 25.84,
+          "heapDeltaMiB": 7.65
+        },
+        {
+          "beforeBytes": 1783248,
+          "afterBytes": 1786991,
+          "dataWrites": 1,
+          "writtenBytes": 1786991,
+          "stringifyMs": 7.34,
+          "submitMs": 27.4,
+          "heapAfterMiB": 25.94,
+          "heapDeltaMiB": 7.69
+        },
+        {
+          "beforeBytes": 1783248,
+          "afterBytes": 1786991,
+          "dataWrites": 1,
+          "writtenBytes": 1786991,
+          "stringifyMs": 5.59,
+          "submitMs": 23.3,
+          "heapAfterMiB": 25.88,
+          "heapDeltaMiB": 7.67
+        }
+      ]
+    },
+    {
+      "attempts": 10000,
+      "aiMessages": 0,
+      "runs": 5,
+      "beforeBytes": 12868879,
+      "afterBytes": 12872622,
+      "dataWritesPerAnswer": 1,
+      "writtenBytesPerAnswer": 12872622,
+      "submitP50Ms": 212.25,
+      "submitMaxMs": 253.86,
+      "stringifyP50Ms": 72.76,
+      "observedHeapAfterMaxMiB": 110.16,
+      "samples": [
+        {
+          "beforeBytes": 12868879,
+          "afterBytes": 12872622,
+          "dataWrites": 1,
+          "writtenBytes": 12872622,
+          "stringifyMs": 99.51,
+          "submitMs": 253.86,
+          "heapAfterMiB": 110.05,
+          "heapDeltaMiB": 39.59
+        },
+        {
+          "beforeBytes": 12868879,
+          "afterBytes": 12872622,
+          "dataWrites": 1,
+          "writtenBytes": 12872622,
+          "stringifyMs": 76.48,
+          "submitMs": 210.96,
+          "heapAfterMiB": 110.16,
+          "heapDeltaMiB": 39.71
+        },
+        {
+          "beforeBytes": 12868879,
+          "afterBytes": 12872622,
+          "dataWrites": 1,
+          "writtenBytes": 12872622,
+          "stringifyMs": 71.43,
+          "submitMs": 229.95,
+          "heapAfterMiB": 110.07,
+          "heapDeltaMiB": 39.61
+        },
+        {
+          "beforeBytes": 12868879,
+          "afterBytes": 12872622,
+          "dataWrites": 1,
+          "writtenBytes": 12872622,
+          "stringifyMs": 66.67,
+          "submitMs": 207.89,
+          "heapAfterMiB": 110.05,
+          "heapDeltaMiB": 39.58
+        },
+        {
+          "beforeBytes": 12868879,
+          "afterBytes": 12872622,
+          "dataWrites": 1,
+          "writtenBytes": 12872622,
+          "stringifyMs": 72.76,
+          "submitMs": 212.25,
+          "heapAfterMiB": 110.04,
+          "heapDeltaMiB": 39.57
+        }
+      ]
+    },
+    {
+      "attempts": 10000,
+      "aiMessages": 10000,
+      "runs": 5,
+      "beforeBytes": 17852768,
+      "afterBytes": 17856511,
+      "dataWritesPerAnswer": 1,
+      "writtenBytesPerAnswer": 17856511,
+      "submitP50Ms": 263.39,
+      "submitMaxMs": 405.2,
+      "stringifyP50Ms": 73.75,
+      "observedHeapAfterMaxMiB": 138.31,
+      "samples": [
+        {
+          "beforeBytes": 17852768,
+          "afterBytes": 17856511,
+          "dataWrites": 1,
+          "writtenBytes": 17856511,
+          "stringifyMs": 93.67,
+          "submitMs": 405.2,
+          "heapAfterMiB": 138.28,
+          "heapDeltaMiB": 48.67
+        },
+        {
+          "beforeBytes": 17852768,
+          "afterBytes": 17856511,
+          "dataWrites": 1,
+          "writtenBytes": 17856511,
+          "stringifyMs": 70.85,
+          "submitMs": 255.61,
+          "heapAfterMiB": 138.28,
+          "heapDeltaMiB": 48.74
+        },
+        {
+          "beforeBytes": 17852768,
+          "afterBytes": 17856511,
+          "dataWrites": 1,
+          "writtenBytes": 17856511,
+          "stringifyMs": 83.89,
+          "submitMs": 263.39,
+          "heapAfterMiB": 138.31,
+          "heapDeltaMiB": 48.9
+        },
+        {
+          "beforeBytes": 17852768,
+          "afterBytes": 17856511,
+          "dataWrites": 1,
+          "writtenBytes": 17856511,
+          "stringifyMs": 70.86,
+          "submitMs": 270.3,
+          "heapAfterMiB": 138.28,
+          "heapDeltaMiB": 48.66
+        },
+        {
+          "beforeBytes": 17852768,
+          "afterBytes": 17856511,
+          "dataWrites": 1,
+          "writtenBytes": 17856511,
+          "stringifyMs": 73.75,
+          "submitMs": 262.04,
+          "heapAfterMiB": 138.31,
+          "heapDeltaMiB": 48.85
+        }
+      ]
+    }
+  ]
+}

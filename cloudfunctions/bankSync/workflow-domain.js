@@ -18,13 +18,16 @@ function sourcesFor(bank, input) {
   return sources
 }
 const draftAddress = (actor, submissionId) => 'qd_' + domain.sha256(JSON.stringify([actor, submissionId]))
-const payloadDigest = (bank, sources) => domain.sha256(domain.canonical({ releaseId: bank.releaseId, sources }))
+const validBase = base => base && Number.isSafeInteger(base.revision) && base.revision >= 1 && /^qb_[a-f0-9]{64}$/.test(base.releaseId || '')
+const payloadDigest = (bank, sources, basePublication) => domain.sha256(domain.canonical({ releaseId: bank.releaseId, sources, ...(basePublication ? { basePublication } : {}) }))
 function submission(event, actor) {
   if (typeof event.submissionId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(event.submissionId)) fail('BAD_SUBMISSION_ID')
   if (event.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
   const bank = domain.buildRelease(event.bank), sources = sourcesFor(bank, event.sources)
+  if (event.basePublication !== undefined && !validBase(event.basePublication)) fail('BAD_BASE_PUBLICATION')
+  const basePublication = event.basePublication ? { revision: event.basePublication.revision, releaseId: event.basePublication.releaseId } : undefined
   return { kind: 'bankDraft', draftId: draftAddress(actor, event.submissionId), submissionId: event.submissionId,
-    bank, sources, payloadDigest: payloadDigest(bank, sources), createdBy: actor, rightsConfirmed: true }
+    bank, sources, ...(basePublication ? { basePublication } : {}), payloadDigest: payloadDigest(bank, sources, basePublication), createdBy: actor, rightsConfirmed: true }
 }
 function validDraft(draft) {
   try {
@@ -32,11 +35,12 @@ function validDraft(draft) {
       typeof draft.submissionId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(draft.submissionId) && text(draft.createdBy, 160) &&
       draft.draftId === draftAddress(draft.createdBy, draft.submissionId) &&
       domain.canonical(draft.sources) === domain.canonical(sourcesFor(draft.bank, draft.sources)) &&
-      draft.payloadDigest === payloadDigest(draft.bank, draft.sources)
+      (draft.basePublication === undefined || validBase(draft.basePublication)) &&
+      draft.payloadDigest === payloadDigest(draft.bank, draft.sources, draft.basePublication)
   } catch (e) { /* swallow: pure validation rejects malformed stored evidence; no I/O is hidden. */ return false }
 }
 function validRoles(roles) {
   return roles && ['editors', 'reviewers', 'publishers'].every(role => Array.isArray(roles[role]) &&
     roles[role].length <= 100 && roles[role].every(id => text(id, 160)) && new Set(roles[role]).size === roles[role].length)
 }
-module.exports = { submission, validDraft, validRoles }
+module.exports = { submission, validDraft, validRoles, sourcesFor }

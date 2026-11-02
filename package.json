@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test",
     "audit:learning": "node scripts/audit-learning.js",
-    "lint": "node scripts/lint.js && node scripts/check-shared-sync.js && node scripts/check-error-handling.js"
+    "lint": "node scripts/lint.js && node scripts/check-shared-sync.js && node scripts/check-error-handling.js",
+    "catalog:check": "node scripts/catalog-preflight.js",
+    "bench:learning": "node scripts/benchmark-learning-storage.js"
   },
   "engines": {
     "node": ">=18"

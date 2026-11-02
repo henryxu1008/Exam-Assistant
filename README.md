@@ -152,6 +152,15 @@ miniprogram-4/
 
 **离线只读对账**：`npm run audit:learning -- --input <单账号离线快照.json>`。退出码 0=当前范围一致，2=已证明差异，3=历史未知，1=输入/用法失败；不访问云或写回文件。旧聚合缺少明细时不会补造流水，`consistent` 也不代表已完成云同步。新提交需要先发布支持 commitAttempts 的后端；旧后端会明确拒绝并保留本地待传项。
 
+## 题库运营与存储基线
+
+离线检查：`npm run catalog:check -- --input docs/examples/catalog-import.csv --format csv`。
+小程序最小管理页为 `pages/catalog-admin/catalog-admin`，支持预检、草稿、独立审核、按修订发布和撤回草稿。
+接口权限仍由服务端检查；用法、大小限制与隔离环境验收步骤见 [运营指南](docs/catalog-operations.md)。
+
+合成存储基线：`npm run bench:learning -- --sizes 1000,10000 --runs 5`，只用进程内存储、不访问云。
+[基线报告](docs/reports/learning-storage-baseline-2026-11-02.md) 记录整档写入随历史增长的成本，仓储优化继续跟踪 #11。
+
 ## 已知限制
 
 - **AI 助教默认走本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。已预留云函数 `aiTutor`（OpenAI 兼容 chat/completions 骨架，默认关闭、安全护栏齐全），接入真实模型时：① 在 `aiTutor` 的环境变量配置 `AI_TUTOR_ENABLED=true`、`LLM_ENDPOINT`、`LLM_API_KEY`（可选 `LLM_MODEL`）；② 把端上 `REMOTE_LLM.enabled` 改为 `true`。云函数未启用时端上自动回落本地引擎，互不影响。

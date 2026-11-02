@@ -1,0 +1,4 @@
+id,subjectKey,subject,chapterKey,chapter,type,stem,options,answer,explain,sourceKind,sourceTitle,sourceReference,sourcePermission,sourceAttribution
+DEMO-1,it,专业知识,net,网络基础,single,合成样例：请选择甲。,"[{""key"": ""A"", ""text"": ""甲""}, {""key"": ""B"", ""text"": ""乙""}]","[""A""]",仅用于工具验收。,original,合成工具样例,synthetic:DEMO-1,仅供测试演示,合成样例
+DEMO-2,it,专业知识,net,网络基础,fill,"合成样例：填写“协议”。
+这是第二行。",[],"[[""协议"", ""protocol""]]",仅用于离线与撤回验收。,original,合成工具样例,synthetic:DEMO-2,仅供测试演示,合成样例
