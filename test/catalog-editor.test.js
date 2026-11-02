@@ -51,3 +51,15 @@ test('缺少新格式声明时导入预检不能静默丢弃考试归属', () =>
   assert.equal(result.ok, false)
   assert.equal(result.errors[0].code, 'BAD_EXAM_CATALOG')
 })
+
+test('AI 批量加入发生重复或坏来源时不修改任何已有题目', () => {
+  let w = editor.openWorkspace({ draft: null })
+  for (const action of [{ type: 'addExam', id: 'a', name: '考试' }, { type: 'addSubject', examId: 'a', subjectKey: 's', name: '科目' },
+    { type: 'addChapter', subjectKey: 's', chapterKey: 'c', name: '章节' }, { type: 'saveQuestion', subjectKey: 's', chapterKey: 'c', question: q, source }]) w = editor.change(w, action)
+  const before = copy(w), aiSource = { ...source, kind: 'ai_generated', generator: 'synthetic' }
+  const first = { ...q, id: 'AI-ONE', stem: '第一道新题' }, duplicate = { ...q, id: 'AI-TWO', stem: q.stem }
+  assert.throws(() => editor.change(w, { type: 'addGeneratedQuestions', subjectKey: 's', chapterKey: 'c', questions: [first, duplicate], source: aiSource }), /DUPLICATE_AI_QUESTION/)
+  assert.deepEqual(w, before)
+  assert.throws(() => editor.change(w, { type: 'addGeneratedQuestions', subjectKey: 's', chapterKey: 'c', questions: [first], source: { ...aiSource, permission: '' } }), /BAD_SOURCES/)
+  assert.deepEqual(w, before)
+})

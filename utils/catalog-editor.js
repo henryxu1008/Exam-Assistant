@@ -29,6 +29,20 @@ function change(workspace, action) {
   const getExam = () => { const e = m.exams.find(item => item.id === action.id); if (!e) fail('EXAM_NOT_FOUND'); return e }
   const getChapter = s => { const c = s.chapters.find(item => item.key === action.chapterKey); if (!c) fail('CHAPTER_NOT_FOUND'); return c }
   switch (action.type) {
+    case 'addGeneratedQuestions': {
+      if (!Array.isArray(action.questions) || action.questions.length < 1 || action.questions.length > 5 || !action.source || action.source.kind !== 'ai_generated') fail('BAD_AI_RESPONSE')
+      const normalized = value => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
+      const existing = new Set(Object.values(w.bank.questions).flat().map(q => normalized(q.stem)))
+      let next = w
+      for (const question of action.questions) {
+        if (!question || typeof question.stem !== 'string') fail('BAD_AI_RESPONSE')
+        const stem = normalized(question.stem)
+        if (existing.has(stem)) fail('DUPLICATE_AI_QUESTION')
+        existing.add(stem)
+        next = change(next, { type: 'saveQuestion', subjectKey: action.subjectKey, chapterKey: action.chapterKey, question, source: action.source })
+      }
+      return next
+    }
     case 'addExam':
       if (!key(action.id) || !name(action.name) || m.exams.some(e => e.id === action.id || e.name === action.name)) fail('BAD_EXAMS')
       m.exams.push({ id: action.id, name: action.name }); break

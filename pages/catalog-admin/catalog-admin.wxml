@@ -31,6 +31,24 @@
         <input value="{{form.chapterName}}" data-field="chapterName" bindinput="onEditorInput" placeholder="章节名称" />
         <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
 
+        <view class="title">AI 生成候选题</view>
+        <view class="hint">先选择科目和章节。生成后请核对题目、答案及解析；加入编辑内容后仍须独立审核。生成请求可能消耗模型调用配额。</view>
+        <input value="{{aiTopic}}" data-field="aiTopic" bindinput="onAiInput" maxlength="300" placeholder="知识点，例如 CAP 定理" />
+        <picker range="{{aiTypes}}" range-key="name" bindchange="onAiType"><view class="picker">题型：{{aiTypeName}} ›</view></picker>
+        <input value="{{aiLevel}}" data-field="aiLevel" bindinput="onAiInput" type="number" maxlength="1" placeholder="难度：1、2 或 3" />
+        <input value="{{aiCount}}" data-field="aiCount" bindinput="onAiInput" type="number" maxlength="1" placeholder="数量：1 至 5" />
+        <button bindtap="onAiGenerate" disabled="{{busy}}">生成候选题</button>
+        <view wx:for="{{aiResults}}" wx:key="id" class="question-row">
+          <text class="report" selectable="true">{{item.stem}}</text>
+          <view wx:for="{{item.options}}" wx:for-item="option" wx:key="key">{{option.key}}. {{option.text}}</view>
+          <text class="report" selectable="true">答案：{{item.answer}}\n解析：{{item.explain}}</text>
+        </view>
+        <block wx:if="{{aiResults.length}}">
+          <input value="{{aiReference}}" data-field="aiReference" bindinput="onAiInput" maxlength="1000" placeholder="题目依据或生成依据说明" />
+          <input value="{{aiPermission}}" data-field="aiPermission" bindinput="onAiInput" maxlength="1000" placeholder="使用权与授权说明" />
+          <view class="row wrap"><button size="mini" bindtap="onAiAdd" disabled="{{busy}}">加入当前编辑</button><button size="mini" bindtap="onAiDiscard" disabled="{{busy}}">丢弃候选题</button></view>
+        </block>
+
         <view class="title">章节题目</view>
         <view wx:for="{{questions}}" wx:key="id" class="question-row"><text>{{item.id}} · {{item.stem}}</text><view class="row"><button size="mini" data-id="{{item.id}}" bindtap="onEditQuestion">编辑</button><button size="mini" data-action="removeQuestion" data-id="{{item.id}}" bindtap="onRemoveEditor">移除</button></view></view>
         <view class="row wrap" wx:if="{{questionTotal}}"><button size="mini" data-delta="-1" bindtap="onQuestionPage" disabled="{{questionPage <= 1}}">上一页</button><text>第 {{questionPage}} / {{questionPages}} 页 · {{questionTotal}} 题</text><button size="mini" data-delta="1" bindtap="onQuestionPage" disabled="{{questionPage >= questionPages}}">下一页</button></view>
