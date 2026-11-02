@@ -238,7 +238,9 @@ Page({
       const question = { id: f.questionId, type: f.type, stem: f.stem, options, answer, explain: f.explain, pitfall: f.pitfall, keyPoint: f.keyPoint,
         tags: f.tags.split(',').map(x => x.trim()).filter(Boolean), level: Number(f.level) }
       const source = { kind: f.sourceKind, title: f.sourceTitle, reference: f.sourceReference, permission: f.sourcePermission, attribution: f.sourceAttribution, ...(f.sourceKind === 'ai_generated' ? { generator: f.sourceGenerator } : {}) }
-      if (this._changeEditor({ type: 'saveQuestion', subjectKey: this.data.selectedSubject, chapterKey: this.data.selectedChapter, existingId: this.data.editingId, question, source })) this._questionFormDirty = false
+      if (this._changeEditor({ type: 'saveQuestion', subjectKey: this.data.selectedSubject, chapterKey: this.data.selectedChapter, existingId: this.data.editingId, question, source })) {
+        this._questionFormDirty = false; this.setData({ editingId: question.id })
+      }
     } catch (e) { this.setData({ error: e.code || 'BAD_QUESTION' }) }
   },
   onPrepareEditor() {

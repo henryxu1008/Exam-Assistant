@@ -100,6 +100,11 @@ test('可视化维护完整题库后必须独立审核发布，学习端读取�
   for (const [field, value] of Object.entries({ questionId: 'DEMO-3', type: 'single', stem: '合成新增题', options: 'A=甲\nB=乙', answer: 'A',
     sourceKind: 'original', sourceTitle: '测试来源', sourceReference: 'synthetic:new', sourcePermission: '测试授权', sourceAttribution: '测试' })) form(field, value)
   p.onSaveQuestion(); assert.equal(p.data.questions.length, 3)
+  assert.equal(p.data.editingId, 'DEMO-3', '新题保存后应进入编辑模式')
+  form('stem', '合成新增题（已修改）'); p.onSaveQuestion()
+  assert.equal(p.data.error, '')
+  assert.equal(p.data.questions.find(item => item.id === 'DEMO-3').stem, '合成新增题（已修改）')
+  assert.equal(p.data.questions.length, 3)
   p.onPrepareEditor(); assert.equal(p.data.ready, true)
   input(p, 'submissionId', 'visual'); p.onConfirm({ currentTarget: { dataset: { field: 'rights' } }, detail: { value: ['rights'] } })
   p.onSubmit(); await settle()
