@@ -404,6 +404,11 @@ test('带题目快照的作答在旧后端明确拒绝，不会先接受流水�
 test('服务端确认改为业务 ID 后，本轮页面上下文与自动下一题计时器仍有效', async () => {
   const { makeHarness } = require('./support/study-sync-harness.js')
   const server = makeHarness()
+  // 显式发布测试用内置 Mock 夹具；不能将客户端自签快照自动当成云端已发布内容。
+  const manifest = require('../utils/bank/manifest.js')
+  const published = require('../shared/question-domain.js').buildRelease({ manifest,
+    questions: Object.fromEntries(manifest.subjects.map(s => [s.key, require('../utils/bank/' + s.key + '.js')])) })
+  server.questions.set(published.releaseId, { kind: 'questionBankRelease', bank: published, publishedAt: 1 })
   wx.setStorageSync('exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' })
   store.setUserScope('alice')
   wx.__cloudReady = true

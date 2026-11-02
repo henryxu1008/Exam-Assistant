@@ -89,6 +89,7 @@ function device(server, saved, cloudReady = true, questionBank) {
       if (name === './attempt-outbox.js') return require('../../utils/attempt-outbox.js')
       if (name === './config.js') return require('../../utils/config.js')
       if (name === '../shared/attempt-domain.js') return require('../../shared/attempt-domain.js')
+      if (name === '../shared/grading-domain.js') return require('../../shared/grading-domain.js')
       if (name === '../shared/stats-merge.js') return require('../../shared/stats-merge.js')
       throw new Error('Unexpected module ' + name)
     }

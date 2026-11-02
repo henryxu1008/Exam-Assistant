@@ -20,6 +20,7 @@ const { findByToken } = require('./auth.js')
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
 const questionDomain = require('./question-domain.js')
+const grading = require('./grading-domain.js')
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -64,7 +65,7 @@ function sanitizeAttempt(a, openid, dataEpoch) {
 
 function publicAttempt(attempt) {
   const out = {}
-  for (const field of ATTEMPT_FIELDS) if (attempt[field] !== undefined) out[field] = attempt[field]
+  for (const field of ATTEMPT_FIELDS.concat(['grading', 'serverReceivedAt'])) if (attempt[field] !== undefined) out[field] = attempt[field]
   return out
 }
 
@@ -140,12 +141,12 @@ async function commitAttempts(event, openid) {
   const dataEpoch = event.dataEpoch === undefined ? 0 : event.dataEpoch
   const raw = Array.isArray(event.attempts) ? event.attempts : []
   if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'BAD_EPOCH' }
-  // 新业务地址读 + 历史 ID 冲突检查 + 写，最多 32*3+2=98 次事务操作。
-  if (raw.length > 32) return { ok: false, error: 'BATCH_TOO_LARGE' }
+  // 新业务地址读 + 历史 ID 冲突检查 + 写；版本化批次另需发布归档读，24*4+2=98。
+  if (raw.length > (event.action === 'commitVersionedAttempts' ? grading.MAX_VERSIONED_BATCH : 32)) return { ok: false, error: 'BATCH_TOO_LARGE' }
   if (raw.some(a => !a || typeof a.id !== 'string' || !a.id) || new Set(raw.map(a => a.id)).size !== raw.length) return { ok: false, error: 'BAD_ATTEMPT' }
   if (raw.some(a => a.projection !== undefined && !attemptDomain.validProjection(a))) return { ok: false, error: 'BAD_FACT_METADATA' }
-  if (raw.some(a => a.questionSnapshot !== undefined || /^qv_/.test(a.questionVersionId || '')) && event.action !== 'commitVersionedAttempts') return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
-  if (raw.some(a => (a.questionSnapshot !== undefined || a.bankReleaseId !== undefined || /^qv_/.test(a.questionVersionId || '')) && !questionDomain.attemptQuestion(a))) return { ok: false, error: 'BAD_QUESTION_VERSION' }
+  if (raw.some(grading.isVersioned) && event.action !== 'commitVersionedAttempts') return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+  if (raw.some(a => grading.isVersioned(a) && !questionDomain.attemptQuestion(a))) return { ok: false, error: 'BAD_QUESTION_VERSION' }
   for (let round = 0; round < 3; round++) {
     let before, candidates
     try { before = await readExisting(() => STATS.doc(openid).get()) } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
@@ -168,6 +169,27 @@ async function commitAttempts(event, openid) {
         let sequence = sequenceOf(existing)
         const receipts = [], created = []
         const fail = code => { const error = new Error(code); error.code = code; throw error }
+        const releases = new Map()
+        async function grade(submitted) {
+          const releaseId = submitted.bankReleaseId
+          if (!/^qb_[a-f0-9]{64}$/.test(releaseId || '')) fail('PUBLISHED_RELEASE_REQUIRED')
+          if (!releases.has(releaseId)) {
+            let archive
+            try { archive = await readExisting(() => tx.collection('questions').doc(releaseId).get()) } catch (e) { throw Object.assign(new Error('READ_RELEASE_FAILED'), { code: 'READ_RELEASE_FAILED' }) }
+            if (!archive) fail('PUBLISHED_RELEASE_NOT_FOUND')
+            if (archive.kind !== 'questionBankRelease' || !questionDomain.validRelease(archive.bank) || archive.bank.releaseId !== releaseId ||
+                !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_PUBLISHED_RELEASE')
+            releases.set(releaseId, archive.bank)
+          }
+          const question = Object.values(releases.get(releaseId).questions).flat().find(q => q.id === submitted.questionId && q.versionId === submitted.questionVersionId)
+          if (!question) fail('PUBLISHED_QUESTION_NOT_FOUND')
+          const trusted = questionDomain.snapshotQuestion({ ...question, bankReleaseId: releaseId })
+          if (questionDomain.canonical(trusted) !== questionDomain.canonical(questionDomain.attemptQuestion(submitted))) fail('QUESTION_EVIDENCE_MISMATCH')
+          if (!grading.validSelection(trusted, submitted.selected)) fail('BAD_SELECTION')
+          const score = grading.judge(trusted.type, submitted.selected, trusted.answer) ? 1 : 0
+          if (score !== submitted.score) fail('GRADE_MISMATCH')
+          return { version: 1, judgeVersion: 1, source: 'published_archive', releaseId, questionVersionId: question.versionId, score }
+        }
         for (const submitted of raw) {
           const key = attemptDomain.businessKey(submitted)
           const id = key ? 'op_' + crypto.createHash('sha256').update(JSON.stringify([openid, dataEpoch, key])).digest('hex') : null
@@ -188,18 +210,20 @@ async function commitAttempts(event, openid) {
               : JSON.stringify(sanitizeAttempt(accepted, openid, dataEpoch)) !== JSON.stringify(clean)) fail('OPERATION_CONFLICT')
             // 未归属到事实的旧聚合不能凭别名猜测扣减，须先只读对账。
             if (key && !submitted.projection && accepted.id !== submitted.id && accepted.sourceAttemptId !== submitted.id) fail('LEGACY_OPERATION_CONFLICT')
+            if (accepted.grading !== undefined && !grading.validGrading(accepted)) fail('INVALID_STORED_GRADING')
           } else {
             if (id) {
               const legacyId = sanitizeAttempt({ id }, openid, dataEpoch)._id
               if (await readExisting(() => tx.collection('attempts').doc(legacyId).get())) fail('ATTEMPT_ID_CONFLICT')
             }
             if (sequence >= Number.MAX_SAFE_INTEGER) fail('ATTEMPT_SEQUENCE_EXHAUSTED')
-            accepted = { ...clean, ...(clean.projection ? { projection: { ...clean.projection, confirmed: true } } : {}),
+            const evidence = grading.isVersioned(submitted) ? { grading: await grade(submitted), serverReceivedAt: Date.now() } : {}
+            accepted = { ...clean, ...evidence, ...(clean.projection ? { projection: { ...clean.projection, confirmed: true } } : {}),
               ...(id ? { _id: id, id } : {}), sourceAttemptId: submitted.id, serverSequence: ++sequence }
             await target.set({ data: accepted })
             created.push(accepted)
           }
-          receipts.push({ submittedId: submitted.id, attempt: publicAttempt(accepted) })
+          receipts.push({ submittedId: submitted.id, attempt: publicAttempt(accepted), gradingStatus: accepted.grading ? 'graded' : 'legacy_unverified' })
         }
         const incoming = attemptDomain.withoutFactCounts(sanitizeStats(event.stats))
         const aiStale = (incoming.aiEpoch !== undefined || incoming.aiMessages !== undefined) && Number(incoming.aiEpoch || 0) !== aiEpochOf(existing)
@@ -220,11 +244,12 @@ async function commitAttempts(event, openid) {
           deleted: !event.stats && !receipts.some(r => attemptDomain.validProjection(r.attempt)) && !!(existing && existing.deleted),
           lastDeleteId: existing && existing.lastDeleteId || null, updatedAt: Date.now() })
         await ref.set({ data: merged })
-        return { ok: true, dataEpoch, attemptProtocol: 2, acceptedAttemptIds: raw.map(a => a.id), attemptReceipts: receipts,
+        return { ok: true, dataEpoch, attemptProtocol: 2, questionProtocol: grading.QUESTION_PROTOCOL, gradingProtocol: 1, acceptedAttemptIds: raw.map(a => a.id), attemptReceipts: receipts,
           stats: sanitizeStats(merged), aiEpoch: aiEpochOf(merged), aiStale }
       })
       if (!result.retry) return result
-    } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT'].includes(e.code) ? e.code : 'TX_FAILED' } }
+    } catch (e) { return { ok: false, error: ['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'PUBLISHED_RELEASE_REQUIRED', 'READ_RELEASE_FAILED',
+      'PUBLISHED_RELEASE_NOT_FOUND', 'INVALID_PUBLISHED_RELEASE', 'PUBLISHED_QUESTION_NOT_FOUND', 'QUESTION_EVIDENCE_MISMATCH', 'BAD_SELECTION', 'GRADE_MISMATCH', 'INVALID_STORED_GRADING'].includes(e.code) ? e.code : 'TX_FAILED' } }
   }
   return { ok: false, error: 'SYNC_RETRY_REQUIRED' }
 }
@@ -237,7 +262,7 @@ exports.main = async (event = {}) => {
   const action = event.action || 'get'
 
   if (action === 'commitAttempts' || action === 'commitVersionedAttempts') {
-    if (action === 'commitVersionedAttempts' && event.questionProtocol !== 1) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
+    if (action === 'commitVersionedAttempts' && event.questionProtocol !== grading.QUESTION_PROTOCOL) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
     return commitAttempts(event, openid)
   }
 
@@ -343,6 +368,7 @@ exports.main = async (event = {}) => {
     if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'BAD_EPOCH' }
     const raw = Array.isArray(event.attempts) ? event.attempts : []
     if (raw.length > MAX_ATTEMPTS) return { ok: false, error: 'BATCH_TOO_LARGE' }
+    if (raw.some(grading.isVersioned)) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
     if (raw.some((a) => !a || typeof a.id !== 'string' || !a.id)) return { ok: false, error: 'BAD_ATTEMPT' }
     if (raw.some(a => a.projection !== undefined)) return { ok: false, error: 'ATTEMPT_PROTOCOL_REQUIRED' }
     const attempts = raw.map((a) => sanitizeAttempt(a, openid, dataEpoch))

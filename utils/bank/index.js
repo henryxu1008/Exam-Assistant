@@ -19,6 +19,7 @@
 const manifest = require('./manifest.js')
 const config = require('../config.js')
 const domain = require('../../shared/question-domain.js')
+const { normalizeText, judge } = require('../../shared/grading-domain.js')
 
 const cache = {}
 function loadSubject(key) {
@@ -184,34 +185,6 @@ function answerPlain(question) {
       .join('')
   }
   return answer.join('')
-}
-
-function normalizeText(v) {
-  return String(v === undefined || v === null ? '' : v)
-    .replace(/\s+/g, '')
-    .toLowerCase()
-}
-
-function judge(type, selected, answer) {
-  const sel = Array.isArray(selected) ? selected.slice() : []
-  const ans = Array.isArray(answer) ? answer.slice() : []
-
-  if (type === 'fill') {
-    if (sel.length !== ans.length) return false
-    return ans.every((expect, i) => {
-      const list = Array.isArray(expect) ? expect : [expect]
-      const got = normalizeText(sel[i])
-      if (!got) return false
-      return list.some((e) => normalizeText(e) === got)
-    })
-  }
-
-  if (type === 'sort') {
-    if (sel.length !== ans.length) return false
-    return ans.every((k, i) => String(k) === String(sel[i]))
-  }
-
-  return sel.length === ans.length && ans.every((k) => sel.indexOf(k) > -1)
 }
 
 /** 用云端题库整体替换数据源（结构须为 {manifest, questions}）；成功返回 true */

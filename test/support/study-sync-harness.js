@@ -6,15 +6,16 @@ const crypto = require('node:crypto')
 const NOW = new Date('2026-10-30T06:00:00Z').getTime()
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
-function makeHarness() {
+function makeHarness({ source, questionDocuments } = {}) {
   const users = new Map([
     ['u1', { _id: 'u1', openid: 'alice', token: 'tokA', tokenAt: NOW }],
     ['u2', { _id: 'u2', openid: 'bob', token: 'tokB', tokenAt: NOW }]
   ])
   const studyStats = new Map()
   const attempts = new Map()
+  const questions = questionDocuments || new Map()
 
-  const stores = { users: users, studyStats: studyStats, attempts: attempts }
+  const stores = { users: users, studyStats: studyStats, attempts: attempts, questions }
 
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
   const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined }
@@ -27,7 +28,8 @@ function makeHarness() {
         return {
           async get() {
             if (trace) trace.push({ name, id, operation: 'get' })
-            if (fail.get) throw fail.get
+            if (fail.get && (typeof fail.get !== 'function' || fail.get(name, id))) throw typeof fail.get === 'function' ? new Error('injected read failure') : fail.get
+            if (name === 'questions' && fail.releaseRead) throw fail.releaseRead
             if (name === 'studyStats' && String(id).startsWith('aiClear_') && fail.receiptRead) throw fail.receiptRead
             if (!store.has(id)) throw new Error('document does not exist')
             return { data: clone(store.get(id)) }
@@ -117,7 +119,7 @@ function makeHarness() {
   function loadModule(absPath) {
     const exports = {}
     const module = { exports: exports }
-    vm.runInNewContext(fs.readFileSync(absPath, 'utf8'), {
+    vm.runInNewContext(source && absPath.endsWith('/studySync/index.js') ? source : fs.readFileSync(absPath, 'utf8'), {
       exports,
       module,
       Date: FixedDate,
@@ -139,6 +141,7 @@ function makeHarness() {
     users: users,
     studyStats: studyStats,
     attempts: attempts,
+    questions,
     fail: fail,
     main: loadModule(path.join(__dirname, '../../cloudfunctions/studySync/index.js')).main
   }
