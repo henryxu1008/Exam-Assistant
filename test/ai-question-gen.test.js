@@ -63,6 +63,21 @@ test('默认关闭时不访问上游或数据库', async () => {
   assert.equal(called, false)
 })
 
+test('多选和判断题按所选题型校验，错误的答案数量拒绝', async () => {
+  for (const type of ['multiple', 'judge']) {
+    const h = harness()
+    h.control.model = req => {
+      const out = response(req)
+      if (type === 'multiple') out.questions.forEach(q => { q.answer = ['A', 'B'] })
+      return out
+    }
+    const result = await h.service({ ...spec, type, token: 'token' })
+    assert.equal(result.ok, true); assert.ok(result.questions.every(q => q.type === type))
+  }
+  const h = harness()
+  assert.equal((await h.service({ ...spec, type: 'multiple', token: 'token' })).error, 'BAD_AI_RESPONSE')
+})
+
 test('模型错误、重复题、错误答案和生成中撤权不能变成候选题', async () => {
   for (const mode of ['duplicate', 'answer', 'type', 'count', 'revoke']) {
     const h = harness()
@@ -99,7 +114,7 @@ test('模型传输使用服务端配置的 HTTPS 地址，异常或非 JSON 内�
     const req = new EventEmitter(); req.setTimeout = () => {}; req.write = () => {}; req.destroy = () => {}
     req.end = () => queueMicrotask(() => {
       const res = new EventEmitter(); res.statusCode = mode === 'status' ? 503 : 200; handler(res)
-      res.emit('data', mode === 'invalid' ? 'invalid' : JSON.stringify({ choices: [{ message: { content: JSON.stringify(response(spec)) } }] }))
+      res.emit('data', mode === 'oversize' ? 'x'.repeat(150001) : mode === 'invalid' ? 'invalid' : JSON.stringify({ choices: [{ message: { content: JSON.stringify(response(spec)) } }] }))
       res.emit('end')
     })
     return req
@@ -108,5 +123,24 @@ test('模型传输使用服务端配置的 HTTPS 地址，异常或非 JSON 内�
   assert.equal((await request(spec)).questions.length, 2); assert.equal(captured.hostname, 'model.example.test')
   mode = 'invalid'; await assert.rejects(request(spec), /BAD_AI_RESPONSE/)
   mode = 'status'; await assert.rejects(request(spec), /AI_UPSTREAM_FAILED/)
+  mode = 'oversize'; await assert.rejects(request(spec), /AI_RESPONSE_TOO_LARGE/)
   assert.throws(() => createTransport({ endpoint: 'http://model.example.test', apiKey: 'synthetic', model: 'fake' }), /AI_GENERATION_CONFIG_INVALID/)
+})
+
+test('模型响应的中文字符跨字节分片时必须保持原文', async t => {
+  const output = response(spec); output.questions[0].stem = '中文题目'
+  const body = Buffer.from(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }))
+  const split = body.indexOf(Buffer.from('中')) + 1
+  assert.ok(split > 0)
+  let invalid = false
+  t.mock.method(https, 'request', (options, handler) => {
+    const req = new EventEmitter(); req.setTimeout = () => {}; req.write = () => {}; req.destroy = () => {}
+    req.end = () => queueMicrotask(() => { const res = new EventEmitter(); res.statusCode = 200; handler(res)
+      const bytes = Buffer.from(body); if (invalid) bytes[split] = 0xff
+      res.emit('data', bytes.subarray(0, split)); res.emit('data', bytes.subarray(split)); res.emit('end') })
+    return req
+  })
+  const request = createTransport({ endpoint: 'https://model.example.test/v1/chat/completions', apiKey: 'synthetic', model: 'fake' })
+  assert.equal((await request(spec)).questions[0].stem, '中文题目')
+  invalid = true; await assert.rejects(request(spec), /BAD_AI_RESPONSE/)
 })

@@ -11,11 +11,13 @@ function createTransport({ endpoint, apiKey, model }) {
       messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(request) }] })
     const req = https.request({ protocol: url.protocol, hostname: url.hostname, port: url.port || undefined, path: url.pathname + url.search, method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey, 'Content-Length': Buffer.byteLength(payload) } }, res => {
-      let body = '', size = 0
-      res.on('data', chunk => { size += Buffer.byteLength(chunk); if (size > 150000) { req.destroy(); reject(Object.assign(new Error('AI_RESPONSE_TOO_LARGE'), { code: 'AI_RESPONSE_TOO_LARGE' })); return } body += chunk })
+      const chunks = []; let size = 0
+      res.on('data', chunk => { const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += part.length; if (size > 150000) { req.destroy(); reject(Object.assign(new Error('AI_RESPONSE_TOO_LARGE'), { code: 'AI_RESPONSE_TOO_LARGE' })); return } chunks.push(part) })
       res.on('end', () => {
         if (res.statusCode !== 200) return reject(Object.assign(new Error('AI_UPSTREAM_FAILED'), { code: 'AI_UPSTREAM_FAILED' }))
         try {
+          const bytes = Buffer.concat(chunks, size), body = bytes.toString('utf8')
+          if (!Buffer.from(body, 'utf8').equals(bytes)) fail('BAD_AI_RESPONSE')
           const outer = JSON.parse(body), content = outer && outer.choices && outer.choices[0] && outer.choices[0].message && outer.choices[0].message.content
           if (typeof content !== 'string') fail('BAD_AI_RESPONSE')
           resolve(JSON.parse(content))
