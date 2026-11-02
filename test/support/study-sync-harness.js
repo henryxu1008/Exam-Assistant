@@ -6,7 +6,7 @@ const crypto = require('node:crypto')
 const NOW = new Date('2026-10-30T06:00:00Z').getTime()
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
-function makeHarness({ source, questionDocuments } = {}) {
+function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirname, '../..') } = {}) {
   const users = new Map([
     ['u1', { _id: 'u1', openid: 'alice', token: 'tokA', tokenAt: NOW }],
     ['u2', { _id: 'u2', openid: 'bob', token: 'tokB', tokenAt: NOW }]
@@ -143,7 +143,7 @@ function makeHarness({ source, questionDocuments } = {}) {
     attempts: attempts,
     questions,
     fail: fail,
-    main: loadModule(path.join(__dirname, '../../cloudfunctions/studySync/index.js')).main
+    main: loadModule(path.join(sourceRoot, 'cloudfunctions/studySync/index.js')).main
   }
 }
 

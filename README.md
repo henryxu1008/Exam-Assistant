@@ -91,6 +91,7 @@ miniprogram-4/
 支持 6 种题型，端上经 `utils/bank/index.js` 导出 `shared/grading-domain.js` 的 `judge(type, selected, answer)`。
 新增版本化作答由 studySync 按原发布归档重新判分，归档失败或分数不符则整批拒绝、保留待传项；旧事实不重判。
 协议、服务端接收时间、旧数据与上线限制见 [ADR 0018](docs/adr/0018-published-question-grading.md)。
+1.2.0 / 1.3.0 客户端与服务端升级组合、可复现命令和原生验收项见 [协议升级指南](docs/grading-upgrade-acceptance.md)。
 
 | type | 题型 | 题数 | 作答方式 | 判分规则 |
 | --- | --- | --- | --- | --- |

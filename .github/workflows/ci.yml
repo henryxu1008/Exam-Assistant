@@ -18,3 +18,21 @@ jobs:
         run: npm run lint
       - name: 单元测试
         run: npm test
+
+  grading-upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          ref: 1b0639d7adaea1e9ba1262a4bf0a5a737169af57
+          path: previous
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 1.2.0 与当前源码升级组合（纯合成）
+        working-directory: candidate
+        run: npm run check:grading-upgrade -- --previous-dir ../previous

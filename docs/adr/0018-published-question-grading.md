@@ -38,6 +38,10 @@ studySync 在创建事实的同一事务中读取 `questions/<bankReleaseId>`，
 
 非法选择被拒绝，合法但错误的答案正常接受为 0 分。答案、得分不自动修正，避免改变持久待传事实和本地已派生计数。
 
+需要处理内容或配置的判分错误（如 GRADE_MISMATCH、BAD_SELECTION、归档缺失/损坏）会终止当前同步轮次并返回原始原因，
+保留队列，不消耗三次重试后改报 SYNC_RETRY_EXHAUSTED。READ_RELEASE_FAILED 等访问失败继续有界重试。
+停止本轮不禁止后续外部触发；匹配归档经授权发布后，下一轮可直接补传原队列。
+
 ## 数据与确认契约
 
 请求沿用 commitVersionedAttempts，要求 `attemptProtocol:2, questionProtocol:2`，每批最多 24 条。
@@ -101,6 +105,9 @@ serverReceivedAt 是首次接受时服务端应用时钟，不是客户端 creat
 非法输入、首次时间、旧已接受事实不变、重试/丢 ACK/重启、纠错/撤回后离线补传、
 旧协议保留队列、确认损坏、24 条最坏 98 次操作与 50 条客户端分批。
 现有完整运营链路仍通过真实 bankSync / studySync / store；题库发布夹具显式共享同一 questions 集合，不自动信任提交快照。
+
+升级组合已通过真实 1.2.0 与当前版本的 store、共享依赖及 studySync 源码在内存数据库中验证，
+并纳入独立 CI job；见 [协议升级与隔离验收指南](../grading-upgrade-acceptance.md)。这些结果不代表已通过原生云或微信验收。
 
 仍未完成：真实云/多设备验收，已有坏事实或缺档队列的操作入口，来源公开展示/期限治理、大题库分页，
 完整学习领域投影与历史迁移。判分失败会保留队列并报告错误，当前没有自动改分或丢弃坏项机制。

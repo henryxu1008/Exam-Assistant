@@ -242,3 +242,63 @@ test('真实设备 50 条版本化待传按 24/24/2 分批，每批有证据确�
     assert.equal(d.store.getAttempts().every(grading.validGrading), true)
   } finally { d.store.__clearFlushTimer() }
 })
+
+test('需要人工处理的判分失败立即返回原始原因，一轮不重复发送且待传事实不变', async () => {
+  for (const scenario of ['score', 'missing', 'invalid', 'no-release', 'selection', 'not-member']) {
+    const h = makeHarness(), bank = release()
+    let q = question(bank)
+    if (scenario !== 'missing') seed(h, bank)
+    if (scenario === 'invalid') h.questions.get(bank.releaseId).kind = 'catalogDraft'
+    if (scenario === 'no-release') { q = { ...q }; delete q.bankReleaseId }
+    if (scenario === 'not-member') q = { ...q, bankReleaseId: seed(h, release('-other')).releaseId }
+    const d = device(h, undefined, false, { getSubjects: () => bank.manifest.subjects, snapshotQuestion: questionDomain.snapshotQuestion })
+    try {
+      d.store.createPracticeSession({ subject: q.subject, questions: [q], questionIds: [q.id] })
+      const selected = scenario === 'score' ? ['B'] : scenario === 'selection' ? ['Z'] : ['A']
+      assert.equal(d.store.submitAttempt(q, selected, true, 10, 'fail').ok, true)
+      const queued = copy(d.store.load().attemptOutbox.pending)
+      d.wx.__cloudReady = true
+      const result = await d.store.syncNow(); await d.settle()
+      const error = { score: 'GRADE_MISMATCH', missing: 'PUBLISHED_RELEASE_NOT_FOUND', invalid: 'INVALID_PUBLISHED_RELEASE',
+        'no-release': 'PUBLISHED_RELEASE_REQUIRED', selection: 'BAD_SELECTION', 'not-member': 'PUBLISHED_QUESTION_NOT_FOUND' }[scenario]
+      assert.equal(result.error, error)
+      assert.equal(result.attempts, 1)
+      assert.equal(d.controls.requests.filter(r => r.attempts?.length).length, 1)
+      assert.deepEqual(copy(d.store.load().attemptOutbox.pending), queued)
+      assert.equal(h.attempts.size, 0)
+    } finally { d.store.__clearFlushTimer() }
+  }
+})
+
+test('归档访问暂时失败仍自动重试，缺档修复后下一次外部触发可正常补传', async () => {
+  for (const scenario of ['transient', 'repaired']) {
+    const h = makeHarness(), bank = release(), q = question(bank)
+    if (scenario === 'transient') seed(h, bank)
+    let submissions = 0
+    const server = { main: async request => {
+      if (request.attempts?.length) {
+        submissions++
+        h.fail.releaseRead = scenario === 'transient' && submissions === 1 ? new Error('transient read timeout') : null
+      }
+      return h.main(request)
+    } }
+    const d = device(server, undefined, false, { getSubjects: () => bank.manifest.subjects, snapshotQuestion: questionDomain.snapshotQuestion })
+    try {
+      d.store.createPracticeSession({ subject: q.subject, questions: [q], questionIds: [q.id] })
+      d.store.submitAttempt(q, ['A'], true, 10, 'recover')
+      d.wx.__cloudReady = true
+      let result = await d.store.syncNow(); await d.settle()
+      if (scenario === 'repaired') {
+        assert.equal(result.error, 'PUBLISHED_RELEASE_NOT_FOUND')
+        assert.equal(d.store.load().attemptOutbox.pending.length, 1)
+        seed(h, bank)
+        result = await d.store.syncNow(); await d.settle()
+      }
+      assert.equal(result.ok, true)
+      assert.equal(submissions, 2)
+      assert.equal(h.attempts.size, 1)
+      assert.equal(d.store.load().attemptOutbox.pending.length, 0)
+      assert.equal(d.store.getRecord(q.id).attempts, 1)
+    } finally { d.store.__clearFlushTimer() }
+  }
+})

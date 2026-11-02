@@ -897,7 +897,7 @@ const runSync = createSyncCoordinator({
       if (tail === cloudWriteChain) break
     }
     const failure = lastPushFailure && !isStaleContext(lastPushFailure.ctx) ? lastPushFailure.error : null
-    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure)) {
+    if (['OPERATION_CONFLICT', 'LEGACY_OPERATION_CONFLICT', 'ATTEMPT_ID_CONFLICT', 'BAD_FACT_METADATA', 'BAD_QUESTION_VERSION', 'QUESTION_PROTOCOL_REQUIRED', 'ATTEMPT_PROTOCOL_REQUIRED', 'BAD_ACTION'].includes(failure) || grading.NON_RETRYABLE_ERRORS.includes(failure)) {
       throw Object.assign(new Error(failure), { code: failure, retryable: false })
     }
     return !dirty && !getPendingDelete(userScope) && !(state.aiClearQueue || []).length &&
