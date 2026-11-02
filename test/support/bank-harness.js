@@ -13,7 +13,7 @@ const ADMIN_OPENID = 'admin-openid'
 
 function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
   /** 置为 Error 可模拟数据库读取抛出非「不存在」的失败 */
-  const fail = { get: null, write: null }
+  const fail = { get: null, write: null, query: null, beforeTransaction: null }
   const collections = {
     questions: new Map(),
     users: new Map([
@@ -58,6 +58,7 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
             return this
           },
           async get() {
+            if (fail.query) throw new Error('injected identity lookup failure')
             return { data: matching(name, filter).slice(0, limit).map(clone) }
           }
         }
@@ -71,6 +72,7 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
   let queue = Promise.resolve()
   db.runTransaction = (fn) => {
     const run = queue.then(async () => {
+      if (fail.beforeTransaction) { const hook = fail.beforeTransaction; fail.beforeTransaction = null; await hook() }
       const draft = Object.fromEntries(Object.entries(collections).map(([key, map]) => [key, new Map([...map].map(([id, row]) => [id, clone(row)]))]))
       const trace = []; transactions.push(trace)
       const result = await fn({ collection: name => collection(name, draft, trace) })
@@ -121,6 +123,8 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
     main: main,
     documents: collections.questions,
     transactions,
+    config: collections.appConfig,
+    users: collections.users,
     db: db,
     fail: fail,
     seedBank: (bank) => collections.questions.set('bank', clone(bank)),

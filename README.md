@@ -86,7 +86,7 @@ miniprogram-4/
 
 内置 51 道 mock 题，3 个科目：公共基础知识（22）、职业能力测验（12）、专业知识（17）。
 
-新题库使用不可变题目版本与发布快照。管理员经 bankSync.publish 全量校验、显式确认审核并按修订号发布；纠错、撤回和回滚都保留旧归档。客户端只读取 getPublished，缓存落盘后才切换；练习会话和新作答保留原题快照，旧 v1 记录不推测版本。接口、权限、兼容和剩余范围见 [ADR 0013](docs/adr/0013-immutable-question-releases.md)。本阶段未部署，真实环境未验收。
+新题库使用不可变题目版本与发布快照。第一阶段支持管理员 bankSync.publish；启用独立审核流程后，改由编辑创建草稿、另一人审核、发布角色按修订号激活，旧单管理员路径被拒绝；纠错、撤回和回滚都保留旧归档。客户端只读取 getPublished，缓存落盘后才切换；练习会话和新作答保留原题快照，旧 v1 记录不推测版本。接口、权限、兼容和剩余范围见 [ADR 0013](docs/adr/0013-immutable-question-releases.md)。独立角色、来源记录、启用与兼容边界见 [ADR 0014](docs/adr/0014-independent-catalog-review.md)。本阶段未部署，真实环境未验收。
 
 支持 6 种题型，判分统一走 `utils/bank/index.js` 的 `judge(type, selected, answer)`：
 
@@ -114,7 +114,7 @@ miniprogram-4/
 
 - **换科目 / 章节**：改 `manifest.js` 即可，题目分片不变。
 - **加科目**：① 在 `manifest.js` 追加一项；② 新建对应的 `utils/bank/<key>.js`（`module.exports = [题目...]`）；其余查询函数无需改动。
-- **发布题库**：使用 ADR 0013 的管理员 publish 协议；旧 set 在启用版本发布后被拒绝。现阶段全量发布限制 500 题 / 600 KB，大题库分页及来源审核继续跟踪 #5。
+- **发布题库**：按 ADR 0014 配置个人角色并完成首个草稿以启用严格审核流程；之后使用 createDraft / reviewDraft / publishDraft，旧 publish 和 set 均拒绝。现阶段全量发布限制 500 题 / 600 KB，大题库分页及来源审核继续跟踪 #5。
 
 ## 数据说明
 
