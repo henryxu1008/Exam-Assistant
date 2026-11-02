@@ -25,7 +25,7 @@ function validDraft(draft) {
       /^[A-Za-z0-9_-]{1,80}$/.test(draft.submissionId || '') && draft.draftId === draftId(draft.createdBy, draft.submissionId) &&
       paged.validRoot(draft.root) && paged.validEvidence(draft.root, draft.evidence) && validBase(draft.basePublication) && draft.rightsConfirmed === true &&
       draft.payloadDigest === payloadDigest(draft.root, draft.evidence, draft.basePublication) &&
-      ['uploading', 'sealed', 'approved', 'rejected', 'published'].includes(draft.state) && Array.isArray(draft.uploaded) &&
+      ['uploading', 'sealed', 'approved', 'rejected', 'published', 'abandoned'].includes(draft.state) && Array.isArray(draft.uploaded) &&
       draft.uploaded.length === draft.root.pages.length && draft.uploaded.every(x => typeof x === 'boolean') &&
       draft.uploadedCount === draft.uploaded.filter(Boolean).length && Number.isSafeInteger(draft.identityCount) && draft.identityCount >= 0 &&
       Number.isSafeInteger(draft.identityBytes) && draft.identityBytes >= 0 && Array.isArray(draft.identityBuckets) &&
@@ -110,8 +110,20 @@ function createPagedWorkflow(db) {
         const roles = await readOptionalDoc(() => tx.collection('appConfig').doc('bankRoles').get())
         if (!validRoles(roles)) fail('ROLE_CONFIG_REQUIRED')
         const actor = identity.openid, collection = tx.collection('questions')
-        const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
+        const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', getActivePagedDraft: 'editors', abandonPagedDraft: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
         if (required ? !roles[required].includes(actor) : !['editors', 'reviewers', 'publishers'].some(role => roles[role].includes(actor))) fail('NOT_CATALOG_ROLE')
+        if (event.action === 'getActivePagedDraft') {
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (!active || active.schemaVersion !== 4 || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_ACTIVE_RELEASE')
+          const audit = await readOptionalDoc(() => collection.doc('bank_publication_' + active.publicationRevision).get())
+          if (!audit || audit.kind !== 'bankPublication' || audit.publicationRevision !== active.publicationRevision || audit.releaseId !== active.root.releaseId ||
+              !audit.approval || audit.approval.sourceVerified !== true || !/^qpd_[a-f0-9]{64}$/.test(audit.approval.draftId || '')) fail('INVALID_PUBLISHED_DRAFT')
+          const draft = await readOptionalDoc(() => collection.doc(audit.approval.draftId).get())
+          if (!validDraft(draft) || draft.state !== 'published' || draft.publicationRevision !== active.publicationRevision || !same(draft.root, active.root) ||
+              draft.payloadDigest !== audit.approval.payloadDigest || draft.reviewedBy !== audit.approval.reviewedBy) fail('INVALID_PUBLISHED_DRAFT')
+          return { ok: true, draftId: draft.draftId, root: draft.root, evidence: draft.evidence,
+            basePublication: { revision: active.publicationRevision, releaseId: active.root.releaseId } }
+        }
         if (event.action === 'beginPagedDraft') {
           if (!/^[A-Za-z0-9_-]{1,80}$/.test(event.submissionId || '')) fail('BAD_SUBMISSION_ID')
           if (event.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
@@ -135,6 +147,26 @@ function createPagedWorkflow(db) {
         if (!draft) fail('DRAFT_NOT_FOUND')
         if (!validDraft(draft)) fail('INVALID_DRAFT')
         if (event.action === 'getPagedDraft') return { ok: true, draft }
+        if (event.action === 'abandonPagedDraft') {
+          if (draft.createdBy !== actor) fail('DRAFT_NOT_EDITABLE')
+          if (draft.state === 'abandoned') return { ok: true, draftId: draft.draftId, state: 'abandoned', replayed: true }
+          if (draft.state !== 'uploading') fail('DRAFT_NOT_EDITABLE')
+          const removable = []
+          for (let index = 0; index < draft.uploaded.length; index++) if (draft.uploaded[index]) {
+            const pageRef = collection.doc(sourceId(draft.draftId, index)), source = await readOptionalDoc(() => pageRef.get())
+            if (!source || source.kind !== 'pagedSourcePage' || source.draftId !== draft.draftId || !source.page || source.page.index !== index ||
+                !paged.validSourcePage(draft.root, draft.evidence, source.page)) fail('PAGED_STAGE_CORRUPT')
+            removable.push(pageRef)
+          }
+          for (const bucket of draft.identityBuckets) {
+            const shardRef = collection.doc(stageId(draft.draftId, bucket)), shard = await readOptionalDoc(() => shardRef.get())
+            if (!validStageShard(shard, draft.draftId, bucket)) fail('PAGED_STAGE_CORRUPT')
+            removable.push(shardRef)
+          }
+          for (const item of removable) await item.remove()
+          await ref.set({ data: { ...draft, state: 'abandoned', abandonedAt: Date.now(), abandonedBy: actor } })
+          return { ok: true, draftId: draft.draftId, state: 'abandoned' }
+        }
         if (event.action === 'uploadPagedDraftPage') {
           if (draft.createdBy !== actor || draft.state !== 'uploading') fail('DRAFT_NOT_EDITABLE')
           const pub = event.page, priv = event.sourcePage

@@ -35,6 +35,59 @@ async function finish(h, v, name, base = null) {
   return call(h, 'publisher', 'publishPagedDraft', { draftId: d.draftId, expectedRevision: base ? base.revision : 0 })
 }
 
+test('分页编辑只载入当前审核发布及完整来源，权限、缺页和并发发布均失败关闭', async () => {
+  const ops = operators(), v = catalog(205), published = await finish(ops.h, v, 'editable')
+  const workspace = await ops.editor.activePagedWorkspace()
+  assert.equal(workspace.bank.schemaVersion, 4); assert.equal(workspace.bank.questions.it.length, 205)
+  assert.equal(Object.keys(workspace.sources).length, 205); assert.equal(workspace.basePublication.releaseId, published.releaseId)
+  await assert.rejects(ops.reviewer.activePagedWorkspace(), /NOT_CATALOG_ROLE/)
+  const sourceKey = [...ops.h.documents.keys()].find(k => k.startsWith('bps_')), original = copy(ops.h.documents.get(sourceKey))
+  ops.h.documents.delete(sourceKey)
+  await assert.rejects(ops.editor.activePagedWorkspace(), /PAGED_STAGE_CORRUPT/)
+  ops.h.documents.set(sourceKey, original)
+  const audit = ops.h.documents.get('bank_publication_1'); audit.approval.payloadDigest = 'corrupt'
+  await assert.rejects(ops.editor.activePagedWorkspace(), /INVALID_PUBLISHED_DRAFT/)
+  audit.approval.payloadDigest = ops.h.documents.get(audit.approval.draftId).payloadDigest
+  ops.h.fail.get = (name, id) => id === 'bank_publication_1'
+  await assert.rejects(ops.editor.activePagedWorkspace(), /PAGED_WORKFLOW_FAILED/)
+  ops.h.fail.get = null
+  const stale = createCatalogAdmin({ getSession: () => ({ logged: true, token: 'editor', openid: 'editor' }), call: async event => {
+    const response = await ops.h.main(event)
+    if (event.action === 'getPagedPublished') return { ...response, publicationRevision: 2 }
+    return response
+  } })
+  await assert.rejects(stale.activePagedWorkspace(), /STALE_BASE_RELEASE/)
+})
+
+test('仅草稿创建人可原子丢弃未封存暂存，故障回滚并保留共享题目页及发布证据', async () => {
+  const { h } = operators(), v = catalog(205), draft = await begin(h, v, 'abandon')
+  await upload(h, draft.draftId, v)
+  const before = JSON.stringify([...h.documents.entries()])
+  assert.equal((await call(h, 'reviewer', 'abandonPagedDraft', { draftId: draft.draftId })).error, 'NOT_CATALOG_ROLE')
+  h.users.set('editor2', { _id: 'editor2', openid: 'editor2', token: 'editor2', tokenAt: Date.parse('2026-10-30T06:00:00Z') })
+  h.config.get('bankRoles').editors.push('editor2')
+  assert.equal((await call(h, 'editor2', 'abandonPagedDraft', { draftId: draft.draftId })).error, 'DRAFT_NOT_EDITABLE')
+  const sourceKey = [...h.documents.keys()].find(k => k.startsWith('bps_')), source = copy(h.documents.get(sourceKey))
+  h.documents.get(sourceKey).page.sources[Object.keys(source.page.sources)[0]].reference = '损坏'
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: draft.draftId })).error, 'PAGED_STAGE_CORRUPT')
+  h.documents.set(sourceKey, source); assert.equal(JSON.stringify([...h.documents.entries()]), before)
+  h.fail.get = (name, id) => id === sourceKey
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: draft.draftId })).ok, false)
+  h.fail.get = null; assert.equal(JSON.stringify([...h.documents.entries()]), before)
+  h.fail.write = (name, id) => id.startsWith('bpi_')
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: draft.draftId })).ok, false)
+  h.fail.write = null; assert.equal(JSON.stringify([...h.documents.entries()]), before)
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: draft.draftId })).state, 'abandoned')
+  assert.ok(h.transactions.at(-1).length <= 100)
+  assert.equal([...h.documents.keys()].filter(k => k.startsWith('bps_') || k.startsWith('bpi_')).length, 0)
+  for (const page of v.publicPages) assert.ok(h.documents.has(paged.pageDocumentId(v.root.releaseId, page.index)))
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: draft.draftId })).replayed, true)
+  assert.equal((await call(h, 'editor', 'sealPagedDraft', { draftId: draft.draftId })).error, 'DRAFT_NOT_EDITABLE')
+  const sealed = await begin(h, v, 'sealed-protected'); await upload(h, sealed.draftId, v)
+  await call(h, 'editor', 'sealPagedDraft', { draftId: sealed.draftId })
+  assert.equal((await call(h, 'editor', 'abandonPagedDraft', { draftId: sealed.draftId })).error, 'DRAFT_NOT_EDITABLE')
+})
+
 test('分片经逐页上传、完整封存和独立审核后原子发布，公开接口不暴露来源', async () => {
   const { h } = operators(), v = catalog(), d = await begin(h, v, 'paged-first')
   assert.equal(d.ok, true)

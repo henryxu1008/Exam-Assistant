@@ -95,7 +95,7 @@ async function publish(event, actor) {
 
 exports.main = async (event = {}) => {
   const action = event.action || 'get'
-  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getPagedDraft', 'getPagedDraftPage', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) return pagedWorkflow(event)
+  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) return pagedWorkflow(event)
   if (['getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft', 'publishDraft', 'publishExamDraft'].includes(action)) return workflow(event)
   if (action === 'getPagedPublished') {
     try {

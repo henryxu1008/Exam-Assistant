@@ -59,11 +59,12 @@ function createCatalogAdmin({ getSession, call }) {
       basePublication: options.basePublication, submissionId: options.submissionId, rightsConfirmed: true }, ctx)
     guard()
     if (initial.state === 'uploading') {
+      if (options.onStarted) options.onStarted(initial.draftId, prepared.publicPages.length)
       for (let index = 0; index < prepared.publicPages.length; index++) {
         guard()
         await request({ action: 'uploadPagedDraftPage', draftId: initial.draftId, page: prepared.publicPages[index], sourcePage: prepared.privatePages[index] }, ctx)
         guard()
-        if (options.onProgress) options.onProgress(index + 1, prepared.publicPages.length)
+        if (options.onProgress) options.onProgress(index + 1, prepared.publicPages.length, initial.draftId)
       }
       return request({ action: 'sealPagedDraft', draftId: initial.draftId }, ctx)
     }
@@ -78,8 +79,32 @@ function createCatalogAdmin({ getSession, call }) {
     preparePaged,
     pagedCurrent: () => request({ action: 'getPagedPublished' }, capture()),
     pagedBase: () => pagedBase(capture()),
+    async activePagedWorkspace(live = () => true) {
+      const ctx = capture(), guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
+      guard()
+      const active = await request({ action: 'getActivePagedDraft' }, ctx)
+      if (!paged.validRoot(active.root) || !paged.validEvidence(active.root, active.evidence) || !active.basePublication ||
+          active.basePublication.releaseId !== active.root.releaseId || !Number.isSafeInteger(active.basePublication.revision) || active.basePublication.revision < 1) fail('INVALID_PUBLISHED_DRAFT')
+      const publicPages = [], privatePages = []
+      for (const descriptor of active.root.pages) {
+        guard()
+        const result = await request({ action: 'getPagedDraftPage', draftId: active.draftId, index: descriptor.index }, ctx)
+        guard()
+        if (!paged.validPagePair(active.root, active.evidence, result.page, result.sourcePage) || result.page.index !== descriptor.index) fail('INVALID_PAGED_PAGE')
+        publicPages.push(result.page); privatePages.push(result.sourcePage)
+      }
+      if (!paged.validComplete(active.root, active.evidence, publicPages, privatePages)) fail('INVALID_PAGED_RELEASE')
+      const latest = await pagedBase(ctx); guard()
+      if (!latest || latest.revision !== active.basePublication.revision || latest.releaseId !== active.basePublication.releaseId) fail('STALE_BASE_RELEASE')
+      const questions = Object.fromEntries(active.root.manifest.subjects.map(s => [s.key, []])), sources = {}
+      for (let i = 0; i < publicPages.length; i++) for (const q of publicPages[i].questions) {
+        questions[q.subject].push(q); sources[q.id] = privatePages[i].sources[q.id]
+      }
+      return { bank: { schemaVersion: 4, manifest: copy(active.root.manifest), questions }, sources, basePublication: active.basePublication }
+    },
     submitPaged: (prepared, options, live) => submitPaged(prepared, options, capture(), live),
     getPagedDraft: draftId => request({ action: 'getPagedDraft', draftId }, capture()),
+    abandonPagedDraft: draftId => request({ action: 'abandonPagedDraft', draftId }, capture()),
     getPagedDraftPage: (draftId, index) => request({ action: 'getPagedDraftPage', draftId, index }, capture()),
     reviewPaged: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewPagedDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
     publishPaged: ({ draftId, expectedRevision }) => request({ action: 'publishPagedDraft', draftId, expectedRevision }, capture()),

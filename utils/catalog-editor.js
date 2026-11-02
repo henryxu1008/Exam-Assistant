@@ -1,6 +1,7 @@
 /** In-memory editing of a complete published catalog; submission is always a separate reviewed draft. */
 const legacy = require('../shared/question-domain.js')
 const exam = require('../shared/exam-catalog-domain.js')
+const paged = require('../shared/paged-catalog-domain.js')
 const { sourcesFor } = require('../shared/workflow-domain.js')
 const copy = v => JSON.parse(JSON.stringify(v))
 const fail = code => { throw Object.assign(new Error(code), { code }) }
@@ -88,13 +89,14 @@ function change(workspace, action) {
   return w
 }
 function prepare(workspace) {
+  if (workspace.bank.schemaVersion === 4) return paged.buildPagedCatalog({ ...workspace.bank, sources: workspace.sources })
   const bank = exam.buildExamRelease(workspace.bank), sources = sourcesFor(bank, workspace.sources)
   return { bank, sources }
 }
 function validWorkspace(workspace) {
   try {
     const bank = workspace && workspace.bank, m = bank && bank.manifest
-    if (!bank || bank.schemaVersion !== 3 || !m || !Array.isArray(m.exams) || !Array.isArray(m.subjects) ||
+    if (!bank || ![3, 4].includes(bank.schemaVersion) || !m || !Array.isArray(m.exams) || !Array.isArray(m.subjects) ||
       !bank.questions || typeof bank.questions !== 'object' || Array.isArray(bank.questions) || !workspace.sources || typeof workspace.sources !== 'object') return false
     const subjects = new Set(), ids = new Set()
     for (const s of m.subjects) {
@@ -106,7 +108,11 @@ function validWorkspace(workspace) {
       }
     }
     if (Object.keys(bank.questions).some(k => !subjects.has(k))) return false
-    sourcesFor(bank, workspace.sources)
+    if (bank.schemaVersion === 3) sourcesFor(bank, workspace.sources)
+    else {
+      if (ids.size > paged.limits.MAX_QUESTIONS || Object.keys(workspace.sources).length !== ids.size) return false
+      for (const rows of Object.values(bank.questions)) for (const q of rows) sourcesFor({ questions: { page: [q] } }, { [q.id]: workspace.sources[q.id] })
+    }
     return true
   } catch (e) { return false }
 }
