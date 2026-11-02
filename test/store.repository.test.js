@@ -1,6 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { freshStore } = require('./helpers.js')
+const { freshStore, q } = require('./helpers.js')
 const { getDefaultState } = require('../shared/stats-merge.js')
 function history() { return { ...getDefaultState(), attempts: [{ id: 'confirmed', selected: ['A'] }], attemptOutbox: { version: 1, pending: [] } } }
 const saved = () => wx.getStorageInfoSync().keys.map(key => [key, wx.getStorageSync(key)])
@@ -42,4 +42,26 @@ test('store 回滚要求离线且无待落盘/在途任务，成功只导出最�
   assert.equal(result.ok, true); assert.equal(result.restartRequired, true)
   assert.equal(wx.getStorageSync('exam_quiz_data_v1__anon').version, 3)
   assert.equal(store.exportLocalSnapshot().attempts[0].id, 'confirmed')
+})
+
+test('保存结果不确定时通用重试不得用旧内存覆盖实际已提交作答，重启后同操作幂等', t => {
+  let store = freshStore(history()); wx.__cloudReady = false
+  store.createPracticeSession({ questionIds: ['pending'] }); store.flush(); store.__clearFlushTimer()
+  const write = wx.setStorageSync
+  t.mock.method(wx, 'setStorageSync', (key, value) => {
+    write(key, value)
+    if (key === 'exam_quiz_data_v1__anon') throw new Error('result lost')
+  })
+  const question = q('pending')
+  assert.equal(store.submitAttempt(question, ['A'], true, 100, 'same').ok, false)
+  const before = saved()
+  assert.equal(store.retryLocalStorage().error, 'LOCAL_RESTART_REQUIRED')
+  assert.deepEqual(saved(), before)
+  store.__clearFlushTimer(); t.mock.restoreAll()
+  store = freshStore(); restore(before)
+  assert.equal(store.exportLocalSnapshot().attempts.length, 2)
+  assert.equal(store.exportLocalSnapshot().attemptOutbox.pending.length, 1)
+  assert.equal(store.submitAttempt(question, ['A'], true, 100, 'same').dup, true)
+  assert.equal(store.getAttempts().length, 2)
+  store.__clearFlushTimer()
 })

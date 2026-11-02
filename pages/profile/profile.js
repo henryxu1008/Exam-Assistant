@@ -4,6 +4,8 @@ const bank = require('../../utils/questions.js')
 const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
+const { storageStatusView } = require('../../utils/storage-status.js')
 
 const GOALS = [10, 20, 30, 50, 80]
 
@@ -41,12 +43,17 @@ Page({
     aiExplain: true,
     bankInfo: { total: 0, subjects: 0, chapters: 0 },
     levelText: 1,
-    version: '1.0.0'
+    version: config.version,
+    localStorage: storageStatusView(),
+    storageReadable: true
   },
 
   onLoad() {
     this._unsubscribeSync = store.onSyncRestored(() => {
       if (this._visible) user.requireLogin(() => { if (this._visible) this.refresh() })
+    })
+    this._unsubscribeStorage = store.onLocalStorageChange(status => {
+      if (this._visible) this.setData({ localStorage: storageStatusView(status), storageReadable: status.state !== 'read_error' })
     })
   },
 
@@ -55,6 +62,7 @@ Page({
   onUnload() {
     this.onHide()
     if (this._unsubscribeSync) this._unsubscribeSync()
+    if (this._unsubscribeStorage) this._unsubscribeStorage()
   },
 
   onShow() {
@@ -68,10 +76,19 @@ Page({
   },
 
   refresh() {
+    const profile = user.getProfile()
+    this.setData({ logged: !!profile.logged, user: { nickName: profile.nickName || '', avatarUrl: profile.avatarUrl || '', exam: profile.exam || '' }, initial: user.initial(profile.nickName) })
+    try { this.refreshLearningData() } catch (e) {
+      if (store.getLocalStorageStatus().state !== 'read_error') throw e
+      this.setData({ storageReadable: false })
+    }
+    this.setData({ localStorage: storageStatusView(store.getLocalStorageStatus()) })
+  },
+
+  refreshLearningData() {
     const settings = store.getSettings()
     const overview = analytics.overview()
     const records = store.getRecords()
-    const profile = user.getProfile()
 
     let starred = 0
     let mastered = 0
@@ -89,16 +106,10 @@ Page({
     const goal = settings.dailyGoal || 30
 
     this.setData({
+      storageReadable: true,
       overview,
       starred,
       mastered,
-      logged: !!profile.logged,
-      user: {
-        nickName: profile.nickName || '',
-        avatarUrl: profile.avatarUrl || '',
-        exam: profile.exam || ''
-      },
-      initial: user.initial(profile.nickName),
       levelText: Math.min(9, Math.floor(overview.total / 100) + 1),
       studyDays: study.days,
       studyTimeText: minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${minutes} 分钟`,
@@ -136,6 +147,16 @@ Page({
 
   /* ---------------- 数据管理 ---------------- */
 
+  onRetryStorage() {
+    if (!user.requireLogin()) return
+    const result = store.retryLocalStorage()
+    this.refresh()
+    const title = result.ok ? '本地保存检查完成' : result.deferred ? '存储优化仍需延期' : result.cleanupPending ? '存储清理仍待完成' :
+      result.error === 'RETRY_ORIGINAL_OPERATION' ? '请返回原操作重试' :
+      result.error === 'LOCAL_RESTART_REQUIRED' ? '请重启后核对记录' : '重试未完成，请保留数据'
+    wx.showToast({ title, icon: 'none' })
+  },
+
   onClearData() {
     const self = this
     wx.showModal({
@@ -150,7 +171,7 @@ Page({
           wx.showToast({ title: '清空失败，原数据已保留', icon: 'none' })
           return
         }
-        wx.showToast({ title: '已清空', icon: 'none' })
+        wx.showToast({ title: result.pendingLocalReset ? '删除已受理，本地处理待重试' : '已清空', icon: 'none' })
         self.refresh()
       }
     })
@@ -159,7 +180,7 @@ Page({
   onAbout() {
     wx.showModal({
       title: '关于',
-      content: '备考刷题助手 v1.0.0\n云端题库与 AI 助教，学习数据已同步到云端，换设备不丢失。',
+      content: `备考刷题助手 v${config.version}\n云端题库与 AI 助教；换设备前请确认学习数据已同步。`,
       showCancel: false,
       confirmText: '知道了'
     })

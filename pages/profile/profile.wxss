@@ -1,4 +1,8 @@
 /* pages/profile/profile.wxss */
+.storage-status { border-left: 6rpx solid #3d6bff; }
+.storage-warning { border-left-color: #946200; }
+.storage-error { border-left-color: #c83236; }
+.storage-retry { margin-top: 20rpx; font-size: 26rpx; color: #254dbb; background: #eef2ff; }
 .avatar {
   width: 108rpx;
   height: 108rpx;

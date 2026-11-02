@@ -167,6 +167,10 @@ miniprogram-4/
 [分段后报告](docs/reports/learning-storage-segmented-2026-11-02.md) 同时记录写入减少和迁移额外成本。
 代码未部署；微信配额、同步迁移耗时、断电/损坏恢复尚待真实环境验收。
 
+首次迁移现按运行时总占用和额度预估新增空间，空间不足或额度未知时保留完整原格式并延期；
+“我的”页显示本地保存/迁移/清理状态并提供本地检查重试。保存结果不确定时须重启核对，不能盲用旧内存或备份覆盖。
+配额与子进程中断测试、重试边界及微信隔离验收清单见 [ADR 0016](docs/adr/0016-storage-capacity-and-recovery.md)。
+
 ## 已知限制
 
 - **AI 助教默认走本地规则引擎**：`utils/ai.js` 的 `REMOTE_LLM.enabled` 默认 `false`，回复由本地模板 + 学情数据生成，不是真实大模型。已预留云函数 `aiTutor`（OpenAI 兼容 chat/completions 骨架，默认关闭、安全护栏齐全），接入真实模型时：① 在 `aiTutor` 的环境变量配置 `AI_TUTOR_ENABLED=true`、`LLM_ENDPOINT`、`LLM_API_KEY`（可选 `LLM_MODEL`）；② 把端上 `REMOTE_LLM.enabled` 改为 `true`。云函数未启用时端上自动回落本地引擎，互不影响。

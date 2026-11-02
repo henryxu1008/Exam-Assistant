@@ -26,19 +26,23 @@ function fixture(count, includeAI) {
 }
 function sample(count, includeAI) {
   const { state, q } = fixture(count, includeAI), storage = new Map([[key, JSON.stringify(state)]])
+  let storageBytes = Buffer.byteLength(key + storage.get(key))
   let allWrittenBytes = 0, writes = 0, writtenBytes = 0, historyWrites = 0, historyWrittenBytes = 0, stringifyMs = 0, lastBytes = 0, store
   const write = (name, value) => {
     const started = performance.now(), text = JSON.stringify(value), elapsed = performance.now() - started
+    storageBytes += Buffer.byteLength(text) - (storage.has(name) ? Buffer.byteLength(storage.get(name)) : -Buffer.byteLength(name))
     storage.set(name, text)
     if (/^exam_quiz_(data|history|backup)_/.test(name)) allWrittenBytes += Buffer.byteLength(text)
     if (name.startsWith('exam_quiz_history_v1__')) { historyWrites++; historyWrittenBytes += Buffer.byteLength(text) }
     if (name === key) { writes++; lastBytes = Buffer.byteLength(text); writtenBytes += lastBytes; stringifyMs += elapsed }
   }
   const wx = { __cloudReady: false,
-    getStorageInfoSync: () => ({ keys: [...storage.keys()] }),
+    // Deliberately ample synthetic quota; native quota admission is tested separately.
+    getStorageInfoSync: () => ({ keys: [...storage.keys()], currentSize: storageBytes / 1024, limitSize: 1048576 }),
     getStorageSync: name => storage.has(name) ? JSON.parse(storage.get(name)) : '',
     setStorageSync: write, setStorage: opts => { write(opts.key, opts.data); if (opts.success) opts.success() },
-    removeStorageSync: name => storage.delete(name), cloud: { callFunction() { throw new Error('BENCHMARK_MUST_NOT_ACCESS_CLOUD') } } }
+    removeStorageSync: name => { if (storage.has(name)) storageBytes -= Buffer.byteLength(name + storage.get(name)); storage.delete(name) },
+    cloud: { callFunction() { throw new Error('BENCHMARK_MUST_NOT_ACCESS_CLOUD') } } }
   const module = { exports: {} }, file = path.join(__dirname, '../utils/store.js')
   try {
     vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx, console, setTimeout, clearTimeout,
@@ -77,7 +81,7 @@ function run({ sizes = [1000, 10000], runs = 5 } = {}) {
       observedHeapAfterMaxMiB: sorted('heapAfterMiB').at(-1), samples })
   }
   return { scope: 'synthetic_node_store_baseline', node: process.version, platform: process.platform, arch: process.arch,
-    storage: 'memory_with_JSON_serialization', sampling: 'independent_node_process_per_sample', cloudCalls: 0, scenarios }
+    storage: 'memory_with_JSON_serialization', syntheticQuotaKB: 1048576, sampling: 'independent_node_process_per_sample', cloudCalls: 0, scenarios }
 }
 function main(args) {
   const options = {}

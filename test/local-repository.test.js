@@ -12,7 +12,7 @@ function harness() {
     getStorageSync(key) { if (faults.get && faults.get(key)) throw new Error('read unavailable'); return data.has(key) ? clone(data.get(key)) : '' },
     setStorageSync(key, value) { trace.push({ key, bytes: JSON.stringify(value).length }); if (faults.set && faults.set(key)) throw new Error('storage full'); data.set(key, clone(value)) },
     removeStorageSync(key) { if (faults.remove && faults.remove(key)) throw new Error('cleanup unavailable'); data.delete(key) },
-    getStorageInfoSync: () => ({ keys: [...data.keys()] })
+    getStorageInfoSync: () => ({ keys: [...data.keys()], currentSize: 0, limitSize: 1048576 })
   }
   return { data, trace, faults, storage, repo: createLocalRepository(storage), cold: () => createLocalRepository(storage) }
 }
