@@ -13,7 +13,13 @@ function openWorkspace(result) {
   if (!(legacy.validRelease(bank) || exam.validExamRelease(bank)) || !result.basePublication || result.basePublication.releaseId !== bank.releaseId ||
       result.basePublication.revision !== result.draft.publicationRevision) fail('INVALID_PUBLISHED_DRAFT')
   const validSources = sourcesFor(bank, sources)
-  return { bank: { schemaVersion: 3, manifest: { exams: copy(bank.manifest.exams || []), subjects: copy(bank.manifest.subjects) }, questions: copy(bank.questions) },
+  const questions = copy(bank.questions)
+  for (const s of bank.manifest.subjects) questions[s.key].forEach(q => {
+    const matches = s.chapters.filter(c => q.chapter === c.name || q.chapter === c.key || q.chapter === exam.chapterIdentity(s.key, c.key))
+    if (matches.length !== 1) fail('INVALID_PUBLISHED_DRAFT')
+    q.subject = s.key; q.chapter = exam.chapterIdentity(s.key, matches[0].key)
+  })
+  return { bank: { schemaVersion: 3, manifest: { exams: copy(bank.manifest.exams || []), subjects: copy(bank.manifest.subjects) }, questions },
     sources: copy(validSources), basePublication: copy(result.basePublication) }
 }
 function change(workspace, action) {
@@ -34,15 +40,16 @@ function change(workspace, action) {
       m.exams = m.exams.filter(e => e.id !== action.id); break
     case 'addSubject':
       if (!m.exams.some(e => e.id === action.examId)) fail('EXAM_NOT_FOUND')
-      if (!key(action.subjectKey) || !name(action.name) || m.subjects.some(s => s.key === action.subjectKey || s.name === action.name)) fail('BAD_MANIFEST')
+      if (!key(action.subjectKey) || !name(action.name) || m.subjects.some(s => s.key === action.subjectKey || (s.examId === action.examId && s.name === action.name))) fail('BAD_MANIFEST')
       m.subjects.push({ key: action.subjectKey, name: action.name, examId: action.examId, chapters: [] }); w.bank.questions[action.subjectKey] = []; break
     case 'assignSubject': {
       const s = subject(); if (!m.exams.some(e => e.id === action.examId)) fail('EXAM_NOT_FOUND')
+      if (m.subjects.some(x => x.key !== s.key && x.examId === action.examId && x.name === s.name)) fail('BAD_MANIFEST')
       s.examId = action.examId; break
     }
     case 'renameSubject': {
-      const s = subject(); if (!name(action.name) || m.subjects.some(x => x.key !== s.key && x.name === action.name)) fail('BAD_MANIFEST')
-      s.name = action.name; w.bank.questions[s.key].forEach(q => { q.subject = action.name }); break
+      const s = subject(); if (!name(action.name) || m.subjects.some(x => x.key !== s.key && x.examId === s.examId && x.name === action.name)) fail('BAD_MANIFEST')
+      s.name = action.name; break
     }
     case 'removeSubject': {
       const s = subject(); if (s.chapters.length || w.bank.questions[s.key].length) fail('SUBJECT_NOT_EMPTY')
@@ -54,10 +61,10 @@ function change(workspace, action) {
     }
     case 'renameChapter': {
       const s = subject(), c = getChapter(s); if (!name(action.name) || s.chapters.some(x => x.key !== c.key && x.name === action.name)) fail('BAD_MANIFEST')
-      const previous = c.name; c.name = action.name; w.bank.questions[s.key].filter(q => q.chapter === previous).forEach(q => { q.chapter = c.name }); break
+      c.name = action.name; break
     }
     case 'removeChapter': {
-      const s = subject(), c = getChapter(s); if (w.bank.questions[s.key].some(q => q.chapter === c.name)) fail('CHAPTER_NOT_EMPTY')
+      const s = subject(), c = getChapter(s); if (w.bank.questions[s.key].some(q => q.chapter === exam.chapterIdentity(s.key, c.key))) fail('CHAPTER_NOT_EMPTY')
       s.chapters = s.chapters.filter(x => x.key !== c.key); break
     }
     case 'saveQuestion': {
@@ -65,7 +72,8 @@ function change(workspace, action) {
       if (existingId && existingId !== input.id) fail('QUESTION_ID_IMMUTABLE')
       const all = Object.values(w.bank.questions).flat(), existing = all.find(q => q.id === input.id)
       if ((!existingId && existing) || (existingId && !existing)) fail('QUESTION_ID_CONFLICT')
-      const q = legacy.versionQuestion({ ...existing, ...input, subject: s.name, chapter: c.name })
+      if (existing && (existing.subject !== s.key || existing.chapter !== exam.chapterIdentity(s.key, c.key))) fail('QUESTION_SCOPE_IMMUTABLE')
+      const q = legacy.versionQuestion({ ...existing, ...input, subject: s.key, chapter: exam.chapterIdentity(s.key, c.key) })
       const one = { questions: { [s.key]: [q] } }, source = sourcesFor(one, { [q.id]: action.source })[q.id]
       for (const list of Object.values(w.bank.questions)) { const index = list.findIndex(item => item.id === q.id); if (index >= 0) list.splice(index, 1) }
       w.bank.questions[s.key].push(q); w.sources[q.id] = source; break
@@ -83,4 +91,23 @@ function prepare(workspace) {
   const bank = exam.buildExamRelease(workspace.bank), sources = sourcesFor(bank, workspace.sources)
   return { bank, sources }
 }
-module.exports = { openWorkspace, change, prepare }
+function validWorkspace(workspace) {
+  try {
+    const bank = workspace && workspace.bank, m = bank && bank.manifest
+    if (!bank || bank.schemaVersion !== 3 || !m || !Array.isArray(m.exams) || !Array.isArray(m.subjects) ||
+      !bank.questions || typeof bank.questions !== 'object' || Array.isArray(bank.questions) || !workspace.sources || typeof workspace.sources !== 'object') return false
+    const subjects = new Set(), ids = new Set()
+    for (const s of m.subjects) {
+      if (!s || !key(s.key) || !name(s.name) || subjects.has(s.key) || !Array.isArray(s.chapters) || !Array.isArray(bank.questions[s.key])) return false
+      subjects.add(s.key)
+      for (const q of bank.questions[s.key]) {
+        if (!q || q.subject !== s.key || ids.has(q.id) || !s.chapters.some(c => exam.chapterIdentity(s.key, c.key) === q.chapter)) return false
+        legacy.versionQuestion(q); ids.add(q.id)
+      }
+    }
+    if (Object.keys(bank.questions).some(k => !subjects.has(k))) return false
+    sourcesFor(bank, workspace.sources)
+    return true
+  } catch (e) { return false }
+}
+module.exports = { openWorkspace, change, prepare, validWorkspace }

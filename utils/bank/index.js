@@ -88,21 +88,32 @@ function getExams() { return JSON.parse(JSON.stringify(source.manifest.exams || 
 function getSubjects(examId) {
   // 科目清单由 dataSource 驱动；count 按真实题目累计
   return source.manifest.subjects.filter(s => !examId || s.examId === examId).map((s) => ({
-    name: s.name,
+    name: source.schemaVersion === 3 ? s.key : s.name,
+    ...(source.schemaVersion === 3 ? { label: s.name } : {}),
     count: (source.questions[s.key] || []).length,
     ...(s.examId ? { examId: s.examId } : {})
   }))
+}
+function getSubjectLabel(id) {
+  const subject = source.manifest.subjects.find(s => (source.schemaVersion === 3 ? s.key : s.name) === id)
+  return subject ? subject.name : id
 }
 
 function getChapters(subject) {
   // 章节清单由 dataSource 驱动
   if (!subject) {
     const all = []
-    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(c.name)))
+    source.manifest.subjects.forEach((s) => s.chapters.forEach((c) => all.push(source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name)))
     return all
   }
-  const s = source.manifest.subjects.filter((x) => x.name === subject)[0]
-  return s ? s.chapters.map((c) => c.name) : []
+  const s = source.manifest.subjects.filter((x) => (source.schemaVersion === 3 ? x.key : x.name) === subject)[0]
+  return s ? s.chapters.map((c) => source.schemaVersion === 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name) : []
+}
+function getChapterLabel(subjectId, chapterId) {
+  if (source.schemaVersion !== 3) return chapterId
+  const subject = source.manifest.subjects.find(s => s.key === subjectId)
+  const chapter = subject && subject.chapters.find(c => examDomain.chapterIdentity(subjectId, c.key) === chapterId)
+  return chapter ? chapter.name : chapterId
 }
 
 function getQuestionsByIds(ids) {
@@ -281,8 +292,10 @@ const api = {
   getAllQuestions,
   findQuestion,
   getExams,
+  getSubjectLabel,
   getSubjects,
   getChapters,
+  getChapterLabel,
   getQuestionsByIds,
   filterQuestions,
   shuffle,

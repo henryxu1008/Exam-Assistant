@@ -57,6 +57,13 @@ function createWorkflow(db, activateBank) {
           if (payload.basePublication) {
             if (!active || active.publicationRevision !== payload.basePublication.revision || active.releaseId !== payload.basePublication.releaseId) fail('STALE_BASE_RELEASE')
           }
+          if (event.action === 'createExamDraft' && active && active.schemaVersion === 3) {
+            const oldQuestions = new Map(Object.values(active.questions).flat().map(q => [q.id, q]))
+            for (const q of Object.values(payload.bank.questions).flat()) {
+              const old = oldQuestions.get(q.id)
+              if (old && (old.subject !== q.subject || old.chapter !== q.chapter)) fail('QUESTION_SCOPE_IMMUTABLE')
+            }
+          }
           const required = await workflowRequired(collection)
           if (!required) await collection.doc('bank_workflow').set({ data: { version: 1, required: true, enabledAt: Date.now(), enabledBy: actor } })
           await ref.set({ data: { ...payload, state: 'draft', createdAt: Date.now() } })

@@ -34,6 +34,7 @@ function chapterStats() {
     const item = map[key] || {
       subject: r.subject,
       chapter: r.chapter,
+      chapterLabel: typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(r.subject, r.chapter) : r.chapter,
       attempts: 0,
       correct: 0,
       wrong: 0,
@@ -126,8 +127,8 @@ function radarData(topN, snap) {
   const n = topN || 6
   const list = ((snap && snap.stats) || chapterStats()).slice(0, n)
   return list.map((i) => ({
-    name: i.chapter.length > CHART_LABEL_MAX ? i.chapter.slice(0, CHART_LABEL_MAX) : i.chapter,
-    fullName: i.chapter,
+    name: (i.chapterLabel || i.chapter).length > CHART_LABEL_MAX ? (i.chapterLabel || i.chapter).slice(0, CHART_LABEL_MAX) : (i.chapterLabel || i.chapter),
+    fullName: i.chapterLabel || i.chapter,
     /** 掌握度按正确率与等级各占一半 */
     value: Math.round((i.rate * 0.5 + i.mastery * 0.5) * 10) / 10
   }))

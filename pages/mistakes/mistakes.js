@@ -71,6 +71,7 @@ Page({
     this._render(pool, dueSet)
     this.setData({
       subject,
+      subjects: bank.getSubjects(store.getCurrentExam()),
       counts,
       tabs: TABS.map((t) => ({ key: t.key, label: t.label, count: counts[t.key] }))
     })
@@ -97,7 +98,9 @@ Page({
         id: r.id,
         stem: q.stem,
         subject: r.subject || q.subject,
+        subjectLabel: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(r.subject || q.subject) : (r.subject || q.subject),
         chapter: r.chapter || q.chapter,
+        chapterLabel: typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(r.subject || q.subject, r.chapter || q.chapter) : (r.chapter || q.chapter),
         typeName: bank.typeName(q.type),
         answerText: bank.answerPlain(q),
         wrong: r.wrong,

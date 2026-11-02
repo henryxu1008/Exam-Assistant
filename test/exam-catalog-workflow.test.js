@@ -57,6 +57,20 @@ test('编辑必须绑定发布基线，并发发布后不能用新修订覆盖',
   assert.equal(h.documents.get(first.releaseId).bank.questions.it[0].stem, input.bank.questions.it[0].stem)
 })
 
+test('已发布题目的章节身份不可移动，改名不会改变身份', async () => {
+  const { h } = operators(), input = examInput()
+  const first = await draft(h, input, 'identity'); await approve(h, first.draftId)
+  const published = await publish(h, first.draftId, 0), base = { revision: 1, releaseId: published.releaseId }
+  const active = (await h.main({ action: 'getExamPublished' })).bank
+  const changed = { bank: copy(active), sources: copy(input.sources) }
+  changed.bank.manifest.subjects[0].chapters.push({ key: 'new', name: '新章节' })
+  changed.bank.questions.it[0].chapter = '新章节'
+  assert.equal((await draft(h, changed, 'move', base)).error, 'QUESTION_SCOPE_IMMUTABLE')
+  changed.bank.questions.it[0].chapter = active.questions.it[0].chapter
+  changed.bank.manifest.subjects[0].chapters[0].name = '章节新名称'
+  assert.equal((await draft(h, changed, 'rename', base)).ok, true)
+})
+
 test('两个空题库起草并发时，后一个不能使用新修订覆盖首次发布', async () => {
   const { h } = operators(), a = examInput(), b = examInput()
   b.bank.questions.it[0].stem = '第二个首次草稿'

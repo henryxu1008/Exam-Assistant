@@ -1031,9 +1031,25 @@ function saveSettings(patch) {
  * 当前科目：全应用统一口径（刷题 / 错题 / 学情 / AI 都只统计该科目）。
  * 未设置或值不在题库中时，回落到题库首个科目，保证「始终处于某个具体科目下」。
  */
+function getCurrentExam() {
+  const exams = typeof bank.getExams === 'function' ? bank.getExams() : []
+  if (!exams.length) return ''
+  const settings = load().settings
+  if (exams.some(e => e.id === settings.currentExam)) return settings.currentExam
+  const selected = bank.getSubjects().find(s => s.name === settings.currentSubject)
+  return selected && selected.examId || exams[0].id
+}
+function setCurrentExam(id) {
+  const exams = typeof bank.getExams === 'function' ? bank.getExams() : []
+  if (!exams.some(e => e.id === id)) return getCurrentExam()
+  const subjects = bank.getSubjects(id), previous = load().settings.currentSubject
+  saveSettings({ currentExam: id, currentSubject: subjects.some(s => s.name === previous) ? previous : (subjects[0] ? subjects[0].name : '') })
+  flush()
+  return id
+}
 function getCurrentSubject() {
   const saved = load().settings.currentSubject
-  const subjects = bank.getSubjects()
+  const subjects = bank.getSubjects(getCurrentExam())
   if (subjects.some((s) => s.name === saved)) return saved
   return subjects.length ? subjects[0].name : ''
 }
@@ -1041,8 +1057,9 @@ function getCurrentSubject() {
 /** 切换当前科目；传入题库中不存在的科目时忽略，返回实际生效的科目 */
 function setCurrentSubject(name) {
   const subjects = bank.getSubjects()
-  if (!subjects.some((s) => s.name === name)) return getCurrentSubject()
-  saveSettings({ currentSubject: name })
+  const selected = subjects.find((s) => s.name === name)
+  if (!selected) return getCurrentSubject()
+  saveSettings({ currentSubject: name, ...(selected.examId ? { currentExam: selected.examId } : {}) })
   flush() // 切换是显式操作，立即落盘
   return name
 }
@@ -1598,6 +1615,8 @@ module.exports = {
   mergeStats,
   getSettings,
   saveSettings,
+  getCurrentExam,
+  setCurrentExam,
   getCurrentSubject,
   setCurrentSubject,
   getRecords,

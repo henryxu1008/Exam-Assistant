@@ -158,7 +158,7 @@ miniprogram-4/
 ## 题库运营与存储基线
 
 离线检查：`npm run catalog:check -- --input docs/examples/catalog-import.csv --format csv`。
-小程序管理页为 `pages/catalog-admin/catalog-admin`，具备目录角色的账号可从个人页进入；支持可视化维护考试、科目、章节、题目与来源，生成草稿后独立审核、按发布基线发布。旧格式仍可使用 JSON/CSV 预检；考试格式批量导入和学习页按考试筛选尚未实现。详细操作与限制见 [运营指南](docs/catalog-operations.md)。
+小程序管理页为 `pages/catalog-admin/catalog-admin`，具备目录角色的账号可从个人页进入；支持可视化维护考试、科目、章节、题目与来源，考试格式 JSON/CSV 全量导入，本机编辑恢复，分页查看和独立审核、按发布基线发布。学习首页可按考试筛选科目。服务端仍有完整快照上限；详细操作与限制见 [运营指南](docs/catalog-operations.md)。
 接口权限仍由服务端检查；用法、大小限制与隔离环境验收步骤见 [运营指南](docs/catalog-operations.md)。
 
 合成存储基线：`npm run bench:learning -- --sizes 1000,10000 --runs 5`，只用进程内存储、不访问云。

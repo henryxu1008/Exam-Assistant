@@ -93,7 +93,7 @@ Page({
           values: trendRaw.map((i) => (i.total ? i.rate : 0))
         },
         trendTable,
-        barItems: chapters.map((c) => ({ label: c.chapter, value: c.rate })),
+        barItems: chapters.map((c) => ({ label: c.chapterLabel || c.chapter, value: c.rate })),
         chapters: chapters.map((c) =>
           Object.assign({}, c, {
             key: `${c.subject}|${c.chapter}`,
@@ -107,12 +107,13 @@ Page({
           id: s.question.id,
           stem: s.question.stem,
           chapter: s.question.chapter,
+          chapterLabel: typeof bank.getChapterLabel === 'function' ? bank.getChapterLabel(s.question.subject, s.question.chapter) : s.question.chapter,
           subject: s.question.subject,
           wrong: s.record.wrong,
           days: s.days
         })),
         advice: ai.studyAdvice(snap),
-        currentSubject: store.getCurrentSubject()
+        currentSubject: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(store.getCurrentSubject()) : store.getCurrentSubject()
       },
       () => {
         if (hasData) this.drawCharts()

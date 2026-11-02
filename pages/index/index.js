@@ -27,7 +27,10 @@ Page({
     goalLeft: 30,
     advice: [],
     subjects: [],
+    exams: [],
+    currentExam: '',
     currentSubject: '',
+    currentSubjectLabel: '',
     weakPreview: [],
     dateText: '',
     userName: '',
@@ -106,7 +109,10 @@ Page({
       goalLeft: Math.max(0, goal - overview.todayTotal),
       advice: ai.studyAdvice(),
       subjects: this._buildSubjects(),
+      exams: typeof bank.getExams === 'function' ? bank.getExams() : [],
+      currentExam: store.getCurrentExam(),
       currentSubject: store.getCurrentSubject(),
+      currentSubjectLabel: typeof bank.getSubjectLabel === 'function' ? bank.getSubjectLabel(store.getCurrentSubject()) : store.getCurrentSubject(),
       weakPreview: analytics.weakPoints(3),
       userName: user.isLogged() ? user.displayName() : '',
       notice,
@@ -122,7 +128,7 @@ Page({
 
   _buildSubjects() {
     const records = store.getRecords()
-    return bank.getSubjects().map((s) => {
+    return bank.getSubjects(store.getCurrentExam()).map((s) => {
       let attempted = 0
       let correct = 0
       Object.keys(records).forEach((id) => {
@@ -143,6 +149,8 @@ Page({
   },
 
   /* ---------------- 事件 ---------------- */
+
+  onExamChange(e) { store.setCurrentExam(e.currentTarget.dataset.exam); this.refresh() },
 
   // 练习页属于 tabBar 页面，无法 navigateTo，统一走 app.startPractice
   goPractice(e) {

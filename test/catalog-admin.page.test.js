@@ -1,5 +1,5 @@
 require('./wx-shim.js')
-const { test } = require('node:test')
+const { test, beforeEach } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -11,6 +11,7 @@ global.Page = value => { definition = value }
 require('../pages/catalog-admin/catalog-admin.js')
 const sample = fs.readFileSync(path.join(__dirname, '../docs/examples/catalog-import.json'), 'utf8')
 const settle = () => new Promise(setImmediate)
+beforeEach(() => global.__wxStorage.clearAll())
 function page(t, client) {
   t.mock.method(user, 'requireLogin', cb => { cb(); return true })
   const p = Object.assign({}, definition, { data: JSON.parse(JSON.stringify(definition.data)), setData(value) { Object.assign(this.data, value) } })
@@ -46,13 +47,36 @@ test('审核与发布前必须读取匹配草稿，切换草稿清除原核验�
   p.onReview({ currentTarget: { dataset: { decision: 'approve' } } })
   assert.equal(p.data.error, 'READ_DRAFT_REQUIRED')
   p.onReadDraft(); await settle()
-  assert.ok(p.data.preview.includes('合成工具样例'))
+  assert.ok(p.data.reviewItems[0].text.includes('合成工具样例'))
   input(p, 'note', '已核验测试来源'); p.onConfirm({ detail: { value: ['sources'] } })
   p.onReview({ currentTarget: { dataset: { decision: 'approve' } } }); await settle()
   assert.equal(ops.h.documents.get(draft.draftId).state, 'approved')
   input(p, 'draftId', 'another')
   assert.equal(p.data.preview, ''); assert.equal(p.data.sourceVerified, false)
   p.onPublish(); assert.equal(p.data.error, 'READ_DRAFT_REQUIRED')
+})
+
+test('来源审核跨页时必须查看所有题目才能批准', async t => {
+  const ops = operators(), inputBank = JSON.parse(sample)
+  const q = inputBank.bank.questions.it[0], source = inputBank.sources[q.id]
+  for (let i = 0; i < 20; i++) {
+    const id = 'PAGE-' + i
+    inputBank.bank.questions.it.push({ ...q, id })
+    inputBank.sources[id] = { ...source, reference: 'synthetic:' + id }
+  }
+  const draft = await ops.editor.submitDraft(inputBank, { submissionId: 'pages', rightsConfirmed: true })
+  const p = page(t, ops.reviewer); await settle()
+  input(p, 'draftId', draft.draftId); p.onReadDraft(); await settle()
+  assert.equal(p.data.reviewPages, 3); assert.equal(p.data.reviewItems.length, 10)
+  input(p, 'note', '逐页核验'); p.onConfirm({ detail: { value: ['sources'] } })
+  p.onReview({ currentTarget: { dataset: { decision: 'approve' } } })
+  assert.equal(p.data.error, 'REVIEW_PAGES_REQUIRED')
+  p.onReviewPage({ currentTarget: { dataset: { delta: 1 } } })
+  assert.equal(p.data.reviewAllSeen, false)
+  p.onReviewPage({ currentTarget: { dataset: { delta: 1 } } })
+  assert.equal(p.data.reviewItems.length, 2); assert.equal(p.data.reviewAllSeen, true)
+  p.onReview({ currentTarget: { dataset: { decision: 'approve' } } }); await settle()
+  assert.equal(ops.h.documents.get(draft.draftId).state, 'approved')
 })
 
 test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入新页面', async t => {
@@ -127,7 +151,7 @@ test('可视化维护完整题库后必须独立审核发布，学习端读取�
     Object.assign(proxy, module.exports)
     assert.equal(await proxy.loadCloudBank(), true)
     assert.equal(proxy.getExams()[0].id, 'arch')
-    assert.equal(proxy.getSubjects('arch')[0].name, '专业知识')
+    assert.equal(proxy.getSubjects('arch')[0].label, '专业知识')
     const question = proxy.findQuestion('DEMO-3')
     consumer.store.createPracticeSession({ subject: question.subject, questionIds: [question.id], questions: [question] })
     assert.equal(consumer.store.submitAttempt(question, ['A'], true, 10, 'learn').ok, true)
@@ -177,4 +201,41 @@ test('账号切换清除题库编辑工作区、未保存表单和旧提交确�
   assert.equal(p._questionFormDirty, false)
   assert.equal(p.data.form.sourceReference, '')
   assert.equal(p.data.editorReady, false)
+})
+
+test('重启可恢复本账号工作区及未保存题目表单，写入失败不改变已保存内容', async t => {
+  const ops = operators(), first = page(t, ops.editor); await settle(); first.onLoadEditor(); await settle()
+  const form = (p, field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  form(first, 'examId', 'arch'); form(first, 'examName', '考试')
+  first.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
+  form(first, 'stem', '尚未完成的题面')
+  first.onUnload()
+  const restarted = page(t, ops.editor); await settle()
+  restarted.onLoadEditor(); assert.equal(restarted.data.error, 'LOCAL_DRAFT_EXISTS')
+  restarted.onRestoreEditor()
+  assert.equal(restarted.data.form.stem, '尚未完成的题面')
+  assert.equal(restarted.data.exams[0].id, 'arch')
+  assert.equal(restarted._questionFormDirty, true)
+  t.mock.method(wx, 'setStorageSync', () => { throw new Error('disk full') })
+  form(restarted, 'stem', '不应被确认保存')
+  assert.equal(restarted.data.error, 'LOCAL_DRAFT_WRITE_FAILED')
+  assert.equal(restarted.data.form.stem, '尚未完成的题面')
+  t.mock.restoreAll()
+  restarted.onRestoreEditor()
+  assert.equal(restarted.data.form.stem, '尚未完成的题面')
+})
+
+test('本地编辑不会在不同账号之间展示', async t => {
+  const ops = operators()
+  ops.h.users.set('another', { _id: 'another', openid: 'another', token: 'another', tokenAt: Date.parse('2026-10-30T06:00:00Z') })
+  ops.h.config.get('bankRoles').editors.push('another')
+  let session = { logged: true, openid: 'editor', token: 'editor' }
+  const client = createCatalogAdmin({ getSession: () => session, call: data => ops.h.main(data) })
+  const p = page(t, client); await settle(); p.onLoadEditor(); await settle()
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '仅本账号可见' } })
+  p.onHide(); session = { logged: true, openid: 'another', token: 'another' }; p.onShow(); await settle()
+  p.onRestoreEditor(); assert.equal(p.data.error, 'LOCAL_DRAFT_INVALID')
+  assert.equal(p.data.form.stem, '')
+  p.onLoadEditor(); await settle(); assert.equal(p.data.editorReady, true)
+  assert.equal(p.data.form.stem, '')
 })

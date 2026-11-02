@@ -20,12 +20,12 @@ test('从完整旧发布显式指定考试，编辑保留所有未修改题目�
   const result = editor.prepare(w)
   assert.equal(result.bank.questions.it.length, 3)
   assert.deepEqual(result.sources['DEMO-2'], sample.sources['DEMO-2'])
-  assert.equal(result.bank.questions.it.find(x => x.id === 'DEMO-1').versionId, bank.questions.it[0].versionId)
+  assert.equal(result.bank.questions.it.find(x => x.id === 'DEMO-1').subject, 'it')
   assert.deepEqual(data, original)
   assert.deepEqual(w.basePublication, data.basePublication)
 })
 
-test('编辑、移动和重命名维护归属，删除非空层级及重复题号拒绝', () => {
+test('编辑和重命名保持稳定身份，删除非空层级及重复题号拒绝', () => {
   let w = editor.openWorkspace({ draft: null })
   for (const action of [{ type: 'addExam', id: 'a', name: '考试' }, { type: 'addSubject', examId: 'a', subjectKey: 's', name: '科目' },
     { type: 'addChapter', subjectKey: 's', chapterKey: 'c', name: '章节' }, { type: 'saveQuestion', subjectKey: 's', chapterKey: 'c', question: q, source }]) w = editor.change(w, action)
@@ -35,15 +35,19 @@ test('编辑、移动和重命名维护归属，删除非空层级及重复题�
   w = editor.change(w, { type: 'renameSubject', subjectKey: 's', name: '新科目' })
   w = editor.change(w, { type: 'renameChapter', subjectKey: 's', chapterKey: 'c', name: '新章节' })
   const result = editor.prepare(w)
-  assert.equal(result.bank.questions.s[0].subject, '新科目')
-  assert.equal(result.bank.questions.s[0].chapter, '新章节')
+  assert.equal(result.bank.questions.s[0].subject, 's')
+  assert.equal(result.bank.manifest.subjects[0].name, '新科目')
+  assert.equal(result.bank.questions.s[0].chapter, require('../shared/exam-catalog-domain.js').chapterIdentity('s', 'c'))
+  assert.equal(result.bank.manifest.subjects[0].chapters[0].name, '新章节')
   assert.throws(() => editor.change(w, { type: 'saveQuestion', subjectKey: 's', chapterKey: 'c', existingId: q.id, question: { ...q, id: 'OTHER' }, source }), /QUESTION_ID_IMMUTABLE/)
+  w = editor.change(w, { type: 'addChapter', subjectKey: 's', chapterKey: 'other', name: '其他章节' })
+  assert.throws(() => editor.change(w, { type: 'saveQuestion', subjectKey: 's', chapterKey: 'other', existingId: q.id, question: q, source }), /QUESTION_SCOPE_IMMUTABLE/)
 })
 
-test('普通导入预检不能静默丢弃考试归属', () => {
+test('缺少新格式声明时导入预检不能静默丢弃考试归属', () => {
   const { preflight } = require('../shared/catalog-import.js')
   const input = copy(sample); input.bank.manifest.exams = [{ id: 'a', name: '考试' }]; input.bank.manifest.subjects[0].examId = 'a'
   const result = preflight(JSON.stringify(input), 'json')
   assert.equal(result.ok, false)
-  assert.equal(result.errors[0].code, 'EXAM_IMPORT_NOT_SUPPORTED')
+  assert.equal(result.errors[0].code, 'BAD_EXAM_CATALOG')
 })
