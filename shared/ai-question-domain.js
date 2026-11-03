@@ -22,6 +22,8 @@ function normalize(raw, request, owner) {
     const normalizedStem = item.stem.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
     if (seen.has(normalizedStem)) fail('DUPLICATE_AI_QUESTION')
     seen.add(normalizedStem)
+    const options = item.options.map(option => option.text.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase())
+    if (new Set(options).size !== options.length) fail('BAD_AI_RESPONSE')
     if (spec.type === 'multiple' && item.answer.length < 2) fail('BAD_AI_RESPONSE')
     if (spec.type === 'judge' && item.options.length !== 2) fail('BAD_AI_RESPONSE')
     try {
@@ -36,6 +38,33 @@ function validateCandidates(result, request, owner) {
   if (!result || !label(result.generator, 160) || !Array.isArray(result.questions)) fail('BAD_AI_RESPONSE')
   const normalized = normalize(result.questions, request, owner)
   if (domain.canonical(normalized) !== domain.canonical(result.questions)) fail('BAD_AI_RESPONSE')
-  return { questions: normalized, generator: result.generator }
+  if (!label(result.reviewer, 160) || !result.reviewEvidence) fail('BAD_AI_REVIEW')
+  const reviews = buildReviews(normalized, result.reviewEvidence.answers, result.reviewEvidence.reviews)
+  return { questions: normalized, generator: result.generator, reviewer: result.reviewer, reviews }
 }
-module.exports = { validateRequest, normalize, validateCandidates }
+
+// Independent answers are compared in code; a model cannot declare its own pass.
+function buildReviews(questions, answers, reviews) {
+  if (!Array.isArray(answers) || !Array.isArray(reviews) || answers.length !== questions.length || reviews.length !== questions.length) fail('BAD_AI_REVIEW')
+  const answerMap = new Map(), reviewMap = new Map()
+  for (const item of answers) {
+    if (!item || typeof item.id !== 'string' || answerMap.has(item.id) || !Array.isArray(item.answer) || !label(item.reason, 1000)) fail('BAD_AI_REVIEW')
+    answerMap.set(item.id, item)
+  }
+  for (const item of reviews) {
+    if (!item || typeof item.id !== 'string' || reviewMap.has(item.id) || !Array.isArray(item.issues) || item.issues.length > 5 || item.issues.some(issue => !label(issue, 500))) fail('BAD_AI_REVIEW')
+    reviewMap.set(item.id, item)
+  }
+  return questions.map(q => {
+    const independent = answerMap.get(q.id), critique = reviewMap.get(q.id)
+    if (!independent || !critique) fail('BAD_AI_REVIEW')
+    const choices = independent.answer, allowed = new Set(q.options.map(o => o.key))
+    if (choices.some(x => typeof x !== 'string' || !allowed.has(x)) || new Set(choices).size !== choices.length ||
+        (choices.length && (q.type === 'multiple' ? choices.length < 2 : choices.length !== 1))) fail('BAD_AI_REVIEW')
+    const issues = critique.issues.slice()
+    if (!choices.length) issues.unshift('审题未能确定答案')
+    else if (domain.canonical(choices.slice().sort()) !== domain.canonical(q.answer.slice().sort())) issues.unshift('独立作答与出题答案不一致')
+    return { id: q.id, answer: choices, reason: independent.reason, issues, status: issues.length ? 'needs_revision' : 'pass' }
+  })
+}
+module.exports = { validateRequest, normalize, validateCandidates, buildReviews }

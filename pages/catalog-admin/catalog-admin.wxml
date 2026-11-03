@@ -32,7 +32,7 @@
         <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
 
         <view class="title">AI 生成候选题</view>
-        <view class="hint">先选择科目和章节。生成后请核对题目、答案及解析；加入编辑内容后仍须独立审核。生成请求可能消耗模型调用配额。</view>
+        <view class="hint">先选择科目和章节。生成后 AI 将独立作答并审题；结果仅供参考，加入编辑内容后仍须人工审核。每次生成最多消耗 3 次模型调用配额。</view>
         <input value="{{aiTopic}}" data-field="aiTopic" bindinput="onAiInput" maxlength="300" placeholder="知识点，例如 CAP 定理" />
         <picker range="{{aiTypes}}" range-key="name" bindchange="onAiType"><view class="picker">题型：{{aiTypeName}} ›</view></picker>
         <input value="{{aiLevel}}" data-field="aiLevel" bindinput="onAiInput" type="number" maxlength="1" placeholder="难度：1、2 或 3" />
@@ -42,6 +42,7 @@
           <text class="report" selectable="true">{{item.stem}}</text>
           <view wx:for="{{item.options}}" wx:for-item="option" wx:key="key">{{option.key}}. {{option.text}}</view>
           <text class="report" selectable="true">答案：{{item.answer}}\n解析：{{item.explain}}</text>
+          <text class="report" selectable="true">审题模型：{{item.reviewer}}\n审题：{{item.reviewStatus}}\n独立答案：{{item.reviewAnswer}}\n判断理由：{{item.reviewReason}}\n问题：{{item.reviewIssues}}</text>
         </view>
         <block wx:if="{{aiResults.length}}">
           <input value="{{aiReference}}" data-field="aiReference" bindinput="onAiInput" maxlength="1000" placeholder="题目依据或生成依据说明" />

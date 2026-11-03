@@ -33,6 +33,9 @@ const errorMessages = {
   AI_GENERATION_DISABLED: 'AI 出题尚未启用或配置。', AI_QUOTA_EXCEEDED: '本日 AI 出题次数已用完。', BAD_AI_RESPONSE: 'AI 返回内容不符合题目规则，请重试。',
   BAD_AI_REQUEST: '请检查知识点、题型、难度和生成数量。', DUPLICATE_AI_QUESTION: '候选题与已有题目重复，请丢弃后重新生成。', AI_CANDIDATES_PENDING: '请先处理或丢弃当前候选题。',
   AI_CANDIDATES_STALE: '题库内容或章节已改变，请重新生成。', AI_SOURCE_REQUIRED: '加入题库前请填写依据及使用权说明。',
+  BAD_AI_REVIEW: 'AI 审题结果不完整或无效，候选题未通过，请重试。', AI_REVIEW_CONFIG_INVALID: 'AI 审题服务尚未正确配置。', AI_REVIEW_REQUIRED: '本批题目存在审题问题，请丢弃并重新生成。',
+  AI_UPSTREAM_TIMEOUT: 'AI 服务超时，本次可能已消耗部分配额。', AI_UPSTREAM_FAILED: 'AI 服务调用失败，本次可能已消耗部分配额。',
+  AI_RESPONSE_TOO_LARGE: 'AI 响应过大，候选题未加入；本次可能已消耗部分配额。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -407,7 +410,11 @@ Page({
       return result
     }, result => {
       this._aiCandidates = { ...result, workspace, subjectKey: subject.key, chapterKey: chapter.key }
-      this.setData({ aiResults: result.questions.map(q => ({ id: q.id, stem: q.stem, options: q.options, answer: q.answer.join('、'), explain: q.explain })), error: '' })
+      this.setData({ aiResults: result.questions.map((q, i) => ({ id: q.id, stem: q.stem, options: q.options, answer: q.answer.join('、'), explain: q.explain,
+        reviewer: result.reviewer,
+        reviewStatus: result.reviews[i].status === 'pass' ? '未发现问题，仍须人工核验' : '需修改或重新生成',
+        reviewAnswer: result.reviews[i].answer.join('、') || '无法确定', reviewReason: result.reviews[i].reason,
+        reviewIssues: result.reviews[i].issues.join('；') || '未发现问题' })), error: '' })
     })
   },
   onAiDiscard() { if (!this.data.busy) { this._aiCandidates = null; this.setData({ aiResults: [], error: '' }) } },
@@ -415,6 +422,7 @@ Page({
     if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
     const batch = this._aiCandidates
     if (!batch || batch.workspace !== this._workspace || batch.subjectKey !== this.data.selectedSubject || batch.chapterKey !== this.data.selectedChapter) { this.setData({ error: 'AI_CANDIDATES_STALE' }); return }
+    if (!Array.isArray(batch.reviews) || batch.reviews.length !== batch.questions.length || batch.reviews.some(review => review.status !== 'pass')) { this.setData({ error: 'AI_REVIEW_REQUIRED' }); return }
     if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     if (!this.data.aiReference.trim() || !this.data.aiPermission.trim()) { this.setData({ error: 'AI_SOURCE_REQUIRED' }); return }
     const source = { kind: 'ai_generated', title: 'AI 生成练习题', reference: this.data.aiReference, permission: this.data.aiPermission,

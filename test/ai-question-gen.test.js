@@ -10,10 +10,12 @@ const clone = x => JSON.parse(JSON.stringify(x))
 const spec = { requestId: 'batch1', examName: '系统架构师', subjectKey: 'it', subjectName: '基础知识', chapterKey: 'arch', chapterName: '软件架构', topic: 'CAP 定理', type: 'single', level: 1, count: 2 }
 const response = request => ({ questions: Array.from({ length: request.count }, (_, i) => ({ type: request.type, level: request.level,
   stem: '合成问题 ' + i, options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成测试解析' })) })
-function harness() {
+function harness({ cap = 30 } = {}) {
   const maps = { users: new Map([['u1', { _id: 'u1', openid: 'alice', token: 'token', tokenAt: Date.now() }], ['u2', { _id: 'u2', openid: 'bob', token: 'other', tokenAt: Date.now() }]]),
     appConfig: new Map([['bankRoles', { editors: ['alice'], reviewers: ['bob'], publishers: [] }]]), aiQuestionUsage: new Map() }
-  const fail = { get: false, write: false }, control = { calls: 0, model: response }
+  const fail = { get: false, write: false }, control = { calls: 0, stages: [], model: response,
+    solve: req => ({ answers: req.questions.map(q => ({ id: q.id, answer: q.type === 'multiple' ? ['A', 'B'] : ['A'], reason: '独立分析' })) }),
+    critique: req => ({ reviews: req.questions.map(q => ({ id: q.id, issues: [] })) }) }
   function collection(name, stores) {
     return { where(filter) { return { limit() { return this }, async get() { if (fail.get) throw new Error('read'); return { data: [...stores[name].values()].filter(row => Object.keys(filter).every(k => row[k] === filter[k])).map(clone) } } } },
       doc(id) { return { async get() { if (fail.get) throw new Error('read'); if (!stores[name].has(id)) throw new Error('document does not exist'); return { data: clone(stores[name].get(id)) } },
@@ -28,8 +30,10 @@ function harness() {
       return value
     }); queue = next.catch(() => {}); return next
   } }
-  const service = createService({ db, config: { enabled: true, configured: true, globalCap: 2, userCap: 2, model: 'synthetic-model' },
-    callModel: async req => { control.calls++; return control.model(req) } })
+  const service = createService({ db, config: { enabled: true, configured: true, globalCap: cap, userCap: cap, model: 'synthetic-model' },
+    callModel: async req => { control.calls++; control.stages.push('generate'); return control.model(req) },
+    solveModel: async req => { control.stages.push('solve'); return control.solve(req) },
+    critiqueModel: async req => { control.stages.push('critique'); return control.critique(req) } })
   return { maps, fail, control, service }
 }
 
@@ -47,13 +51,56 @@ test('仅编辑角色可生成完整候选，题号和章节由服务端确定�
 })
 
 test('并发调用受事务配额约束；权限或存储异常不会调用上游', async () => {
-  const h = harness(), results = await Promise.all(Array.from({ length: 8 }, (_, i) => h.service({ ...spec, requestId: 'batch' + i, token: 'token' })))
-  assert.equal(h.control.calls, 2); assert.equal(results.filter(x => x.ok).length, 2)
-  assert.equal(results.filter(x => x.error === 'AI_QUOTA_EXCEEDED').length, 6)
+  const h = harness({ cap: 2 }), results = await Promise.all(Array.from({ length: 8 }, (_, i) => h.service({ ...spec, requestId: 'batch' + i, token: 'token' })))
+  assert.equal(h.control.stages.length, 2); assert.equal(results.filter(x => x.ok).length, 0)
+  assert.equal(results.filter(x => x.error === 'AI_QUOTA_EXCEEDED').length, 8)
   const bad = harness(); bad.fail.get = true
   assert.equal((await bad.service({ ...spec, token: 'token' })).ok, false); assert.equal(bad.control.calls, 0)
   bad.fail.get = false; bad.fail.write = true
   assert.equal((await bad.service({ ...spec, token: 'token' })).ok, false); assert.equal(bad.control.calls, 0)
+})
+
+test('独立审题先盲答，再检查解析，代码判定分歧和问题；每步计入配额', async () => {
+  const h = harness()
+  h.control.solve = req => {
+    assert.ok(req.questions.every(q => !Object.hasOwn(q, 'answer') && !Object.hasOwn(q, 'explain')))
+    return { answers: req.questions.map((q, i) => ({ id: q.id, answer: [i ? 'B' : 'A'], reason: '独立判断' })) }
+  }
+  h.control.critique = req => ({ reviews: req.questions.map((q, i) => ({ id: q.id, issues: i ? ['解析需要核验'] : [] })) })
+  const result = await h.service({ ...spec, token: 'token' })
+  const verified = domain.validateCandidates(result, spec, 'alice')
+  assert.deepEqual(h.control.stages, ['generate', 'solve', 'critique'])
+  assert.equal(verified.reviews[0].status, 'pass'); assert.equal(verified.reviews[1].status, 'needs_revision')
+  assert.ok(verified.reviews[1].issues.some(x => x.includes('不一致')))
+  assert.equal([...h.maps.aiQuestionUsage.values()].find(x => x.count === 3).count, 3)
+})
+
+test('审题超时、格式损坏、配额耗尽及权限撤销均不能返回通过的候选', async () => {
+  for (const mode of ['timeout', 'invalid', 'quota', 'revoke']) {
+    const h = harness({ cap: mode === 'quota' ? 2 : 30 })
+    h.control.solve = req => {
+      if (mode === 'timeout') throw Object.assign(new Error('timeout'), { code: 'AI_UPSTREAM_TIMEOUT' })
+      if (mode === 'invalid') return { answers: [] }
+      if (mode === 'revoke') h.maps.appConfig.get('bankRoles').editors = []
+      return { answers: req.questions.map(q => ({ id: q.id, answer: ['A'], reason: '合成理由' })) }
+    }
+    const result = await h.service({ ...spec, token: 'token' })
+    assert.equal(result.ok, false, mode); assert.equal(result.questions, undefined)
+    assert.equal(h.control.stages.includes('critique'), false, mode)
+  }
+})
+
+test('模型不能自行声称通过，未知选项或不完整审题拒绝整批', async () => {
+  for (const mode of ['unknown', 'duplicate', 'missing', 'unsure']) {
+    const h = harness()
+    h.control.solve = req => ({ answers: req.questions.map((q, i) => ({ id: mode === 'duplicate' ? req.questions[0].id : q.id,
+      answer: mode === 'unknown' ? ['Z'] : mode === 'unsure' && i === 0 ? [] : ['A'], reason: '独立判断' })) })
+    if (mode === 'missing') h.control.critique = () => ({ reviews: [] })
+    const result = await h.service({ ...spec, token: 'token' })
+    if (mode === 'unsure') {
+      assert.equal(result.ok, true); assert.equal(domain.validateCandidates(result, spec, 'alice').reviews[0].status, 'needs_revision')
+    } else { assert.equal(result.ok, false); assert.equal(result.questions, undefined) }
+  }
 })
 
 test('默认关闭时不访问上游或数据库', async () => {
@@ -79,11 +126,12 @@ test('多选和判断题按所选题型校验，错误的答案数量拒绝', as
 })
 
 test('模型错误、重复题、错误答案和生成中撤权不能变成候选题', async () => {
-  for (const mode of ['duplicate', 'answer', 'type', 'count', 'revoke']) {
+  for (const mode of ['duplicate', 'options', 'answer', 'type', 'count', 'revoke']) {
     const h = harness()
     h.control.model = req => {
       const out = response(req)
       if (mode === 'duplicate') out.questions[1].stem = out.questions[0].stem
+      if (mode === 'options') out.questions[0].options[1].text = '  甲  '
       if (mode === 'answer') out.questions[0].answer = ['Z']
       if (mode === 'type') out.questions[0].type = 'multiple'
       if (mode === 'count') out.questions.pop()
