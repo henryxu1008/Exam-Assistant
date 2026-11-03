@@ -17,5 +17,7 @@ yarn-error.log*
 # 编辑器 / 系统
 .vscode/
 .idea/
+.cloudbase/
+.codebuddy/
 .DS_Store
 Thumbs.db
