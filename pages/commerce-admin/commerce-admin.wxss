@@ -1,0 +1,15 @@
+.page { padding: 24rpx; }
+.card { padding: 28rpx; border-radius: 22rpx; background: #fff; }
+.title { font-size: 36rpx; font-weight: 700; color: #162c50; }
+.notice, .error, .success { margin-top: 20rpx; padding: 18rpx; border-radius: 12rpx; line-height: 1.6; }
+.notice { background: #eef4ff; color: #34537b; }
+.error { background: #fff0f0; color: #a62b37; }
+.success { background: #edf9f0; color: #287146; }
+.label { margin: 30rpx 0 14rpx; font-weight: 700; }
+.caption { margin-top: 18rpx; color: #52647f; font-size: 26rpx; }
+.choice { margin: 6rpx; background: #f5f8fc; color: #355072; }
+.selected { background: #e4efff; color: #2064de; }
+input { margin-top: 10rpx; padding: 18rpx; border: 1rpx solid #dce5f2; border-radius: 10rpx; }
+.row { display: flex; align-items: center; justify-content: space-between; margin: 24rpx 0; }
+button { margin-top: 16rpx; }
+.muted { color: #708099; }

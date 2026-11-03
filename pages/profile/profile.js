@@ -6,6 +6,7 @@ const analytics = require('../../utils/analytics.js')
 const user = require('../../utils/user.js')
 const config = require('../../utils/config.js')
 const { runtimeClient } = require('../../utils/catalog-admin.js')
+const { runtimeCommerceAdmin } = require('../../utils/commerce-admin.js')
 const { storageStatusView, isStorageReadable } = require('../../utils/storage-status.js')
 
 const GOALS = [10, 20, 30, 50, 80]
@@ -47,7 +48,8 @@ Page({
     version: config.version,
     localStorage: storageStatusView(),
     storageReadable: true,
-    catalogAccess: false
+    catalogAccess: false,
+    commerceAccess: false
   },
 
   onLoad() {
@@ -59,7 +61,7 @@ Page({
     })
   },
 
-  onHide() { this._visible = false; this._catalogGeneration = (this._catalogGeneration || 0) + 1; this.setData({ catalogAccess: false }) },
+  onHide() { this._visible = false; this._catalogGeneration = (this._catalogGeneration || 0) + 1; this._commerceGeneration = (this._commerceGeneration || 0) + 1; this.setData({ catalogAccess: false, commerceAccess: false }) },
 
   onUnload() {
     this.onHide()
@@ -69,7 +71,7 @@ Page({
 
   onShow() {
     this._visible = true
-    user.whenReady(() => { if (this._visible) { this.refresh(); this.refreshCatalogAccess() } })
+    user.whenReady(() => { if (this._visible) { this.refresh(); this.refreshCatalogAccess(); this.refreshCommerceAccess() } })
   },
 
   async refreshCatalogAccess() {
@@ -84,6 +86,16 @@ Page({
   },
 
   goCatalogAdmin() { if (this.data.catalogAccess) wx.navigateTo({ url: '/pages/catalog-admin/catalog-admin' }) },
+  async refreshCommerceAccess() {
+    const generation = this._commerceGeneration = (this._commerceGeneration || 0) + 1
+    this.setData({ commerceAccess: false })
+    if (!user.isLogged()) return
+    try {
+      const client = runtimeCommerceAdmin(), ctx = client.capture(), result = await client.access()
+      if (this._visible && generation === this._commerceGeneration && client.current(ctx)) this.setData({ commerceAccess: result.allowed === true })
+    } catch (e) { /* Permission lookup failure hides the optional management entry. */ }
+  },
+  goCommerceAdmin() { if (this.data.commerceAccess) wx.navigateTo({ url: '/pages/commerce-admin/commerce-admin' }) },
 
   onPullDownRefresh() {
     user.whenReady(() => this.refresh())

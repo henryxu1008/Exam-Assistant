@@ -142,6 +142,11 @@
       <text class="grow">考试题库管理</text>
       <text class="small muted">编辑与审核 ›</text>
     </view>
+    <view class="menu-item" wx:if="{{commerceAccess}}" bindtap="goCommerceAdmin">
+      <text class="menu-icon mi-blue">商</text>
+      <text class="grow">考试商品管理</text>
+      <text class="small muted">商品配置 ›</text>
+    </view>
     <view class="menu-item" bindtap="goAnalysis">
       <text class="menu-icon mi-blue">报</text>
       <text class="grow">学情报告</text>

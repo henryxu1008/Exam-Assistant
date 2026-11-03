@@ -8,7 +8,8 @@
     "pages/analysis/analysis",
     "pages/agreement/agreement",
     "pages/login/login",
-    "pages/catalog-admin/catalog-admin"
+    "pages/catalog-admin/catalog-admin",
+    "pages/commerce-admin/commerce-admin"
   ],
   "window": {
     "backgroundTextStyle": "light",

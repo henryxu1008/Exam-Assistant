@@ -16,6 +16,7 @@ module.exports = {
     profile: 'userProfile', // 资料：读取/更新/登出
     studySync: 'studySync', // 学习档案：云端读取/更新
     bankSync: 'bankSync', // 题库：云端读取/种子写入
-    aiQuestionGen: 'aiQuestionGen' // 管理端候选题生成（默认关闭）
+    aiQuestionGen: 'aiQuestionGen', // 管理端候选题生成（默认关闭）
+    commerce: 'commerce' // 商品配置；下单功能关闭
   }
 }

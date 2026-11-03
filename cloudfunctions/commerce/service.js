@@ -3,17 +3,28 @@ const { readOptionalDoc } = require('./db-error.js')
 const { TOKEN_TTL } = require('./auth.js')
 const { sha256 } = require('./question-domain.js')
 const domain = require('./commerce-domain.js')
+const exams = require('./exam-catalog-domain.js')
+const paged = require('./paged-catalog-domain.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value)
 const read = (tx, collection, id) => readOptionalDoc(() => tx.collection(collection).doc(id).get())
 const write = (tx, collection, id, data) => tx.collection(collection).doc(id).set({ data })
 const orderKey = (owner, request) => 'ord_' + sha256(JSON.stringify([owner, request]))
+const productKey = examId => 'exam_' + sha256(examId).slice(0, 24)
+async function publishedExams(tx) {
+  const bank = await read(tx, 'questions', 'bank')
+  if (!bank) return []
+  if (!Number.isSafeInteger(bank.publicationRevision) || bank.publicationRevision < 1) fail('INVALID_PUBLISHED_CATALOG')
+  if (bank.schemaVersion === 3 && exams.validExamRelease(bank)) return bank.manifest.exams
+  if (bank.schemaVersion === 4 && paged.validRoot(bank.root)) return bank.root.manifest.exams
+  fail('INVALID_PUBLISHED_CATALOG')
+}
 
 function createService({ db, allowOrders = false, now = () => Date.now() }) {
   return async (event = {}, context = {}) => {
     try {
       const { action, token } = event
-      if (!['putProduct', 'getProduct', 'createOrder', 'getOrder'].includes(action)) fail('BAD_ACTION')
+      if (!['putProduct', 'getProduct', 'createOrder', 'getOrder', 'getManageAccess', 'getManageCatalog', 'getManageProduct'].includes(action)) fail('BAD_ACTION')
       if (typeof token !== 'string' || !token || typeof context.OPENID !== 'string' || !context.OPENID) fail('INVALID_TOKEN')
       if (!db || typeof db.runTransaction !== 'function') fail('TRANSACTION_REQUIRED')
       const users = await db.collection('users').where({ token }).limit(1).get()
@@ -23,9 +34,19 @@ function createService({ db, allowOrders = false, now = () => Date.now() }) {
         const current = await read(tx, 'users', user._id), at = now()
         if (!current || current.openid !== context.OPENID || current.token !== token || !Number.isSafeInteger(current.tokenAt) ||
             current.tokenAt <= 0 || current.tokenAt > at || at - current.tokenAt > TOKEN_TTL) fail('INVALID_TOKEN')
-        if (action === 'putProduct') {
+        if (['putProduct', 'getManageAccess', 'getManageCatalog', 'getManageProduct'].includes(action)) {
           const config = await read(tx, 'appConfig', 'commerceAdmins')
           if (!config || !Array.isArray(config.openids) || !config.openids.includes(context.OPENID)) fail('NOT_ADMIN')
+          if (action === 'getManageAccess') return { ok: true, allowed: true }
+          if (action === 'getManageCatalog') return { ok: true, exams: await publishedExams(tx) }
+          if (action === 'getManageProduct') {
+            if (!validId(event.examId)) fail('BAD_PRODUCT')
+            const list = await publishedExams(tx)
+            if (!list.some(exam => exam.id === event.examId)) fail('EXAM_NOT_FOUND')
+            const key = productKey(event.examId), existing = await read(tx, 'commerceProducts', key)
+            if (existing && (!domain.validProduct(existing) || existing.id !== key || existing.examId !== event.examId)) fail('INVALID_PRODUCT')
+            return { ok: true, product: existing }
+          }
           const input = event.product
           if (!input || !Number.isSafeInteger(event.expectedRevision) || event.expectedRevision < 0) fail('BAD_PRODUCT')
           const product = { id: input.id, examId: input.examId, name: input.name, priceFen: input.priceFen,
@@ -35,6 +56,8 @@ function createService({ db, allowOrders = false, now = () => Date.now() }) {
           if (old && (!domain.validProduct(old) || old.id !== product.id)) fail('INVALID_PRODUCT')
           if ((old ? old.revision : 0) !== event.expectedRevision) fail('STALE_PRODUCT')
           if (old && old.examId !== product.examId) fail('PRODUCT_EXAM_IMMUTABLE')
+          const list = await publishedExams(tx)
+          if (!list.some(exam => exam.id === product.examId)) fail('EXAM_NOT_FOUND')
           await write(tx, 'commerceProducts', product.id, product)
           return { ok: true, product }
         }
