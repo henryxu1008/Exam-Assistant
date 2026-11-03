@@ -68,7 +68,7 @@ Page({
     const generation = this._refreshGeneration || 0
     this._refreshWaiting = true
     let completed = false
-    const allowed = user.requireLogin(() => {
+    const allowed = user.whenReady(() => {
       completed = true
       if (generation !== (this._refreshGeneration || 0)) return
       this._refreshWaiting = false

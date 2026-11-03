@@ -85,7 +85,7 @@ Page({
     this._generation += 1
     this.setData({ allowed: false, busy: false })
     const generation = this._generation
-    user.requireLogin(() => {
+    user.requireAccount(() => {
       if (!this._active || generation !== this._generation) return
       let ctx
       try { ctx = this._client.capture() } catch (e) { this.setData(blank()); return }

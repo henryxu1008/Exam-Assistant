@@ -3,7 +3,10 @@
  * 用户登录与资料 —— 微信云开发版
  *
  * 流程：wx.login 取 code → 云函数 userLogin 换取 openid / token → 本地缓存会话。
- * 身份完全由云端决定，本地仅缓存会话用于渲染；未登录不可使用应用（强制登录）。
+ * 身份完全由云端决定，本地仅缓存会话用于渲染。
+ *
+ * 登录是可选的：游客态使用 'anon' 数据作用域，本地档案完整可用但不联网；
+ * 只有云端同步、管理端等确实需要账号的能力才要求登录（requireAccount）。
  *
  * 依赖：需在开发者工具中开通云开发，并部署 cloudfunctions/userLogin、cloudfunctions/userProfile。
  */
@@ -18,6 +21,13 @@ const TOKEN_TTL = 29 * 24 * 60 * 60 * 1000
 
 // 只有明确的身份拒绝才撤销本地会话；业务故障与传输失败保留 unknown 状态。
 const SESSION_REJECTIONS = ['INVALID_TOKEN', 'NO_TOKEN']
+
+/**
+ * 最近一次登录并入的游客档案信息，一次性消费。
+ * 只放内存、不落会话：这是给登录页做「已把游客记录并入账号」提示用的，
+ * 写进本地会话反而会在下次冷启动误报。
+ */
+let guestMergeInfo = null
 
 function defaults() {
   return {
@@ -139,6 +149,9 @@ function login(extra) {
     .then((code) => call(config.functions.login, Object.assign({ code: code }, extra || {})))
     .then((r) => {
       const p = r.profile || {}
+      // 先把游客档案并入目标账号（仅当该账号在本机还没有档案时生效），再切作用域：
+      // 否则游客期间刷的题会被账号作用域顶掉，用户看到的是进度「消失」。
+      guestMergeInfo = store.adoptGuestProfile(r.openid)
       // 以云端可信 openid 绑定数据作用域：后续 store 读写只落在当前用户命名空间
       store.setUserScope(r.openid || '')
       return persist(
@@ -154,6 +167,16 @@ function login(extra) {
         })
       )
     })
+}
+
+/**
+ * 取出（并清空）本次登录并入的游客档案信息。
+ * @returns {{adopted: Boolean, questions: Number, attempts: Number}|null}
+ */
+function takeGuestMergeInfo() {
+  const info = guestMergeInfo
+  guestMergeInfo = null
+  return info
 }
 
 /** 令牌临近过期时静默重新登录换取新令牌，避免用到已被云端作废的 token */
@@ -375,38 +398,58 @@ function isFeatureOn(name) {
 /** 登录页跳转的去重标记，避免多个页面同时触发重复跳转 */
 let loginRedirecting = false
 
+function currentPage() {
+  const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+  return pages[pages.length - 1]
+}
+
 /**
- * 页面级登录拦截：应在页面 onShow 中调用。
- * 会等 App 的会话校验结束后再判断，避免把「会话可用但尚未校验完」误判为未登录。
- * @param {Function} [onLogged] 确认已登录后的回调，用于刷新依赖用户资料的内容
- * @returns {Boolean} 启动校验已完成且已登录才返回 true；false 也可能表示等待中。
- * 依赖登录的初始化应放在 onLogged 回调中，以覆盖同步放行与异步恢复两条路径。
+ * 会话就绪闸门：页面初始化都应放在 onReady 里，**未登录同样放行**。
+ *
+ * 微信不允许把微信授权登录当成使用前提，所以这里不再跳转登录页：
+ * 游客态（数据作用域 'anon'）照样能读本地学习档案、创建练习、使用 AI 本地引擎。
+ * 真正需要账号身份的能力（云端同步、管理端工具）请用 requireAccount()。
+ *
+ * @param {Function} [onReady] 入参为当前是否已登录，供调用方区分渲染
+ * @returns {Boolean} true 表示已就绪并在本次调用内执行了回调；
+ *   false 表示仍在等待启动校验（回调稍后执行）或已被入口守卫拦下，
+ *   调用方据此「本轮先别继续」，不要把 false 当成失败提示。
  */
-function requireLogin(onLogged) {
-    const app = typeof getApp === 'function' ? getApp() : null
-    // 版本过低时连登录入口一并阻断，否则用户可以先登录再继续练习
-    if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return false
-  const currentPage = () => {
-    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
-    return pages[pages.length - 1]
-  }
+function whenReady(onReady) {
+  const app = typeof getApp === 'function' ? getApp() : null
+  // 版本过低时连游客入口一并阻断，否则用户可以绕过运营的强制更新
+  if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return false
   const owner = currentPage()
-  const done = () => {
+  const run = () => {
     // 启动校验完成前页面可能已隐藏或销毁，不初始化过期页面。
     if (owner && currentPage() !== owner) return false
-    if (isLogged()) {
-      if (typeof onLogged === 'function') onLogged()
-      return true
-    }
-    if (loginRedirecting || (currentPage() && currentPage().route === 'pages/login/login')) return false
-    loginRedirecting = true
-    wx.navigateTo({
-      url: '/pages/login/login',
-      complete: () => { loginRedirecting = false }
-    })
-    return false
+    if (typeof onReady === 'function') onReady(isLogged())
+    return true
   }
   // 缓存令牌存在也不能抢在启动校验之前放行；unknown 最终保留会话，仍可离线使用。
+  if (app && app.globalData && app.globalData.sessionReady === false && typeof app.whenSessionReady === 'function') {
+    app.whenSessionReady(run)
+    return false
+  }
+  return run()
+}
+
+/**
+ * 需要真实账号身份的能力（云端同步、题库管理端等）的闸门。
+ * 未登录时**不主动跳转**，是否引导登录由调用方用 promptLogin() 决定。
+ * @param {Function} [onAllowed] 已登录时的回调
+ * @returns {Boolean} 已登录且校验完成才返回 true；false 也可能表示等待中
+ */
+function requireAccount(onAllowed) {
+  const app = typeof getApp === 'function' ? getApp() : null
+  if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return false
+  const owner = currentPage()
+  const done = () => {
+    if (owner && currentPage() !== owner) return false
+    if (!isLogged()) return false
+    if (typeof onAllowed === 'function') onAllowed()
+    return true
+  }
   if (app && app.globalData && app.globalData.sessionReady === false && typeof app.whenSessionReady === 'function') {
     app.whenSessionReady(done)
     return false
@@ -414,13 +457,42 @@ function requireLogin(onLogged) {
   return done()
 }
 
+/**
+ * 软引导登录：只在用户主动确认后才进入登录页，不能自动跳转或弹强制授权框。
+ * @param {Object} [options] {title, content, confirmText, cancelText, onCancel}
+ */
+function promptLogin(options) {
+  const opts = options || {}
+  if (loginRedirecting) return
+  wx.showModal({
+    title: opts.title || '登录后可用',
+    content: opts.content || '登录后学习记录会同步到云端，换设备也不丢。',
+    confirmText: opts.confirmText || '去登录',
+    cancelText: opts.cancelText || '先不用',
+    success: (res) => {
+      if (!res.confirm) {
+        if (typeof opts.onCancel === 'function') opts.onCancel()
+        return
+      }
+      loginRedirecting = true
+      wx.navigateTo({
+        url: '/pages/login/login',
+        complete: () => { loginRedirecting = false }
+      })
+    }
+  })
+}
+
 module.exports = {
   initCloud,
   hasCloud,
   getProfile,
   isLogged,
-  requireLogin,
+  whenReady,
+  requireAccount,
+  promptLogin,
   login,
+  takeGuestMergeInfo,
   ensureSession,
   bindStoredScope,
   updateProfile,

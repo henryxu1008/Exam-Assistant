@@ -67,26 +67,29 @@ async function finish(result) {
   assert.equal(app.globalData.sessionReady, true)
 }
 
-test('缓存令牌尚在校验时 guard 返回 false，明确失效后只跳转一次登录', async () => {
+test('缓存令牌尚在校验时不放行初始化；明确失效后以游客态放行且不跳登录页', async () => {
   let allowed = 0
-  assert.equal(user.requireLogin(() => { allowed += 1 }), false)
-  assert.equal(user.requireLogin(() => { allowed += 1 }), false)
+  assert.equal(user.whenReady(() => { allowed += 1 }), false)
+  assert.equal(user.whenReady(() => { allowed += 1 }), false)
+  assert.equal(allowed, 0)
   assert.equal(navigation.length, 0)
   await finish({ ok: false, error: 'INVALID_TOKEN' })
   assert.equal(user.isLogged(), false)
-  assert.equal(allowed, 0)
-  assert.equal(navigation.length, 1)
-  assert.equal(navigation[0].url, '/pages/login/login')
+  // 匿名同样要完成页面初始化：登录不是使用前提
+  assert.equal(allowed, 2)
+  assert.equal(navigation.length, 0, '不得因未登录强制跳转登录页')
+  assert.equal(user.whenReady(() => { allowed += 1 }), true)
+  assert.equal(allowed, 3)
 })
 
 test('网络不可达仍须等校验结束，之后恢复全部等待回调和离线登录', async () => {
   let allowed = 0
-  assert.equal(user.requireLogin(() => { allowed += 1 }), false)
-  assert.equal(user.requireLogin(() => { allowed += 1 }), false)
+  assert.equal(user.whenReady(() => { allowed += 1 }), false)
+  assert.equal(user.whenReady(() => { allowed += 1 }), false)
   await finish(new Error('offline'))
   assert.equal(allowed, 2)
   assert.equal(user.isLogged(), true)
-  assert.equal(user.requireLogin(), true)
+  assert.equal(user.whenReady(), true)
   assert.equal(navigation.length, 0)
 })
 
@@ -103,19 +106,20 @@ for (const name of ['index', 'mistakes', 'analysis', 'profile']) {
   })
 }
 
-test('启动校验期间不创建练习，失效后也不能提交或切科创建会话', async () => {
+test('启动校验期间不创建练习，校验完成转游客后可直接练习并提交', async () => {
   const page = makePage('practice')
   page.onShow()
   assert.equal(store.getPracticeSession(), null)
   assert.equal(page.data.question, null)
   const subject = require('../utils/questions.js').getSubjects()[0].name
   page.onSubjectChange({ currentTarget: { dataset: { subject } } })
-  assert.equal(store.getPracticeSession(), null)
+  assert.equal(store.getPracticeSession(), null, '校验完成前不允许建会话')
   await finish({ ok: false, error: 'INVALID_TOKEN' })
+  assert.equal(navigation.length, 0, '游客态不应被踢去登录页')
+  assert.ok(store.getPracticeSession(), '游客态必须能正常开练')
+  page.setData({ selected: page.data.question.answer })
   page.onSubmit()
-  assert.equal(store.getPracticeSession(), null)
-  assert.equal(store.getAttempts().length, 0)
-  assert.equal(navigation.length, 1)
+  assert.equal(store.getAttempts().length, 1)
 })
 
 test('校验异步通过后恢复初始章节参数并可正常提交', async () => {
@@ -183,10 +187,25 @@ test('离开页面后启动回调不再初始化旧页面', async () => {
   assert.equal(refreshed, 1)
 })
 
-test('登录跳转失败后允许下一次重试', async () => {
+test('需要账号的能力不自动跳登录，用户确认后才进入登录页', async () => {
   await finish({ ok: false, error: 'INVALID_TOKEN' })
-  assert.equal(user.requireLogin(), false)
+  assert.equal(user.isLogged(), false)
+  assert.equal(user.requireAccount(), false)
+  assert.equal(navigation.length, 0, '未登录不得自动跳转')
+
+  let shown = null
+  wx.showModal = (options) => { shown = options }
+  user.promptLogin()
+  assert.equal(shown.confirmText, '去登录')
+  shown.success({ confirm: false })
+  assert.equal(navigation.length, 0, '用户选择「先不用」时不得跳转')
+
+  user.promptLogin()
+  shown.success({ confirm: true })
+  assert.equal(navigation.length, 1)
+  assert.equal(navigation[0].url, '/pages/login/login')
   navigation[0].complete()
-  assert.equal(user.requireLogin(), false)
+  user.promptLogin()
+  shown.success({ confirm: true })
   assert.equal(navigation.length, 2)
 })

@@ -16,7 +16,7 @@ const sample = fs.readFileSync(path.join(__dirname, '../docs/examples/catalog-im
 const settle = () => new Promise(setImmediate)
 beforeEach(() => global.__wxStorage.clearAll())
 function page(t, client) {
-  t.mock.method(user, 'requireLogin', cb => { cb(); return true })
+  t.mock.method(user, 'requireAccount', cb => { cb(); return true })
   const p = Object.assign({}, definition, { data: JSON.parse(JSON.stringify(definition.data)), setData(value) { Object.assign(this.data, value) } })
   p.onLoad(); p._client = client; p.onShow()
   t.after(() => p.onUnload())
@@ -404,7 +404,7 @@ test('页面隐藏或账号切换后，旧权限/私有草稿响应不能进入�
 test('延迟登录回调不能越过新一轮页面生命周期，隐藏页不能发起写操作', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   const callbacks = []
-  t.mock.method(user, 'requireLogin', cb => { callbacks.push(cb); return true })
+  t.mock.method(user, 'requireAccount', cb => { callbacks.push(cb); return true })
   p.onHide(); p.onShow(); p.onHide(); p.onShow()
   assert.equal(p.data.allowed, false)
   callbacks[0](); await settle(); assert.equal(p.data.allowed, false)

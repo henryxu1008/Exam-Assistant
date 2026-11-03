@@ -26,7 +26,7 @@ beforeEach((t) => {
   store.clearAll()
   app.globalData = {}
   pages = []
-  t.mock.method(user, 'requireLogin', (onLogged) => { if (onLogged) onLogged(); return true })
+  t.mock.method(user, 'whenReady', (onReady) => { if (onReady) onReady(); return true })
 })
 
 afterEach(() => {

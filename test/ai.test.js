@@ -61,6 +61,8 @@ test('chat 正确率查询返回含真实数据的要点', () => {
 
 test('当前题目使用已选版本，损坏或跨科目的快照不会被替换为当前题库版本', async (t) => {
   const ai = require('../utils/ai.js')
+  // 游客态没有业务令牌时会直接回落本地引擎，这里需要成功登录态才能覆盖远端链路
+  wx.setStorageSync('exam_quiz_session_v1', { token: 'session-for-remote' })
   const bank = require('../utils/questions.js')
   const store = require('../utils/store.js')
   const question = bank.getAllQuestions().find(q => q.subject === store.getCurrentSubject())
@@ -84,7 +86,7 @@ test('当前题目使用已选版本，损坏或跨科目的快照不会被替�
 })
 
 test('评审 P2：个性化查询走本地引擎，页面落到含真实数据的回复', (t) => {
-  t.mock.method(require('../utils/user.js'), 'requireLogin', () => true)
+  t.mock.method(require('../utils/user.js'), 'whenReady', () => true)
   const ai = require('../utils/ai.js')
   const page = makePage()
   page.send('我的正确率多少', {})
