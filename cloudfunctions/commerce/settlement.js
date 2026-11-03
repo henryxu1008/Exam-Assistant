@@ -2,6 +2,7 @@
 const { readOptionalDoc } = require('./db-error.js')
 const { sha256 } = require('./question-domain.js')
 const domain = require('./commerce-domain.js')
+const subscriptions = require('./subscription-domain.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value)
 const read = (tx, collection, id) => readOptionalDoc(() => tx.collection(collection).doc(id).get())
@@ -12,10 +13,16 @@ function createSettlement({ db, now = () => Date.now() }) {
     if (!db || typeof db.runTransaction !== 'function') fail('TRANSACTION_REQUIRED')
     if (!evidence || !validId(evidence.orderId) || !validId(kind === 'payment' ? evidence.transactionId : evidence.refundId)) fail('BAD_EVIDENCE')
     const eventAt = kind === 'payment' ? evidence.paidAt : evidence.refundedAt
-    if (!Number.isSafeInteger(eventAt) || eventAt > now()) fail('BAD_EVIDENCE')
+    if (!Number.isSafeInteger(eventAt) || eventAt < 0) fail('BAD_EVIDENCE')
     return db.runTransaction(async tx => {
+      const at = now()
+      if (!Number.isSafeInteger(at) || eventAt > at) fail('BAD_EVIDENCE')
       const order = await read(tx, 'commerceOrders', evidence.orderId)
       if (!order) fail('ORDER_NOT_FOUND')
+      if (!order.product || !validId(order.ownerId) || !validId(order.product.examId)) fail('INVALID_ORDER')
+      const timelineKey = subscriptions.timelineId(order.ownerId, order.product.examId)
+      const timeline = await read(tx, 'commerceTimelines', timelineKey)
+      if (!subscriptions.valid(timeline, order.ownerId, order.product.examId) || at < timeline.updatedAt) fail('INVALID_SUBSCRIPTION')
       const key = kind + '_' + sha256(kind === 'payment' ? evidence.transactionId : evidence.refundId)
       const previous = await read(tx, 'commerceEvents', key)
       if (previous && (previous.orderId !== evidence.orderId || previous.kind !== kind)) fail('EVENT_CONFLICT')
@@ -26,13 +33,20 @@ function createSettlement({ db, now = () => Date.now() }) {
           : kind === 'payment' ? domain.confirmPayment(order, evidence) : domain.confirmFullRefund(order, evidence)
         const grant = await read(tx, 'commerceGrants', order.id)
         const expected = { ...checked.grant, revoked: order.status === 'refunded' }
+        const period = timeline.periods.find(item => item.orderId === order.id)
+        if (!period || period.revoked !== (order.status === 'refunded')) fail('INVALID_SUBSCRIPTION')
         if (!grant || grant.orderId !== expected.orderId || grant.ownerId !== expected.ownerId || grant.examId !== expected.examId ||
             grant.startAt !== expected.startAt || grant.endAt !== expected.endAt || grant.revoked !== expected.revoked) fail('INVALID_GRANT')
         return { order, grant }
       }
-      const result = kind === 'payment' ? domain.confirmPayment(order, evidence) : domain.confirmFullRefund(order, evidence)
+      const nextTimeline = kind === 'payment'
+        ? subscriptions.extend(timeline, order.id, order.product.durationDays, at)
+        : subscriptions.revoke(timeline, order.id, at)
+      const period = nextTimeline.periods.find(item => item.orderId === order.id)
+      const result = kind === 'payment' ? domain.confirmPayment(order, evidence, period.startAt) : domain.confirmFullRefund(order, evidence)
       await write(tx, 'commerceOrders', order.id, result.order)
       await write(tx, 'commerceGrants', order.id, result.grant)
+      await write(tx, 'commerceTimelines', timelineKey, nextTimeline)
       if (!previous) await write(tx, 'commerceEvents', key, { orderId: order.id, kind })
       return result
     })

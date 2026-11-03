@@ -1,9 +1,10 @@
-/** Internal prototype. Not registered as a cloud action: existing public routes are still open. */
+/** Protected-mode prototype. Default runtime keeps protection disabled and public routes open. */
 const { readOptionalDoc } = require('./db-error.js')
 const { TOKEN_TTL } = require('./auth.js')
 const paged = require('./paged-catalog-domain.js')
 const projection = require('./exam-page-projection.js')
 const accessPolicy = require('./exam-access-policy.js')
+const subscriptions = require('./subscription-domain.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value)
 const read = (tx, collection, id) => readOptionalDoc(() => tx.collection(collection).doc(id).get())
@@ -33,10 +34,8 @@ function createProtectedReader({ db, now = () => Date.now() }) {
         const rule = policy.entries.find(entry => entry.examId === event.examId)
         if (!rule) fail('INVALID_ACCESS_POLICY')
         if (rule.access === 'paid') {
-          if (!validId(event.grantOrderId)) fail('ENTITLEMENT_REQUIRED')
-          const grant = await read(tx, 'commerceGrants', event.grantOrderId)
-          if (!grant || grant.orderId !== event.grantOrderId || grant.ownerId !== context.OPENID || grant.examId !== event.examId || grant.revoked !== false ||
-              !Number.isSafeInteger(grant.startAt) || !Number.isSafeInteger(grant.endAt) || grant.startAt > at || grant.endAt <= at) fail('ENTITLEMENT_REQUIRED')
+          const timeline = await read(tx, 'commerceTimelines', subscriptions.timelineId(context.OPENID, event.examId))
+          if (subscriptions.activeUntil(timeline, context.OPENID, event.examId, at) === null) fail('ENTITLEMENT_REQUIRED')
         }
         if (event.index >= scope.sourcePageCount) fail('BAD_PAGE_QUERY')
         const archive = await read(tx, 'questions', event.releaseId)

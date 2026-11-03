@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const { harness, USER_TOKEN, ADMIN_TOKEN, ADMIN_OPENID } = require('./support/bank-harness.js')
 const { createProtectedReader, POLICY_ID } = require('../cloudfunctions/bankSync/protected-reader.js')
 const accessPolicy = require('../shared/exam-access-policy.js')
+const subscriptions = require('../shared/subscription-domain.js')
 const paged = require('../shared/paged-catalog-domain.js')
 const sample = require('../docs/examples/catalog-import.json')
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -21,10 +22,11 @@ function setup() {
   h.documents.set(built.root.releaseId, { kind: 'pagedQuestionBankRelease', root: clone(built.root), publishedAt: 1 })
   for (const page of built.publicPages) h.documents.set(paged.pageDocumentId(page.releaseId, page.index), { kind: 'pagedQuestionBankPage', page: clone(page) })
   h.config.set(POLICY_ID, accessPolicy.buildPolicy(built.root, 1, [{ examId: 'exam_a', access: 'paid' }, { examId: 'exam_b', access: 'free' }]))
-  h.collections.commerceGrants.set('order_a', { orderId: 'order_a', ownerId: 'normal-openid', examId: 'exam_a', startAt: NOW - 100, endAt: NOW + 100, revoked: false })
+  const key = subscriptions.timelineId('normal-openid', 'exam_a')
+  h.collections.commerceTimelines.set(key, subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_a'), 'order_a', NOW - 100), 'order_a', 1, NOW - 100))
   const reader = createProtectedReader({ db: h.db, now: () => NOW })
   const request = { token: USER_TOKEN, examId: 'exam_a', releaseId: built.root.releaseId, index: 0, grantOrderId: 'order_a' }
-  return { h, built, reader, request, ctx: { OPENID: 'normal-openid' } }
+  return { h, built, reader, request, key, ctx: { OPENID: 'normal-openid' } }
 }
 
 test('已购用户仅读取其考试的题目，保留原发布并拒绝伪造身份', async () => {
@@ -39,13 +41,15 @@ test('已购用户仅读取其考试的题目，保留原发布并拒绝伪造�
 })
 
 test('未购买、过期、退款、缺失策略或读取故障均不返回题目', async () => {
-  const { h, reader, request, ctx } = setup(), grant = h.collections.commerceGrants.get('order_a')
-  for (const patch of [{ ownerId: ADMIN_OPENID }, { examId: 'exam_b' }, { revoked: true }, { endAt: NOW }, { startAt: NOW + 1 }]) {
-    h.collections.commerceGrants.set('order_a', { ...grant, ...patch })
+  const { h, reader, request, ctx, key } = setup(), timeline = h.collections.commerceTimelines.get(key)
+  const expired = subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_a'), 'order_a', NOW - 2 * subscriptions.DAY_MS), 'order_a', 1, NOW - 2 * subscriptions.DAY_MS)
+  const future = subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_a'), 'order_a', NOW + 1), 'order_a', 1, NOW + 1)
+  for (const value of [{ ...timeline, ownerId: ADMIN_OPENID }, { ...timeline, examId: 'exam_b' }, subscriptions.revoke(timeline, 'order_a', NOW), expired, future]) {
+    h.collections.commerceTimelines.set(key, value)
     const result = await reader(request, ctx)
     assert.equal(result.error, 'ENTITLEMENT_REQUIRED'); assert.equal(result.page, undefined)
   }
-  h.collections.commerceGrants.set('order_a', grant)
+  h.collections.commerceTimelines.set(key, timeline)
   h.config.delete(POLICY_ID)
   assert.equal((await reader(request, ctx)).error, 'INVALID_ACCESS_POLICY')
   h.fail.get = name => name === 'appConfig'
@@ -101,19 +105,19 @@ test('受保护模式封闭旧公开读取和旧发布路径，实际入口只�
   const accepted = await protectedMain({ ...request, action: 'getProtectedExamPage' })
   assert.equal(accepted.ok, true); assert.equal(accepted.page.questions[0].id, 'A')
   assert.equal(JSON.stringify(accepted).includes('付费乙'), false)
-  assert.equal((await protectedMain({ ...request, action: 'getProtectedExamPage', grantOrderId: 'missing' })).error, 'ENTITLEMENT_REQUIRED')
+  assert.equal((await protectedMain({ ...request, action: 'getProtectedExamPage', grantOrderId: 'missing' })).ok, true, '不依赖客户端提供订单号')
   assert.equal((await h.main({ action: 'getPagedPublished' })).ok, true, '默认版本继续使用当前未保护的免费模式')
   assert.equal((await h.main({ ...request, action: 'getProtectedExamPage' })).error, 'PROTECTED_READ_DISABLED')
   assert.equal((await reader(request, ctx)).ok, true)
 })
 
 test('受保护入口拒绝客户端伪造上下文及读取失败，事务前被退款不能继续访问', async () => {
-  const { h, request, ctx } = setup()
+  const { h, request, ctx, key } = setup()
   const protectedMain = h.createMain({ protectedMode: true, getContext: () => ctx })
   const event = { ...request, action: 'getProtectedExamPage', OPENID: ADMIN_OPENID }
-  h.fail.beforeTransaction = () => { h.collections.commerceGrants.get('order_a').revoked = true }
+  h.fail.beforeTransaction = () => { h.collections.commerceTimelines.set(key, subscriptions.revoke(h.collections.commerceTimelines.get(key), 'order_a', NOW)) }
   assert.equal((await protectedMain(event)).error, 'ENTITLEMENT_REQUIRED')
-  h.collections.commerceGrants.get('order_a').revoked = false
+  h.collections.commerceTimelines.set(key, subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_a'), 'order_a', NOW - 100), 'order_a', 1, NOW - 100))
   h.fail.get = name => name === 'questions'
   assert.equal((await protectedMain(event)).error, 'PROTECTED_READ_FAILED')
   const forged = h.createMain({ protectedMode: true, getContext: () => ({ OPENID: ADMIN_OPENID }) })

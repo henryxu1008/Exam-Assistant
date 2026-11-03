@@ -6,9 +6,11 @@ const { createSettlement } = require('../cloudfunctions/commerce/settlement.js')
 const examDomain = require('../shared/exam-catalog-domain.js')
 const pagedDomain = require('../shared/paged-catalog-domain.js')
 const sample = require('../docs/examples/catalog-import.json')
+const subscriptions = require('../shared/subscription-domain.js')
+const planId = subscriptions.productId('exam_1', 30)
 const NOW = Date.parse('2026-10-30T06:00:00Z')
 const adminCtx = { OPENID: ADMIN_OPENID }, userCtx = { OPENID: 'normal-openid' }
-const product = { id: 'p1', examId: 'exam_1', name: '合成考试', priceFen: 9900, durationDays: 180, active: true }
+const product = { id: planId, examId: 'exam_1', name: '合成考试', priceFen: 9900, durationDays: 30, active: true }
 function setup(allowOrders = true) {
   const h = harness(), service = createService({ db: h.db, allowOrders, now: () => NOW })
   const settlement = createSettlement({ db: h.db, now: () => NOW + 10000 })
@@ -26,17 +28,17 @@ test('商品只允许管理员修改，版本冲突和数据库读取失败不�
   assert.equal((await user({ action: 'putProduct', product, expectedRevision: 0 })).error, 'NOT_ADMIN')
   assert.equal((await admin({ action: 'putProduct', product, expectedRevision: 0 })).ok, true)
   assert.equal((await admin({ action: 'putProduct', product: { ...product, priceFen: 1 }, expectedRevision: 0 })).error, 'STALE_PRODUCT')
-  assert.equal((await admin({ action: 'putProduct', product: { ...product, examId: 'other' }, expectedRevision: 1 })).error, 'PRODUCT_EXAM_IMMUTABLE')
-  h.fail.get = (name, id) => name === 'commerceProducts' && id === 'p1'
+  assert.equal((await admin({ action: 'putProduct', product: { ...product, examId: 'other' }, expectedRevision: 1 })).error, 'BAD_PRODUCT')
+  h.fail.get = (name, id) => name === 'commerceProducts' && id === planId
   assert.equal((await admin({ action: 'putProduct', product: { ...product, priceFen: 1 }, expectedRevision: 1 })).error, 'COMMERCE_FAILED')
-  assert.equal(h.collections.commerceProducts.get('p1').priceFen, 9900)
+  assert.equal(h.collections.commerceProducts.get(planId).priceFen, 9900)
 })
 
 test('管理端只读取有效发布的考试，草稿考试及坏题库不允许配置商品', async () => {
   const { h, admin, user } = setup()
   assert.equal((await user({ action: 'getManageCatalog' })).error, 'NOT_ADMIN')
   assert.deepEqual((await admin({ action: 'getManageCatalog' })).exams, [{ id: 'exam_1', name: '合成考试' }])
-  assert.equal((await admin({ action: 'putProduct', product: { ...product, examId: 'draft' }, expectedRevision: 0 })).error, 'EXAM_NOT_FOUND')
+  assert.equal((await admin({ action: 'putProduct', product: { ...product, examId: 'draft', id: subscriptions.productId('draft', 30) }, expectedRevision: 0 })).error, 'EXAM_NOT_FOUND')
   const bank = h.bank(), built = pagedDomain.buildPagedCatalog({ ...bank, schemaVersion: 4, sources: sample.sources })
   h.seedBank({ schemaVersion: 4, root: built.root, publicationRevision: 2 })
   assert.equal((await admin({ action: 'getManageCatalog' })).exams[0].id, 'exam_1')
@@ -49,18 +51,18 @@ test('管理端只读取有效发布的考试，草稿考试及坏题库不允�
 test('身份绑定微信账号并在事务内重验，关闭购买时不能建单或伪造付款', async () => {
   const { h, service, admin, user } = setup(false)
   await admin({ action: 'putProduct', product, expectedRevision: 0 })
-  assert.equal((await user({ action: 'createOrder', productId: 'p1', requestId: 'req_1' })).error, 'COMMERCE_DISABLED')
+  assert.equal((await user({ action: 'createOrder', productId: planId, requestId: 'req_1' })).error, 'COMMERCE_DISABLED')
   assert.equal((await user({ action: 'confirmVerifiedPayment' })).error, 'BAD_ACTION')
-  assert.equal((await service({ action: 'getProduct', productId: 'p1', token: USER_TOKEN }, adminCtx)).error, 'INVALID_TOKEN')
+  assert.equal((await service({ action: 'getProduct', productId: planId, token: USER_TOKEN }, adminCtx)).error, 'INVALID_TOKEN')
   h.fail.beforeTransaction = () => { h.users.get('u1').token = 'revoked' }
-  assert.equal((await user({ action: 'getProduct', productId: 'p1' })).error, 'INVALID_TOKEN')
+  assert.equal((await user({ action: 'getProduct', productId: planId })).error, 'INVALID_TOKEN')
   assert.equal(h.collections.commerceOrders.size, 0)
 })
 
 test('模拟并发下单幂等，价格来自服务端，重试保持原快照且账号隔离', async () => {
   const { h, admin, user } = setup()
   await admin({ action: 'putProduct', product, expectedRevision: 0 })
-  const make = () => user({ action: 'createOrder', productId: 'p1', requestId: 'req_1', priceFen: 1, ownerId: ADMIN_OPENID })
+  const make = () => user({ action: 'createOrder', productId: planId, requestId: 'req_1', priceFen: 1, ownerId: ADMIN_OPENID })
   const [a, b] = await Promise.all([make(), make()])
   assert.equal(a.ok, true); assert.deepEqual(a, b); assert.equal(a.order.product.priceFen, 9900)
   assert.equal(h.collections.commerceOrders.size, 1)
@@ -73,8 +75,8 @@ test('模拟并发下单幂等，价格来自服务端，重试保持原快照�
 test('合成支付和退款只可由内部服务确认，事务故障回滚且交易号不能跨订单重用', async () => {
   const { h, admin, user, settlement } = setup()
   await admin({ action: 'putProduct', product, expectedRevision: 0 })
-  const first = (await user({ action: 'createOrder', productId: 'p1', requestId: 'req_1' })).order
-  const second = (await user({ action: 'createOrder', productId: 'p1', requestId: 'req_2' })).order
+  const first = (await user({ action: 'createOrder', productId: planId, requestId: 'req_1' })).order
+  const second = (await user({ action: 'createOrder', productId: planId, requestId: 'req_2' })).order
   const evidence = { orderId: first.id, ownerId: userCtx.OPENID, amountFen: 9900, transactionId: 'tx_1', paidAt: NOW + 100 }
   h.fail.write = name => name === 'commerceGrants'
   await assert.rejects(settlement.confirmVerifiedPayment(evidence))

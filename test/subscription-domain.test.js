@@ -1,0 +1,42 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const sub = require('../shared/subscription-domain.js')
+const DAY = sub.DAY_MS
+const base = () => sub.empty('alice', 'exam_a')
+const issue = (value, orderId, days, at) => sub.extend(sub.reserve(value, orderId, at), orderId, days, at)
+
+test('有效期内续费顺延，到期后购买从确认时起算，账号与考试隔离', () => {
+  let value = issue(base(), 'order_1', 30, 1000)
+  value = issue(value, 'order_2', 90, 1000 + 10 * DAY)
+  assert.equal(value.periods[1].startAt, 1000 + 30 * DAY)
+  assert.equal(sub.activeUntil(value, 'alice', 'exam_a', 1000 + 20 * DAY), 1000 + 120 * DAY)
+  assert.equal(sub.activeUntil(value, 'bob', 'exam_a', 1000 + 20 * DAY), null)
+  assert.equal(sub.activeUntil(value, 'alice', 'exam_b', 1000 + 20 * DAY), null)
+  value = issue(value, 'order_3', 30, 1000 + 150 * DAY)
+  assert.equal(value.periods[2].startAt, 1000 + 150 * DAY)
+  assert.equal(sub.activeUntil(value, 'alice', 'exam_a', 1000 + 130 * DAY), null)
+})
+
+test('退款撤销该订单未用期限，后续套餐向前接续并保留完整时长', () => {
+  let value = issue(base(), 'order_1', 30, 1000)
+  value = issue(value, 'order_2', 90, 1000 + DAY)
+  value = issue(value, 'order_3', 30, 1000 + 2 * DAY)
+  value = sub.revoke(value, 'order_1', 1000 + 10 * DAY)
+  assert.equal(value.periods[0].revoked, true)
+  assert.equal(value.periods[1].startAt, 1000 + 10 * DAY)
+  assert.equal(value.periods[1].endAt - value.periods[1].startAt, 90 * DAY)
+  assert.equal(sub.activeUntil(value, 'alice', 'exam_a', 1000 + 10 * DAY), 1000 + 130 * DAY)
+  value = sub.revoke(value, 'order_3', 1000 + 11 * DAY)
+  assert.equal(sub.activeUntil(value, 'alice', 'exam_a', 1000 + 11 * DAY), 1000 + 100 * DAY)
+  assert.throws(() => sub.revoke(value, 'order_3', 1000 + 12 * DAY), /SUBSCRIPTION_ORDER_NOT_ACTIVE/)
+})
+
+test('脏数据、重复订单、超限与服务时钟回拨均失败关闭', () => {
+  let value = issue(base(), 'order_1', 30, 1000)
+  assert.throws(() => sub.reserve(value, 'order_1', 1000), /SUBSCRIPTION_ORDER_CONFLICT/)
+  assert.throws(() => sub.revoke(value, 'order_1', 999), /SUBSCRIPTION_CLOCK_ROLLBACK/)
+  assert.equal(sub.valid({ ...value, periods: [] }, 'alice', 'exam_a'), false)
+  assert.equal(sub.activeUntil({ ...value, periods: [] }, 'alice', 'exam_a', 1000), null)
+  for (let i = 1; i < sub.MAX_PERIODS; i++) value = issue(value, 'order_' + (i + 1), 1, 1000)
+  assert.throws(() => sub.reserve(value, 'overflow', 1000), /SUBSCRIPTION_CAPACITY/)
+})

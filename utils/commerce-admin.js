@@ -17,7 +17,7 @@ function createCommerceAdmin({ getSession, call }) {
   }
   return { capture, current, access: () => request({ action: 'getManageAccess' }),
     catalog: () => request({ action: 'getManageCatalog' }),
-    product: examId => request({ action: 'getManageProduct', examId }),
+    product: (examId, durationDays) => request({ action: 'getManageProduct', examId, durationDays }),
     save: (product, expectedRevision) => request({ action: 'putProduct', product, expectedRevision }) }
 }
 function runtimeCommerceAdmin() {

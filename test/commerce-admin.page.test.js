@@ -33,12 +33,23 @@ test('管理员选择已发布考试配置商品，价格精确到分，重新�
   const { h, p } = setup(t); await settle()
   assert.equal(p.data.allowed, true); assert.equal(p.data.exams[0].name, '合成考试')
   choose(p, 'exam_1'); await settle(); assert.equal(p.data.loaded, true)
-  input(p, 'price', '99.90'); input(p, 'days', '180'); p.onSave(); await settle()
+  input(p, 'price', '99.90'); p.onSave(); await settle()
   assert.equal(p.data.revision, 1); assert.equal(p.data.dirty, false)
   const stored = [...h.collections.commerceProducts.values()][0]
-  assert.equal(stored.priceFen, 9990); assert.equal(stored.examId, 'exam_1'); assert.equal(stored.active, false)
+  assert.equal(stored.priceFen, 9990); assert.equal(stored.examId, 'exam_1'); assert.equal(stored.durationDays, 30); assert.equal(stored.active, false)
   p.onHide(); p.onShow(); await settle(); choose(p, 'exam_1'); await settle()
   assert.equal(p.data.price, '99.90'); assert.equal(p.data.revision, 1)
+})
+
+test('同一考试可配置不同期限套餐，未保存的价格阻止切换', async t => {
+  const { h, p } = setup(t); await settle(); choose(p, 'exam_1'); await settle()
+  input(p, 'price', '19.90')
+  p.onTerm({ currentTarget: { dataset: { days: 90 } } }); assert.equal(p.data.error, 'UNSAVED_CHANGES'); assert.equal(p.data.termDays, 30)
+  p.onSave(); await settle(); p.onTerm({ currentTarget: { dataset: { days: 90 } } }); await settle()
+  assert.equal(p.data.termDays, 90); assert.equal(p.data.price, '')
+  input(p, 'price', '49.90'); p.onSave(); await settle()
+  assert.deepEqual([...h.collections.commerceProducts.values()].map(item => item.durationDays).sort((a, b) => a - b), [30, 90])
+  p.onTerm({ currentTarget: { dataset: { days: 30 } } }); await settle(); assert.equal(p.data.price, '19.90')
 })
 
 test('价格无效、身份撤销或读取故障时不能提交或覆盖', async t => {

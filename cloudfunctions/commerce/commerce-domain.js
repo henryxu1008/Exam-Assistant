@@ -23,7 +23,7 @@ function createOrder({ orderId, ownerId, product, now }) {
 
 // evidence is accepted only from an adapter that verifies provider authenticity and confirms payment.
 // Caller must atomically persist the returned order and grant and enforce unique provider transaction IDs.
-function confirmPayment(order, evidence) {
+function confirmPayment(order, evidence, deliveredStartAt = evidence && evidence.paidAt) {
   if (!order || !evidence || !id(evidence.transactionId) || !time(evidence.paidAt) ||
       evidence.orderId !== order.id || evidence.ownerId !== order.ownerId || evidence.amountFen !== order.product.priceFen ||
       evidence.paidAt < order.createdAt) fail('PAYMENT_MISMATCH')
@@ -32,15 +32,16 @@ function confirmPayment(order, evidence) {
     return { order, grant: grantFromOrder(order) }
   }
   if (order.status !== 'pending') fail('ORDER_NOT_PAYABLE')
-  const endAt = evidence.paidAt + order.product.durationDays * DAY_MS
+  if (!time(deliveredStartAt) || deliveredStartAt < evidence.paidAt) fail('PAYMENT_MISMATCH')
+  const endAt = deliveredStartAt + order.product.durationDays * DAY_MS
   if (!Number.isSafeInteger(endAt)) fail('BAD_EXPIRY')
-  const paid = { ...order, status: 'paid', transactionId: evidence.transactionId, paidAt: evidence.paidAt, endAt }
+  const paid = { ...order, status: 'paid', transactionId: evidence.transactionId, paidAt: evidence.paidAt, startAt: deliveredStartAt, endAt }
   return { order: paid, grant: grantFromOrder(paid) }
 }
 
 function grantFromOrder(order) {
   return { orderId: order.id, ownerId: order.ownerId, examId: order.product.examId,
-    startAt: order.paidAt, endAt: order.endAt, revoked: order.status === 'refunded' }
+    startAt: order.startAt, endAt: order.endAt, revoked: order.status === 'refunded' }
 }
 
 // Full refunds only. Verification and the atomic order/grant update belong to the caller.
