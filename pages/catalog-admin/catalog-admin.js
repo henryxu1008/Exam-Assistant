@@ -36,6 +36,7 @@ const errorMessages = {
   BAD_AI_REVIEW: 'AI 审题结果不完整或无效，候选题未通过，请重试。', AI_REVIEW_CONFIG_INVALID: 'AI 审题服务尚未正确配置。', AI_REVIEW_REQUIRED: '本批题目存在审题问题，请丢弃并重新生成。',
   AI_UPSTREAM_TIMEOUT: 'AI 服务超时，本次可能已消耗部分配额。', AI_UPSTREAM_FAILED: 'AI 服务调用失败，本次可能已消耗部分配额。',
   AI_RESPONSE_TOO_LARGE: 'AI 响应过大，候选题未加入；本次可能已消耗部分配额。',
+  CATALOG_API_VERSION_MISMATCH: '当前云端题库服务未识别载入请求。请检查小程序连接的云环境以及 bankSync 云函数版本。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -377,9 +378,14 @@ Page({
   },
   _readEditor() {
     this._run(async live => {
-      const current = await this._client.pagedCurrent()
-      if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
-      return { result: await this._client.activeDraft() }
+      try {
+        const current = await this._client.pagedCurrent()
+        if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
+        return { result: await this._client.activeDraft() }
+      } catch (e) {
+        if (e && e.code === 'BAD_ACTION') throw Object.assign(new Error('CATALOG_API_VERSION_MISMATCH'), { code: 'CATALOG_API_VERSION_MISMATCH' })
+        throw e
+      }
     }, loaded => {
       if (loaded.workspace) {
         if (!editor.validWorkspace(loaded.workspace)) throw Object.assign(new Error('INVALID_PUBLISHED_DRAFT'), { code: 'INVALID_PUBLISHED_DRAFT' })

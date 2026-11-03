@@ -24,6 +24,43 @@ function page(t, client) {
 }
 const input = (p, field, value) => p.onInput({ currentTarget: { dataset: { field } }, detail: { value } })
 
+for (const unsupported of ['getPagedPublished', 'getActiveCatalogDraft', 'getActivePagedDraft']) {
+  test(`载入题库遇到 ${unsupported} 不受支持时提示云端版本并保持只读`, async t => {
+    const ops = operators(), actions = []
+    const client = createCatalogAdmin({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async data => {
+      actions.push(data.action)
+      if (data.action === unsupported) return { ok: false, error: 'BAD_ACTION' }
+      if (unsupported === 'getActivePagedDraft' && data.action === 'getPagedPublished') return { ok: true, root: { placeholder: true }, publicationRevision: 1 }
+      return ops.h.main(data)
+    } })
+    const p = page(t, client); await settle(); p.onLoadEditor(); await settle()
+    assert.equal(p.data.error, 'CATALOG_API_VERSION_MISMATCH')
+    assert.equal(p.data.editorReady, false); assert.equal(p._workspace, null)
+    assert.equal(ops.h.documents.size, 0)
+    assert.deepEqual(actions, unsupported === 'getPagedPublished'
+      ? ['getCatalogAccess', 'getPagedPublished']
+      : ['getCatalogAccess', 'getPagedPublished', unsupported])
+  })
+}
+
+test('当前 bankSync 识别载入题库所用的公开查询和个人草稿查询', async () => {
+  const ops = operators()
+  const paged = await ops.h.main({ action: 'getPagedPublished' })
+  const draft = await ops.h.main({ action: 'getActiveCatalogDraft', token: 'editor' })
+  assert.equal(paged.ok, true); assert.equal(paged.root, null)
+  assert.equal(draft.ok, true); assert.equal(draft.draft, null)
+  assert.equal(ops.h.documents.size, 0)
+})
+
+test('数据库读取失败不能被误判为接口版本不匹配', async t => {
+  const ops = operators()
+  const client = createCatalogAdmin({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async data =>
+    data.action === 'getPagedPublished' ? { ok: false, error: 'READ_BANK_FAILED' } : ops.h.main(data) })
+  const p = page(t, client); await settle(); p.onLoadEditor(); await settle()
+  assert.equal(p.data.error, 'READ_BANK_FAILED'); assert.equal(p.data.editorReady, false)
+  assert.equal(p._workspace, null); assert.equal(ops.h.documents.size, 0)
+})
+
 test('管理页切换分组保留表单与草稿上下文，权限变化后回到可用分组', async t => {
   const ops = operators(), editor = page(t, ops.editor); await settle()
   const go = (p, tab) => p.onWorkspaceTab({ currentTarget: { dataset: { tab } } })
