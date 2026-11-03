@@ -1,13 +1,13 @@
 /** Internal prototype. Not registered as a cloud action: existing public routes are still open. */
 const { readOptionalDoc } = require('./db-error.js')
 const { TOKEN_TTL } = require('./auth.js')
-const { sha256 } = require('./question-domain.js')
 const paged = require('./paged-catalog-domain.js')
 const projection = require('./exam-page-projection.js')
+const accessPolicy = require('./exam-access-policy.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value)
 const read = (tx, collection, id) => readOptionalDoc(() => tx.collection(collection).doc(id).get())
-const policyKey = examId => 'exam_access_' + sha256(examId)
+const POLICY_ID = 'examAccessPolicy'
 
 function createProtectedReader({ db, now = () => Date.now() }) {
   return async (event = {}, context = {}) => {
@@ -28,10 +28,11 @@ function createProtectedReader({ db, now = () => Date.now() }) {
             !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_RELEASE')
         if (active.root.releaseId !== event.releaseId) fail('STALE_RELEASE')
         const scope = projection.examScope(active.root, event.examId)
-        const policy = await read(tx, 'appConfig', policyKey(event.examId))
-        if (!policy || policy.kind !== 'examAccessPolicy' || policy.examId !== event.examId || policy.releaseId !== event.releaseId ||
-            policy.publicationRevision !== active.publicationRevision || !['free', 'paid'].includes(policy.access)) fail('INVALID_ACCESS_POLICY')
-        if (policy.access === 'paid') {
+        const policy = await read(tx, 'appConfig', POLICY_ID)
+        if (!accessPolicy.validPolicy(active.root, active.publicationRevision, policy)) fail('INVALID_ACCESS_POLICY')
+        const rule = policy.entries.find(entry => entry.examId === event.examId)
+        if (!rule) fail('INVALID_ACCESS_POLICY')
+        if (rule.access === 'paid') {
           if (!validId(event.grantOrderId)) fail('ENTITLEMENT_REQUIRED')
           const grant = await read(tx, 'commerceGrants', event.grantOrderId)
           if (!grant || grant.orderId !== event.grantOrderId || grant.ownerId !== context.OPENID || grant.examId !== event.examId || grant.revoked !== false ||
@@ -49,4 +50,4 @@ function createProtectedReader({ db, now = () => Date.now() }) {
     } catch (e) { return { ok: false, error: /^[A-Z_]+$/.test(e.code || '') ? e.code : 'PROTECTED_READ_FAILED' } }
   }
 }
-module.exports = { createProtectedReader, policyKey }
+module.exports = { createProtectedReader, POLICY_ID }

@@ -129,9 +129,11 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
     return module.exports
   }
 
-  const main = loadModule(path.join(__dirname, '../../cloudfunctions/bankSync/index.js')).main
+  const bankModule = loadModule(path.join(__dirname, '../../cloudfunctions/bankSync/index.js'))
+  const main = bankModule.main
   return {
     main: main,
+    createMain: bankModule.createMain,
     documents: collections.questions,
     transactions,
     collections,
