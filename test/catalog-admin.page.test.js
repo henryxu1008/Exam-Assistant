@@ -279,17 +279,20 @@ test('管理端生成候选题需填写来源并一次性加入当前工作区�
   const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
   p.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
   p.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
-  let calls = 0
+  let calls = 0, reviewIssue = false
   p._aiClient = createAiQuestionGenerator({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async request => {
     calls++
     const items = Array.from({ length: request.count }, (_, i) => ({ type: request.type, level: request.level, stem: '合成 AI 候选题 ' + i,
       options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成解析' }))
-    return { ok: true, generator: '合成模型', questions: aiDomain.normalize(items, request, 'editor') }
+    const questions = aiDomain.normalize(items, request, 'editor')
+    return { ok: true, generator: '合成模型', reviewer: '合成审题模型', questions,
+      reviewEvidence: { answers: questions.map(q => ({ id: q.id, answer: [reviewIssue ? 'B' : 'A'], reason: '独立分析' })), reviews: questions.map(q => ({ id: q.id, issues: [] })) } }
   } })
   const setAi = (field, value) => p.onAiInput({ currentTarget: { dataset: { field } }, detail: { value } })
   setAi('aiTopic', '网络基础'); setAi('aiCount', '2')
   const before = p._workspace.bank.questions.it.length, revision = ops.h.bank().publicationRevision
   p.onAiGenerate(); await settle(); assert.equal(calls, 1); assert.equal(p.data.aiResults.length, 2)
+  assert.match(p.data.aiResults[0].reviewStatus, /人工核验/); assert.equal(p.data.aiResults[0].reviewAnswer, 'A')
   assert.equal(p._workspace.bank.questions.it.length, before)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_SOURCE_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before)
   setAi('aiReference', '合成知识点'); setAi('aiPermission', '合成测试许可'); p.onAiAdd()
@@ -298,6 +301,10 @@ test('管理端生成候选题需填写来源并一次性加入当前工作区�
   assert.equal(generated.length, 2); assert.equal(p._workspace.sources[generated[0].id].kind, 'ai_generated')
   assert.equal(p._workspace.sources[generated[0].id].generator, '合成模型'); assert.equal(ops.h.bank().publicationRevision, revision)
   p.onPrepareEditor(); assert.equal(p.data.ready, true)
+  reviewIssue = true; p.onAiGenerate(); await settle()
+  assert.match(p.data.aiResults[0].reviewStatus, /需修改/); assert.match(p.data.aiResults[0].reviewIssues, /不一致/)
+  p.onAiAdd(); assert.equal(p.data.error, 'AI_REVIEW_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before + 2)
+  p.onAiDiscard(); reviewIssue = false
   p.onAiGenerate(); await settle(); assert.equal(p.data.aiResults.length, 2)
   p._changeEditor({ type: 'renameChapter', subjectKey: 'it', chapterKey: 'net', name: '改名后章节' })
   const afterChange = JSON.stringify(p._workspace)
@@ -314,7 +321,9 @@ test('AI 候选题经编辑、独立审核和发布后才能进入学习题库',
   const service = createAiService({ db: ops.h.db, now: () => Date.parse('2026-10-30T06:00:00Z'),
     config: { enabled: true, configured: true, globalCap: 5, userCap: 5, model: '合成模型' },
     callModel: async request => { modelCalls++; return { questions: [{ type: request.type, level: request.level,
-      stem: '合成出题流程验收', options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成解析' }] } } })
+      stem: '合成出题流程验收', options: [{ key: 'A', text: '甲' }, { key: 'B', text: '乙' }], answer: ['A'], explain: '合成解析' }] } },
+    solveModel: async request => ({ answers: request.questions.map(q => ({ id: q.id, answer: ['A'], reason: '独立分析' })) }),
+    critiqueModel: async request => ({ reviews: request.questions.map(q => ({ id: q.id, issues: [] })) }) })
   const editor = page(t, ops.editor); await settle(); editor.onLoadEditor(); await settle()
   editor.onSelectNode({ currentTarget: { dataset: { kind: 'subject', id: 'it' } } })
   editor.onSelectNode({ currentTarget: { dataset: { kind: 'chapter', id: 'net' } } })
