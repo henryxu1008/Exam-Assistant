@@ -79,6 +79,72 @@ test('管理页切换分组保留表单与草稿上下文，权限变化后回�
   go(editor, 'publish'); assert.equal(editor.data.activeTab, 'publish')
 })
 
+test('按考试、科目、章节逐级创建并自动分配稳定 ID', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  form('examName', '系统架构设计师'); act('addExam')
+  const examId = p.data.selectedExam
+  assert.match(examId, /^exam_[a-f0-9]{24}$/); assert.equal(p.data.exams[0].name, '系统架构设计师')
+  form('subjectName', '综合知识'); act('addSubject')
+  const subjectId = p.data.selectedSubject
+  assert.match(subjectId, /^subject_[a-f0-9]{24}$/); assert.equal(p.data.visibleSubjects[0].examId, examId)
+  form('chapterName', '软件架构'); act('addChapter')
+  const chapterId = p.data.selectedChapter
+  assert.match(chapterId, /^chapter_[a-f0-9]{24}$/); assert.equal(p.data.chapters[0].name, '软件架构')
+  p.onRestoreEditor()
+  assert.equal(p.data.selectedExam, examId); assert.equal(p.data.selectedSubject, subjectId); assert.equal(p.data.selectedChapter, chapterId)
+})
+
+test('切换考试不串科目，未保存的题目表单阻止切换', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  form('examName', '考试甲'); act('addExam'); const a = p.data.selectedExam
+  form('subjectName', '科目甲'); act('addSubject'); const aSubject = p.data.selectedSubject
+  form('chapterName', '章节甲'); act('addChapter')
+  form('examName', '考试乙'); act('addExam'); const b = p.data.selectedExam
+  assert.equal(p.data.selectedSubject, ''); assert.equal(p.data.selectedChapter, ''); assert.deepEqual(p.data.visibleSubjects, [])
+  form('subjectName', '科目乙'); act('addSubject'); const bSubject = p.data.selectedSubject
+  select('exam', a); assert.deepEqual(p.data.visibleSubjects.map(s => s.key), [aSubject])
+  assert.equal(p.data.selectedSubject, ''); select('subject', bSubject); assert.equal(p.data.selectedSubject, '')
+  select('subject', aSubject); form('stem', '未保存的题目')
+  select('exam', b); assert.equal(p.data.selectedExam, a); assert.equal(p.data.form.stem, '未保存的题目')
+  assert.equal(p.data.error, 'SAVE_QUESTION_REQUIRED')
+})
+
+test('调整科目归属后自动切换考试并保留科目及章节', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  form('examName', '考试甲'); act('addExam'); const a = p.data.selectedExam
+  form('subjectName', '综合知识'); act('addSubject'); const subject = p.data.selectedSubject
+  form('chapterName', '基础章节'); act('addChapter'); const chapter = p.data.selectedChapter
+  form('examName', '考试乙'); act('addExam'); const b = p.data.selectedExam
+  select('exam', a); select('subject', subject); select('chapter', chapter)
+  p.onMoveSubject({ detail: { value: '1' } })
+  assert.equal(p.data.selectedExam, b); assert.equal(p.data.selectedSubject, subject); assert.equal(p.data.selectedChapter, chapter)
+  assert.deepEqual(p.data.visibleSubjects.map(s => s.key), [subject])
+  p.onRestoreEditor(); assert.equal(p.data.selectedExam, b); assert.equal(p._workspace.bank.manifest.subjects[0].examId, b)
+})
+
+test('自动编号遇到碰撞会重试，本机写入失败不会确认创建', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const create = () => p.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
+  t.mock.method(Date, 'now', () => 123456789); t.mock.method(Math, 'random', () => 0.125)
+  form('examName', '考试甲'); create(); const firstId = p.data.selectedExam
+  form('examName', '考试乙'); create(); const secondId = p.data.selectedExam
+  assert.notEqual(firstId, secondId); assert.equal(p.data.exams.length, 2)
+  form('examName', '考试丙')
+  t.mock.method(wx, 'setStorageSync', () => { throw new Error('disk full') })
+  create()
+  assert.equal(p.data.error, 'LOCAL_DRAFT_WRITE_FAILED'); assert.equal(p.data.exams.length, 2)
+  assert.equal(p.data.selectedExam, secondId); assert.equal(p.data.form.examName, '考试丙')
+})
+
 test('管理页导入预检、确认和提交，修改内容后必须重新预检/确认', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   assert.equal(p.data.canEdit, true); assert.equal(p.data.canReview, false)
@@ -566,15 +632,16 @@ test('账号切换清除题库编辑工作区、未保存表单和旧提交确�
 test('重启可恢复本账号工作区及未保存题目表单，写入失败不改变已保存内容', async t => {
   const ops = operators(), first = page(t, ops.editor); await settle(); first.onLoadEditor(); await settle()
   const form = (p, field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
-  form(first, 'examId', 'arch'); form(first, 'examName', '考试')
+  form(first, 'examName', '考试')
   first.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
+  const examId = first.data.selectedExam
   form(first, 'stem', '尚未完成的题面')
   first.onUnload()
   const restarted = page(t, ops.editor); await settle()
   restarted.onLoadEditor(); assert.equal(restarted.data.error, 'LOCAL_DRAFT_EXISTS')
   restarted.onRestoreEditor()
   assert.equal(restarted.data.form.stem, '尚未完成的题面')
-  assert.equal(restarted.data.exams[0].id, 'arch')
+  assert.equal(restarted.data.exams[0].id, examId)
   assert.equal(restarted._questionFormDirty, true)
   t.mock.method(wx, 'setStorageSync', () => { throw new Error('disk full') })
   form(restarted, 'stem', '不应被确认保存')

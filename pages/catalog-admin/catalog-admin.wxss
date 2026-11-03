@@ -14,6 +14,10 @@
 .catalog-admin .editor-tab.active { color: #315fdb; font-weight: 700; border-bottom: 4rpx solid #4b73ed; }
 .catalog-admin .current-scope { margin-top: 20rpx; padding: 16rpx 18rpx; border-radius: 14rpx; background: #f2f6ff; color: #4e6084; font-size: 23rpx; line-height: 1.6; overflow-wrap: anywhere; }
 .catalog-admin .editor-panel { padding-top: 8rpx; }
+.catalog-admin .guided-step { margin-top: 28rpx; padding-top: 22rpx; border-top: 1rpx solid #e8edf5; }
+.catalog-admin .step-label { margin-top: 24rpx; color: #5572ce; font-size: 23rpx; font-weight: 600; }
+.catalog-admin .step-label + .title { margin-top: 8rpx; }
+.catalog-admin .move-subject { display: inline-block; padding: 12rpx 0; color: #315fdb; font-size: 24rpx; }
 .catalog-admin .section-card { border: 1rpx solid #e8edf5; box-shadow: none; }
 .catalog-admin .section-group .card + .card { margin-top: 24rpx; }
 .catalog-admin .title { margin: 32rpx 0 14rpx; color: #1e2a3f; font-size: 29rpx; font-weight: 700; line-height: 1.4; }

@@ -25,25 +25,34 @@
           <view class="editor-tab {{editorTab === 'questions' ? 'active' : ''}}" data-tab="questions" bindtap="onEditorTab">题目编辑</view>
           <view class="editor-tab {{editorTab === 'ai' ? 'active' : ''}}" data-tab="ai" bindtap="onEditorTab">AI 出题</view>
         </view>
-        <view class="current-scope">当前：{{selectedExam || '未选考试'}} / {{selectedSubject || '未选科目'}} / {{selectedChapter || '未选章节'}}</view>
+        <view class="current-scope">当前：{{selectedExamName || '未选考试'}} / {{selectedSubjectName || '未选科目'}} / {{selectedChapterName || '未选章节'}}</view>
         <view hidden="{{editorTab !== 'structure'}}" class="editor-panel">
-        <view class="title">考试项目 · 已选择 {{selectedExam || '无'}}</view>
+        <view class="step-label">第一步</view>
+        <view class="title">选择或新增考试</view>
+        <view class="hint">先选择已有考试，或输入名称创建新考试。</view>
         <view class="row wrap"><button class="choice {{selectedExam === item.id ? 'selected' : ''}}" size="mini" wx:for="{{exams}}" wx:key="id" data-kind="exam" data-id="{{item.id}}" bindtap="onSelectNode">{{item.name}}</button></view>
-        <input value="{{form.examId}}" data-field="examId" bindinput="onEditorInput" placeholder="新考试 ID（字母、数字、下划线）" />
-        <input value="{{form.examName}}" data-field="examName" bindinput="onEditorInput" placeholder="考试名称" />
-        <view class="row wrap"><button size="mini" data-action="addExam" bindtap="onEditorAction">新增考试</button><button size="mini" data-action="renameExam" bindtap="onEditorAction">修改已选考试名称</button><button size="mini" data-action="removeExam" bindtap="onRemoveEditor">移除已选空考试</button></view>
+        <input value="{{form.examName}}" data-field="examName" bindinput="onEditorInput" placeholder="考试名称，例如：系统架构设计师" />
+        <view class="row wrap"><button size="mini" data-action="addExam" bindtap="onEditorAction">新增考试</button><button wx:if="{{selectedExam}}" size="mini" data-action="renameExam" bindtap="onEditorAction">修改已选考试名称</button><button wx:if="{{selectedExam}}" size="mini" data-action="removeExam" bindtap="onRemoveEditor">移除已选空考试</button></view>
 
-        <view class="title">科目 · 已选择 {{selectedSubject || '无'}}</view>
-        <view class="row wrap"><button class="choice {{selectedSubject === item.key ? 'selected' : ''}}" size="mini" wx:for="{{subjects}}" wx:key="key" data-kind="subject" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}} · {{item.examId || '未分配考试'}}</button></view>
-        <input value="{{form.subjectKey}}" data-field="subjectKey" bindinput="onEditorInput" placeholder="新科目 ID" />
-        <input value="{{form.subjectName}}" data-field="subjectName" bindinput="onEditorInput" placeholder="科目名称" />
-        <view class="row wrap"><button size="mini" data-action="addSubject" bindtap="onEditorAction">向已选考试新增科目</button><button size="mini" data-action="assignSubject" bindtap="onEditorAction">将已选科目分配到已选考试</button><button size="mini" data-action="renameSubject" bindtap="onEditorAction">修改已选科目名称</button><button size="mini" data-action="removeSubject" bindtap="onRemoveEditor">移除已选空科目</button></view>
+        <view wx:if="{{selectedExam}}" class="guided-step">
+        <view class="step-label">第二步</view>
+        <view class="title">选择或新增科目</view>
+        <view class="hint">当前考试：{{selectedExamName}}</view>
+        <view class="row wrap"><button class="choice {{selectedSubject === item.key ? 'selected' : ''}}" size="mini" wx:for="{{visibleSubjects}}" wx:key="key" data-kind="subject" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}}</button></view>
+        <input value="{{form.subjectName}}" data-field="subjectName" bindinput="onEditorInput" placeholder="科目名称，例如：综合知识" />
+        <view class="row wrap"><button size="mini" data-action="addSubject" bindtap="onEditorAction">新增科目</button><button wx:if="{{selectedSubject}}" size="mini" data-action="renameSubject" bindtap="onEditorAction">修改已选科目名称</button><button wx:if="{{selectedSubject}}" size="mini" data-action="removeSubject" bindtap="onRemoveEditor">移除已选空科目</button></view>
+        <picker wx:if="{{selectedSubject && exams.length > 1}}" mode="selector" range="{{exams}}" range-key="name" bindchange="onMoveSubject"><view class="move-subject">调整科目所属考试 ›</view></picker>
+        </view>
 
-        <view class="title">章节 · 已选择 {{selectedChapter || '无'}}</view>
+        <view wx:if="{{selectedSubject}}" class="guided-step">
+        <view class="step-label">第三步</view>
+        <view class="title">选择或新增章节</view>
+        <view class="hint">当前科目：{{selectedSubjectName}}</view>
         <view class="row wrap"><button class="choice {{selectedChapter === item.key ? 'selected' : ''}}" size="mini" wx:for="{{chapters}}" wx:key="key" data-kind="chapter" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}}</button></view>
-        <input value="{{form.chapterKey}}" data-field="chapterKey" bindinput="onEditorInput" placeholder="新章节 ID" />
-        <input value="{{form.chapterName}}" data-field="chapterName" bindinput="onEditorInput" placeholder="章节名称" />
-        <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
+        <input value="{{form.chapterName}}" data-field="chapterName" bindinput="onEditorInput" placeholder="章节名称，例如：软件架构" />
+        <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button wx:if="{{selectedChapter}}" size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button wx:if="{{selectedChapter}}" size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
+        <view class="hint" wx:if="{{selectedChapter}}">章节已选好，可以切换到“题目编辑”或“AI 出题”。</view>
+        </view>
         </view>
         <view hidden="{{editorTab !== 'ai'}}" class="editor-panel">
         <view class="title">AI 生成候选题</view>
