@@ -96,6 +96,51 @@ test('按考试、科目、章节逐级创建并自动分配稳定 ID', async t 
   assert.equal(p.data.selectedExam, examId); assert.equal(p.data.selectedSubject, subjectId); assert.equal(p.data.selectedChapter, chapterId)
 })
 
+test('自动编号的新考试从创建到独立审核发布，再到学习端作答', async t => {
+  const ops = operators(), editor = page(t, ops.editor); await settle()
+  editor.onLoadEditor(); await settle()
+  const form = (field, value) => editor.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const action = name => editor.onEditorAction({ currentTarget: { dataset: { action: name } } })
+  form('examName', '合成考试'); action('addExam'); const examId = editor.data.selectedExam
+  form('subjectName', '合成科目'); action('addSubject'); const subjectId = editor.data.selectedSubject
+  form('chapterName', '合成章节'); action('addChapter'); const chapterId = editor.data.selectedChapter
+  for (const [field, value] of Object.entries({ questionId: 'NEW-1', type: 'single', stem: '合成新题', options: 'A=甲\nB=乙', answer: 'A',
+    sourceKind: 'original', sourceTitle: '测试来源', sourceReference: 'synthetic:new', sourcePermission: '测试授权', sourceAttribution: '测试' })) form(field, value)
+  editor.onSaveQuestion(); assert.equal(editor.data.error, '')
+  editor.onPrepareEditor(); assert.equal(editor.data.ready, true)
+  input(editor, 'submissionId', 'generated-catalog'); editor.onConfirm({ currentTarget: { dataset: { field: 'rights' } }, detail: { value: ['rights'] } })
+  editor.onSubmit(); await settle()
+  const draftId = editor.data.draftId, draft = ops.h.documents.get(draftId)
+  assert.ok(draft, editor.data.error)
+  assert.equal(draft.bank.manifest.exams[0].id, examId)
+  assert.equal(draft.bank.manifest.subjects[0].key, subjectId)
+  assert.equal(draft.bank.manifest.subjects[0].chapters[0].key, chapterId)
+  await assert.rejects(ops.editor.review({ draftId, decision: 'approve', note: '自审', sourceVerified: true }))
+  await assert.rejects(ops.editor.publishExam({ draftId, expectedRevision: 0 }))
+  await ops.approve(draftId)
+  assert.equal((await ops.publisher.publishExam({ draftId, expectedRevision: 0 })).ok, true)
+  const { device } = require('./support/study-sync-device.js'), { makeHarness } = require('./support/study-sync-harness.js')
+  const vm = require('node:vm'), learning = makeHarness({ questionDocuments: ops.h.documents }), proxy = { getSubjects: () => [] }
+  const consumer = device(learning, undefined, true, proxy)
+  try {
+    const original = consumer.wx.cloud.callFunction
+    consumer.wx.cloud.callFunction = opts => opts.name === 'bankSync' ? ops.h.main(opts.data).then(result => ({ result })) : original(opts)
+    const file = path.join(__dirname, '../utils/bank/index.js'), module = { exports: {} }
+    vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx: consumer.wx, require: name => require(path.resolve(path.dirname(file), name)) })
+    Object.assign(proxy, module.exports)
+    assert.equal(await proxy.loadCloudBank(), true)
+    assert.equal(proxy.getExams()[0].id, examId)
+    assert.equal(proxy.getSubjects(examId)[0].name, subjectId)
+    const question = proxy.findQuestion('NEW-1')
+    assert.ok(question)
+    consumer.store.createPracticeSession({ subject: question.subject, questionIds: [question.id], questions: [question] })
+    assert.equal(consumer.store.submitAttempt(question, ['A'], true, 10, 'learn').ok, true)
+    await consumer.settle()
+    assert.equal([...learning.attempts.values()][0].grading.source, 'published_archive')
+    assert.equal(consumer.store.load().attemptOutbox.pending.length, 0)
+  } finally { consumer.store.__clearFlushTimer() }
+})
+
 test('切换考试不串科目，未保存的题目表单阻止切换', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
   const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
