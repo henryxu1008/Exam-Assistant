@@ -24,6 +24,24 @@ function page(t, client) {
 }
 const input = (p, field, value) => p.onInput({ currentTarget: { dataset: { field } }, detail: { value } })
 
+test('管理页切换分组保留表单与草稿上下文，权限变化后回到可用分组', async t => {
+  const ops = operators(), editor = page(t, ops.editor); await settle()
+  const go = (p, tab) => p.onWorkspaceTab({ currentTarget: { dataset: { tab } } })
+  const editorTab = tab => editor.onEditorTab({ currentTarget: { dataset: { tab } } })
+  assert.equal(editor.data.activeTab, 'edit'); assert.equal(editor.data.roleText, '编辑')
+  editor.setData({ form: { ...editor.data.form, stem: '尚未保存的题面' }, draftId: 'draft-context' })
+  editorTab('ai'); assert.equal(editor.data.editorTab, 'ai')
+  go(editor, 'review'); assert.equal(editor.data.activeTab, 'review')
+  go(editor, 'edit'); editorTab('questions')
+  assert.equal(editor.data.form.stem, '尚未保存的题面'); assert.equal(editor.data.draftId, 'draft-context')
+  editor.setData({ busy: true }); go(editor, 'publish'); editorTab('ai')
+  assert.equal(editor.data.activeTab, 'edit'); assert.equal(editor.data.editorTab, 'questions')
+  editor.setData({ busy: false }); editor._client = ops.reviewer; editor.onShow(); await settle()
+  assert.equal(editor.data.activeTab, 'review'); assert.equal(editor.data.canEdit, false)
+  go(editor, 'edit'); assert.equal(editor.data.activeTab, 'review')
+  go(editor, 'publish'); assert.equal(editor.data.activeTab, 'publish')
+})
+
 test('管理页导入预检、确认和提交，修改内容后必须重新预检/确认', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   assert.equal(p.data.canEdit, true); assert.equal(p.data.canReview, false)
@@ -296,11 +314,12 @@ test('管理端生成候选题需填写来源并一次性加入当前工作区�
   assert.equal(p._workspace.bank.questions.it.length, before)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_SOURCE_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before)
   setAi('aiReference', '合成知识点'); setAi('aiPermission', '合成测试许可'); p.onAiAdd()
+  assert.equal(p.data.editorTab, 'questions', '候选题加入后转到题目编辑')
   assert.equal(p.data.aiResults.length, 0); assert.equal(p._workspace.bank.questions.it.length, before + 2)
   const generated = p._workspace.bank.questions.it.filter(q => q.id.startsWith('AI_'))
   assert.equal(generated.length, 2); assert.equal(p._workspace.sources[generated[0].id].kind, 'ai_generated')
   assert.equal(p._workspace.sources[generated[0].id].generator, '合成模型'); assert.equal(ops.h.bank().publicationRevision, revision)
-  p.onPrepareEditor(); assert.equal(p.data.ready, true)
+  p.onPrepareEditor(); assert.equal(p.data.ready, true); assert.equal(p.data.activeTab, 'draft')
   reviewIssue = true; p.onAiGenerate(); await settle()
   assert.match(p.data.aiResults[0].reviewStatus, /需修改/); assert.match(p.data.aiResults[0].reviewIssues, /不一致/)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_REVIEW_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before + 2)

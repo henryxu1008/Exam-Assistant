@@ -75,6 +75,7 @@ const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: 
   editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
   reviewItems: [], reviewPage: 1, reviewPages: 1, reviewAllSeen: false,
   pagedReady: false, pagedReport: '', pagedSubmissionId: '', pagedRights: false,
+  activeTab: 'edit', editorTab: 'structure',
   aiTopic: '', aiType: 'single', aiTypeName: '单选题', aiTypes, aiLevel: '1', aiCount: '3', aiReference: '', aiPermission: '', aiResults: [],
   questionTypeName: '单选题', sourceTypeName: '原创', errorMessages })
 Page({
@@ -98,12 +99,26 @@ Page({
       this.setData({ busy: false, allowed: false })
       this._run(() => this._client.access(), result => {
         const roles = Array.isArray(result.roles) ? result.roles : []
-        this.setData({ roles, roleText: roles.join(' / '), allowed: roles.length > 0, canEdit: roles.includes('editors'), canReview: roles.includes('reviewers'), canPublish: roles.includes('publishers') })
+        const canEdit = roles.includes('editors'), canReview = roles.includes('reviewers'), canPublish = roles.includes('publishers')
+        const validTab = this.data.activeTab === 'edit' ? canEdit : ['draft', 'review', 'publish'].includes(this.data.activeTab) && roles.length > 0
+        const labels = { editors: '编辑', reviewers: '审核', publishers: '发布' }
+        this.setData({ roles, roleText: roles.map(role => labels[role] || role).join(' / '), allowed: roles.length > 0, canEdit, canReview, canPublish,
+          activeTab: validTab ? this.data.activeTab : canEdit ? 'edit' : 'review' })
       })
     })
   },
   onHide() { this._active = false; this._generation += 1; this._aiCandidates = null; this.setData({ aiResults: [] }) },
   onUnload() { this.onHide(); this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._context = null; this._checkpoint = null; this._checkpointToken = null },
+  onWorkspaceTab(e) {
+    if (this.data.busy || !this.data.allowed) return
+    const tab = e.currentTarget.dataset.tab
+    if ((tab === 'edit' && this.data.canEdit) || ['draft', 'review', 'publish'].includes(tab)) this.setData({ activeTab: tab })
+  },
+  onEditorTab(e) {
+    if (this.data.busy || !this.data.canEdit) return
+    const tab = e.currentTarget.dataset.tab
+    if (['structure', 'questions', 'ai'].includes(tab)) this.setData({ editorTab: tab })
+  },
   async _run(task, apply) {
     if (this.data.busy || !this._active || !this._context || !this._client.current(this._context)) return
     const generation = this._generation, ctx = this._context
@@ -428,7 +443,7 @@ Page({
     const source = { kind: 'ai_generated', title: 'AI 生成练习题', reference: this.data.aiReference, permission: this.data.aiPermission,
       attribution: 'AI 辅助生成，待人工核验', generator: batch.generator }
     if (this._changeEditor({ type: 'addGeneratedQuestions', subjectKey: batch.subjectKey, chapterKey: batch.chapterKey, questions: batch.questions, source })) {
-      this._aiCandidates = null; this.setData({ aiResults: [], result: `已加入 ${batch.questions.length} 道候选题，请逐题核对后提交审核。` })
+      this._aiCandidates = null; this.setData({ aiResults: [], editorTab: 'questions', result: `已加入 ${batch.questions.length} 道候选题，请逐题核对后提交审核。` })
     }
   },
   onEditorInput(e) {
@@ -560,13 +575,13 @@ Page({
       if (this._workspace.bank.schemaVersion === 4) {
         this._pagedPrepared = editor.prepare(this._workspace); this._pagedBase = this._workspace.basePublication
         this._prepared = null; this._preparedBase = null
-        this.setData({ ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
+        this.setData({ activeTab: 'draft', ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
           pagedReport: `编辑内容已校验：${this._pagedPrepared.root.totalQuestions} 题、${this._pagedPrepared.root.pages.length} 页。请在下方填写提交 ID 并确认发布权。`, error: '' })
         return
       }
       this._prepared = editor.prepare(this._workspace); this._preparedBase = this._workspace.basePublication || undefined
       const bank = this._prepared.bank, count = Object.values(bank.questions).reduce((sum, rows) => sum + rows.length, 0)
-      this.setData({ ready: true, rightsConfirmed: false, report: `内容校验通过：${bank.manifest.exams.length} 个考试、${bank.manifest.subjects.length} 个科目、${count} 道题。请核对来源、填写提交 ID 并确认发布权。`, error: '' })
+      this.setData({ activeTab: 'draft', ready: true, rightsConfirmed: false, report: `内容校验通过：${bank.manifest.exams.length} 个考试、${bank.manifest.subjects.length} 个科目、${count} 道题。请核对来源、填写提交 ID 并确认发布权。`, error: '' })
     } catch (e) { this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this.setData({ ready: false, pagedReady: false, pagedRights: false, error: e.code || 'BAD_BANK' }) }
   }
 })
