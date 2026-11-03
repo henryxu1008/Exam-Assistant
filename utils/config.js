@@ -10,6 +10,9 @@ module.exports = {
   /** 小程序当前版本号（用于云端强制更新校验） */
   version: '1.3.0',
 
+  /** 仅供受保护题库完成端到端验收后统一启用；服务端目前固定关闭 */
+  protectedCatalog: false,
+
   /** 云函数名称 */
   functions: {
     login: 'userLogin', // 登录：code -> openid/token

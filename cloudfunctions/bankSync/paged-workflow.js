@@ -118,8 +118,17 @@ function createPagedWorkflow(db, { protectedMode = false } = {}) {
         const roles = await readOptionalDoc(() => tx.collection('appConfig').doc('bankRoles').get())
         if (!validRoles(roles)) fail('ROLE_CONFIG_REQUIRED')
         const actor = identity.openid, collection = tx.collection('questions')
+        if (protectedMode && event.action === 'getCatalogAccess') return { ok: true, roles: ['editors', 'reviewers', 'publishers'].filter(role => roles[role].includes(actor)) }
         const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', getActivePagedDraft: 'editors', abandonPagedDraft: 'editors', cleanupPagedRelease: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
         if (required ? !roles[required].includes(actor) : !['editors', 'reviewers', 'publishers'].some(role => roles[role].includes(actor))) fail('NOT_CATALOG_ROLE')
+        if (protectedMode && event.action === 'getProtectedCatalogCurrent') {
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (!active) return { ok: true, root: null, publicationRevision: 0 }
+          if (active.schemaVersion !== 4 || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_ACTIVE_RELEASE')
+          const policy = await readOptionalDoc(() => tx.collection('appConfig').doc('examAccessPolicy').get())
+          if (!accessPolicy.validPolicy(active.root, active.publicationRevision, policy)) fail('INVALID_ACCESS_POLICY')
+          return { ok: true, root: active.root, publicationRevision: active.publicationRevision }
+        }
         if (event.action === 'getActivePagedDraft') {
           const active = await readOptionalDoc(() => collection.doc('bank').get())
           if (!active || active.schemaVersion !== 4 || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_ACTIVE_RELEASE')
@@ -135,6 +144,7 @@ function createPagedWorkflow(db, { protectedMode = false } = {}) {
                 draft.accessPolicy.digest !== policy.digest || audit.approval.accessPolicyDigest !== policy.digest) fail('INVALID_ACCESS_POLICY')
           } else if (draft.accessPolicy) fail('PROTECTED_DRAFT_REQUIRED')
           return { ok: true, draftId: draft.draftId, root: draft.root, evidence: draft.evidence,
+            ...(protectedMode ? { accessPolicy: draft.accessPolicy } : {}),
             basePublication: { revision: active.publicationRevision, releaseId: active.root.releaseId } }
         }
         if (event.action === 'beginPagedDraft') {

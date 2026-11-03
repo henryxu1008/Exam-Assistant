@@ -24,6 +24,172 @@ function page(t, client) {
 }
 const input = (p, field, value) => p.onInput({ currentTarget: { dataset: { field } }, detail: { value } })
 
+for (const unsupported of ['getPagedPublished', 'getActiveCatalogDraft', 'getActivePagedDraft']) {
+  test(`载入题库遇到 ${unsupported} 不受支持时提示云端版本并保持只读`, async t => {
+    const ops = operators(), actions = []
+    const client = createCatalogAdmin({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async data => {
+      actions.push(data.action)
+      if (data.action === unsupported) return { ok: false, error: 'BAD_ACTION' }
+      if (unsupported === 'getActivePagedDraft' && data.action === 'getPagedPublished') return { ok: true, root: { placeholder: true }, publicationRevision: 1 }
+      return ops.h.main(data)
+    } })
+    const p = page(t, client); await settle(); p.onLoadEditor(); await settle()
+    assert.equal(p.data.error, 'CATALOG_API_VERSION_MISMATCH')
+    assert.equal(p.data.editorReady, false); assert.equal(p._workspace, null)
+    assert.equal(ops.h.documents.size, 0)
+    assert.deepEqual(actions, unsupported === 'getPagedPublished'
+      ? ['getCatalogAccess', 'getPagedPublished']
+      : ['getCatalogAccess', 'getPagedPublished', unsupported])
+  })
+}
+
+test('当前 bankSync 识别载入题库所用的公开查询和个人草稿查询', async () => {
+  const ops = operators()
+  const paged = await ops.h.main({ action: 'getPagedPublished' })
+  const draft = await ops.h.main({ action: 'getActiveCatalogDraft', token: 'editor' })
+  assert.equal(paged.ok, true); assert.equal(paged.root, null)
+  assert.equal(draft.ok, true); assert.equal(draft.draft, null)
+  assert.equal(ops.h.documents.size, 0)
+})
+
+test('数据库读取失败不能被误判为接口版本不匹配', async t => {
+  const ops = operators()
+  const client = createCatalogAdmin({ getSession: () => ({ logged: true, openid: 'editor', token: 'editor' }), call: async data =>
+    data.action === 'getPagedPublished' ? { ok: false, error: 'READ_BANK_FAILED' } : ops.h.main(data) })
+  const p = page(t, client); await settle(); p.onLoadEditor(); await settle()
+  assert.equal(p.data.error, 'READ_BANK_FAILED'); assert.equal(p.data.editorReady, false)
+  assert.equal(p._workspace, null); assert.equal(ops.h.documents.size, 0)
+})
+
+test('管理页切换分组保留表单与草稿上下文，权限变化后回到可用分组', async t => {
+  const ops = operators(), editor = page(t, ops.editor); await settle()
+  const go = (p, tab) => p.onWorkspaceTab({ currentTarget: { dataset: { tab } } })
+  const editorTab = tab => editor.onEditorTab({ currentTarget: { dataset: { tab } } })
+  assert.equal(editor.data.activeTab, 'edit'); assert.equal(editor.data.roleText, '编辑')
+  editor.setData({ form: { ...editor.data.form, stem: '尚未保存的题面' }, draftId: 'draft-context' })
+  editorTab('ai'); assert.equal(editor.data.editorTab, 'ai')
+  go(editor, 'review'); assert.equal(editor.data.activeTab, 'review')
+  go(editor, 'edit'); editorTab('questions')
+  assert.equal(editor.data.form.stem, '尚未保存的题面'); assert.equal(editor.data.draftId, 'draft-context')
+  editor.setData({ busy: true }); go(editor, 'publish'); editorTab('ai')
+  assert.equal(editor.data.activeTab, 'edit'); assert.equal(editor.data.editorTab, 'questions')
+  editor.setData({ busy: false }); editor._client = ops.reviewer; editor.onShow(); await settle()
+  assert.equal(editor.data.activeTab, 'review'); assert.equal(editor.data.canEdit, false)
+  go(editor, 'edit'); assert.equal(editor.data.activeTab, 'review')
+  go(editor, 'publish'); assert.equal(editor.data.activeTab, 'publish')
+})
+
+test('按考试、科目、章节逐级创建并自动分配稳定 ID', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  form('examName', '系统架构设计师'); act('addExam')
+  const examId = p.data.selectedExam
+  assert.match(examId, /^exam_[a-f0-9]{24}$/); assert.equal(p.data.exams[0].name, '系统架构设计师')
+  form('subjectName', '综合知识'); act('addSubject')
+  const subjectId = p.data.selectedSubject
+  assert.match(subjectId, /^subject_[a-f0-9]{24}$/); assert.equal(p.data.visibleSubjects[0].examId, examId)
+  form('chapterName', '软件架构'); act('addChapter')
+  const chapterId = p.data.selectedChapter
+  assert.match(chapterId, /^chapter_[a-f0-9]{24}$/); assert.equal(p.data.chapters[0].name, '软件架构')
+  p.onRestoreEditor()
+  assert.equal(p.data.selectedExam, examId); assert.equal(p.data.selectedSubject, subjectId); assert.equal(p.data.selectedChapter, chapterId)
+})
+
+test('自动编号的新考试从创建到独立审核发布，再到学习端作答', async t => {
+  const ops = operators(), editor = page(t, ops.editor); await settle()
+  editor.onLoadEditor(); await settle()
+  const form = (field, value) => editor.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const action = name => editor.onEditorAction({ currentTarget: { dataset: { action: name } } })
+  form('examName', '合成考试'); action('addExam'); const examId = editor.data.selectedExam
+  form('subjectName', '合成科目'); action('addSubject'); const subjectId = editor.data.selectedSubject
+  form('chapterName', '合成章节'); action('addChapter'); const chapterId = editor.data.selectedChapter
+  for (const [field, value] of Object.entries({ questionId: 'NEW-1', type: 'single', stem: '合成新题', options: 'A=甲\nB=乙', answer: 'A',
+    sourceKind: 'original', sourceTitle: '测试来源', sourceReference: 'synthetic:new', sourcePermission: '测试授权', sourceAttribution: '测试' })) form(field, value)
+  editor.onSaveQuestion(); assert.equal(editor.data.error, '')
+  editor.onPrepareEditor(); assert.equal(editor.data.ready, true)
+  input(editor, 'submissionId', 'generated-catalog'); editor.onConfirm({ currentTarget: { dataset: { field: 'rights' } }, detail: { value: ['rights'] } })
+  editor.onSubmit(); await settle()
+  const draftId = editor.data.draftId, draft = ops.h.documents.get(draftId)
+  assert.ok(draft, editor.data.error)
+  assert.equal(draft.bank.manifest.exams[0].id, examId)
+  assert.equal(draft.bank.manifest.subjects[0].key, subjectId)
+  assert.equal(draft.bank.manifest.subjects[0].chapters[0].key, chapterId)
+  await assert.rejects(ops.editor.review({ draftId, decision: 'approve', note: '自审', sourceVerified: true }))
+  await assert.rejects(ops.editor.publishExam({ draftId, expectedRevision: 0 }))
+  await ops.approve(draftId)
+  assert.equal((await ops.publisher.publishExam({ draftId, expectedRevision: 0 })).ok, true)
+  const { device } = require('./support/study-sync-device.js'), { makeHarness } = require('./support/study-sync-harness.js')
+  const vm = require('node:vm'), learning = makeHarness({ questionDocuments: ops.h.documents }), proxy = { getSubjects: () => [] }
+  const consumer = device(learning, undefined, true, proxy)
+  try {
+    const original = consumer.wx.cloud.callFunction
+    consumer.wx.cloud.callFunction = opts => opts.name === 'bankSync' ? ops.h.main(opts.data).then(result => ({ result })) : original(opts)
+    const file = path.join(__dirname, '../utils/bank/index.js'), module = { exports: {} }
+    vm.runInNewContext(fs.readFileSync(file, 'utf8'), { module, wx: consumer.wx, require: name => require(path.resolve(path.dirname(file), name)) })
+    Object.assign(proxy, module.exports)
+    assert.equal(await proxy.loadCloudBank(), true)
+    assert.equal(proxy.getExams()[0].id, examId)
+    assert.equal(proxy.getSubjects(examId)[0].name, subjectId)
+    const question = proxy.findQuestion('NEW-1')
+    assert.ok(question)
+    consumer.store.createPracticeSession({ subject: question.subject, questionIds: [question.id], questions: [question] })
+    assert.equal(consumer.store.submitAttempt(question, ['A'], true, 10, 'learn').ok, true)
+    await consumer.settle()
+    assert.equal([...learning.attempts.values()][0].grading.source, 'published_archive')
+    assert.equal(consumer.store.load().attemptOutbox.pending.length, 0)
+  } finally { consumer.store.__clearFlushTimer() }
+})
+
+test('切换考试不串科目，未保存的题目表单阻止切换', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  form('examName', '考试甲'); act('addExam'); const a = p.data.selectedExam
+  form('subjectName', '科目甲'); act('addSubject'); const aSubject = p.data.selectedSubject
+  form('chapterName', '章节甲'); act('addChapter')
+  form('examName', '考试乙'); act('addExam'); const b = p.data.selectedExam
+  assert.equal(p.data.selectedSubject, ''); assert.equal(p.data.selectedChapter, ''); assert.deepEqual(p.data.visibleSubjects, [])
+  form('subjectName', '科目乙'); act('addSubject'); const bSubject = p.data.selectedSubject
+  select('exam', a); assert.deepEqual(p.data.visibleSubjects.map(s => s.key), [aSubject])
+  assert.equal(p.data.selectedSubject, ''); select('subject', bSubject); assert.equal(p.data.selectedSubject, '')
+  select('subject', aSubject); form('stem', '未保存的题目')
+  select('exam', b); assert.equal(p.data.selectedExam, a); assert.equal(p.data.form.stem, '未保存的题目')
+  assert.equal(p.data.error, 'SAVE_QUESTION_REQUIRED')
+})
+
+test('调整科目归属后自动切换考试并保留科目及章节', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const act = action => p.onEditorAction({ currentTarget: { dataset: { action } } })
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  form('examName', '考试甲'); act('addExam'); const a = p.data.selectedExam
+  form('subjectName', '综合知识'); act('addSubject'); const subject = p.data.selectedSubject
+  form('chapterName', '基础章节'); act('addChapter'); const chapter = p.data.selectedChapter
+  form('examName', '考试乙'); act('addExam'); const b = p.data.selectedExam
+  select('exam', a); select('subject', subject); select('chapter', chapter)
+  p.onMoveSubject({ detail: { value: '1' } })
+  assert.equal(p.data.selectedExam, b); assert.equal(p.data.selectedSubject, subject); assert.equal(p.data.selectedChapter, chapter)
+  assert.deepEqual(p.data.visibleSubjects.map(s => s.key), [subject])
+  p.onRestoreEditor(); assert.equal(p.data.selectedExam, b); assert.equal(p._workspace.bank.manifest.subjects[0].examId, b)
+})
+
+test('自动编号遇到碰撞会重试，本机写入失败不会确认创建', async t => {
+  const ops = operators(), p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const form = (field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
+  const create = () => p.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
+  t.mock.method(Date, 'now', () => 123456789); t.mock.method(Math, 'random', () => 0.125)
+  form('examName', '考试甲'); create(); const firstId = p.data.selectedExam
+  form('examName', '考试乙'); create(); const secondId = p.data.selectedExam
+  assert.notEqual(firstId, secondId); assert.equal(p.data.exams.length, 2)
+  form('examName', '考试丙')
+  t.mock.method(wx, 'setStorageSync', () => { throw new Error('disk full') })
+  create()
+  assert.equal(p.data.error, 'LOCAL_DRAFT_WRITE_FAILED'); assert.equal(p.data.exams.length, 2)
+  assert.equal(p.data.selectedExam, secondId); assert.equal(p.data.form.examName, '考试丙')
+})
+
 test('管理页导入预检、确认和提交，修改内容后必须重新预检/确认', async t => {
   const ops = operators(), p = page(t, ops.editor); await settle()
   assert.equal(p.data.canEdit, true); assert.equal(p.data.canReview, false)
@@ -296,11 +462,12 @@ test('管理端生成候选题需填写来源并一次性加入当前工作区�
   assert.equal(p._workspace.bank.questions.it.length, before)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_SOURCE_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before)
   setAi('aiReference', '合成知识点'); setAi('aiPermission', '合成测试许可'); p.onAiAdd()
+  assert.equal(p.data.editorTab, 'questions', '候选题加入后转到题目编辑')
   assert.equal(p.data.aiResults.length, 0); assert.equal(p._workspace.bank.questions.it.length, before + 2)
   const generated = p._workspace.bank.questions.it.filter(q => q.id.startsWith('AI_'))
   assert.equal(generated.length, 2); assert.equal(p._workspace.sources[generated[0].id].kind, 'ai_generated')
   assert.equal(p._workspace.sources[generated[0].id].generator, '合成模型'); assert.equal(ops.h.bank().publicationRevision, revision)
-  p.onPrepareEditor(); assert.equal(p.data.ready, true)
+  p.onPrepareEditor(); assert.equal(p.data.ready, true); assert.equal(p.data.activeTab, 'draft')
   reviewIssue = true; p.onAiGenerate(); await settle()
   assert.match(p.data.aiResults[0].reviewStatus, /需修改/); assert.match(p.data.aiResults[0].reviewIssues, /不一致/)
   p.onAiAdd(); assert.equal(p.data.error, 'AI_REVIEW_REQUIRED'); assert.equal(p._workspace.bank.questions.it.length, before + 2)
@@ -510,15 +677,16 @@ test('账号切换清除题库编辑工作区、未保存表单和旧提交确�
 test('重启可恢复本账号工作区及未保存题目表单，写入失败不改变已保存内容', async t => {
   const ops = operators(), first = page(t, ops.editor); await settle(); first.onLoadEditor(); await settle()
   const form = (p, field, value) => p.onEditorInput({ currentTarget: { dataset: { field } }, detail: { value } })
-  form(first, 'examId', 'arch'); form(first, 'examName', '考试')
+  form(first, 'examName', '考试')
   first.onEditorAction({ currentTarget: { dataset: { action: 'addExam' } } })
+  const examId = first.data.selectedExam
   form(first, 'stem', '尚未完成的题面')
   first.onUnload()
   const restarted = page(t, ops.editor); await settle()
   restarted.onLoadEditor(); assert.equal(restarted.data.error, 'LOCAL_DRAFT_EXISTS')
   restarted.onRestoreEditor()
   assert.equal(restarted.data.form.stem, '尚未完成的题面')
-  assert.equal(restarted.data.exams[0].id, 'arch')
+  assert.equal(restarted.data.exams[0].id, examId)
   assert.equal(restarted._questionFormDirty, true)
   t.mock.method(wx, 'setStorageSync', () => { throw new Error('disk full') })
   form(restarted, 'stem', '不应被确认保存')

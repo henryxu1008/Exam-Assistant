@@ -111,11 +111,12 @@ function createMain({ protectedMode = false, getContext = () => cloud.getWXConte
       return { ok: false, error: 'PROTECTED_READER_REQUIRED' }
     }
     // Existing publishers do not yet atomically commit access policies with the publication.
-    if (['set', 'publish', 'publishDraft', 'publishExamDraft', 'getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft'].includes(action)) {
+    if (['set', 'publish', 'publishDraft', 'publishExamDraft', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft'].includes(action)) {
       return { ok: false, error: 'PROTECTED_PUBLICATION_NOT_READY' }
     }
   }
-  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) {
+  if (action === 'getProtectedCatalogCurrent' && !protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+  if ((protectedMode && ['getCatalogAccess', 'getProtectedCatalogCurrent'].includes(action)) || ['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) {
     if (!protectedMode) return pagedWorkflow(event)
     let context
     try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }

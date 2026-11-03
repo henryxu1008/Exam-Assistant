@@ -3,11 +3,12 @@ const config = require('./config.js')
 const domain = require('../shared/question-domain.js')
 const examDomain = require('../shared/exam-catalog-domain.js')
 const paged = require('../shared/paged-catalog-domain.js')
+const accessPolicy = require('../shared/exam-access-policy.js')
 const { sourcesFor } = require('../shared/workflow-domain.js')
 const { preflight } = require('../shared/catalog-import.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const copy = v => JSON.parse(JSON.stringify(v))
-function createCatalogAdmin({ getSession, call }) {
+function createCatalogAdmin({ getSession, call, protectedCatalog = false }) {
   function capture() {
     const s = getSession()
     if (!s || !s.logged || typeof s.token !== 'string' || !s.token || typeof s.openid !== 'string' || !s.openid) fail('NO_TOKEN')
@@ -32,7 +33,7 @@ function createCatalogAdmin({ getSession, call }) {
     return request({ action: isExam ? 'createExamDraft' : 'createDraft', bank, sources, rightsConfirmed: true, submissionId: options.submissionId, ...(options.basePublication ? { basePublication: options.basePublication } : {}) }, ctx)
   }
   async function pagedBase(ctx) {
-    const latest = await request({ action: 'getPagedPublished' }, ctx)
+    const latest = await request({ action: protectedCatalog ? 'getProtectedCatalogCurrent' : 'getPagedPublished' }, ctx)
     if (latest.root) {
       if (!paged.validRoot(latest.root) || !Number.isSafeInteger(latest.publicationRevision) || latest.publicationRevision < 1) fail('INVALID_RELEASE')
       return { revision: latest.publicationRevision, releaseId: latest.root.releaseId }
@@ -53,10 +54,15 @@ function createCatalogAdmin({ getSession, call }) {
     if (!options || options.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(options.submissionId || '')) fail('BAD_SUBMISSION_ID')
     if (!prepared || !paged.validComplete(prepared.root, prepared.evidence, prepared.publicPages, prepared.privatePages)) fail('BAD_PAGED_CATALOG')
+    if (protectedCatalog) {
+      if (prepared.root.pages.length > 19) fail('PROTECTED_CATALOG_TOO_LARGE')
+      accessPolicy.buildPolicy(prepared.root, (options.basePublication ? options.basePublication.revision : 0) + 1, options.accessRules)
+    }
     const guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
     guard()
     const initial = await request({ action: 'beginPagedDraft', root: prepared.root, evidence: prepared.evidence,
-      basePublication: options.basePublication, submissionId: options.submissionId, rightsConfirmed: true }, ctx)
+      basePublication: options.basePublication, submissionId: options.submissionId, rightsConfirmed: true,
+      ...(protectedCatalog ? { accessRules: options.accessRules } : {}) }, ctx)
     guard()
     if (initial.state === 'uploading') {
       if (options.onStarted) options.onStarted(initial.draftId, prepared.publicPages.length)
@@ -77,7 +83,7 @@ function createCatalogAdmin({ getSession, call }) {
     published: () => request({ action: 'getPublished' }, capture()),
     activeDraft: () => request({ action: 'getActiveCatalogDraft' }, capture()),
     preparePaged,
-    pagedCurrent: () => request({ action: 'getPagedPublished' }, capture()),
+    pagedCurrent: () => request({ action: protectedCatalog ? 'getProtectedCatalogCurrent' : 'getPagedPublished' }, capture()),
     pagedBase: () => pagedBase(capture()),
     async activePagedWorkspace(live = () => true) {
       const ctx = capture(), guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
@@ -85,6 +91,7 @@ function createCatalogAdmin({ getSession, call }) {
       const active = await request({ action: 'getActivePagedDraft' }, ctx)
       if (!paged.validRoot(active.root) || !paged.validEvidence(active.root, active.evidence) || !active.basePublication ||
           active.basePublication.releaseId !== active.root.releaseId || !Number.isSafeInteger(active.basePublication.revision) || active.basePublication.revision < 1) fail('INVALID_PUBLISHED_DRAFT')
+      if (protectedCatalog && !accessPolicy.validPolicy(active.root, active.basePublication.revision, active.accessPolicy)) fail('INVALID_ACCESS_POLICY')
       const publicPages = [], privatePages = []
       for (const descriptor of active.root.pages) {
         guard()
@@ -100,14 +107,16 @@ function createCatalogAdmin({ getSession, call }) {
       for (let i = 0; i < publicPages.length; i++) for (const q of publicPages[i].questions) {
         questions[q.subject].push(q); sources[q.id] = privatePages[i].sources[q.id]
       }
-      return { bank: { schemaVersion: 4, manifest: copy(active.root.manifest), questions }, sources, basePublication: active.basePublication }
+      return { bank: { schemaVersion: 4, manifest: copy(active.root.manifest), questions }, sources, basePublication: active.basePublication,
+        ...(protectedCatalog ? { accessRules: copy(active.accessPolicy.entries) } : {}) }
     },
     submitPaged: (prepared, options, live) => submitPaged(prepared, options, capture(), live),
     getPagedDraft: draftId => request({ action: 'getPagedDraft', draftId }, capture()),
     abandonPagedDraft: draftId => request({ action: 'abandonPagedDraft', draftId }, capture()),
     cleanupPagedRelease: draftId => request({ action: 'cleanupPagedRelease', draftId }, capture()),
     getPagedDraftPage: (draftId, index) => request({ action: 'getPagedDraftPage', draftId, index }, capture()),
-    reviewPaged: ({ draftId, decision, note, sourceVerified }) => request({ action: 'reviewPagedDraft', draftId, decision, note, sourceVerified: sourceVerified === true }, capture()),
+    reviewPaged: ({ draftId, decision, note, sourceVerified, policyVerified }) => request({ action: 'reviewPagedDraft', draftId, decision, note, sourceVerified: sourceVerified === true,
+      ...(protectedCatalog ? { policyVerified: policyVerified === true } : {}) }, capture()),
     publishPaged: ({ draftId, expectedRevision }) => request({ action: 'publishPagedDraft', draftId, expectedRevision }, capture()),
     async withdrawPaged({ draftId, questionIds, submissionId, rightsConfirmed }, live = () => true) {
       const ctx = capture(), guard = () => { if (!live() || !current(ctx)) fail('STALE_OPERATOR_CONTEXT') }
@@ -134,7 +143,8 @@ function createCatalogAdmin({ getSession, call }) {
       }
       if (remove.size) fail('UNKNOWN_QUESTION_ID')
       const prepared = paged.buildPagedCatalog({ schemaVersion: 4, manifest: draft.root.manifest, questions: remaining, sources })
-      return submitPaged(prepared, { submissionId, rightsConfirmed, basePublication: base }, ctx, live)
+      return submitPaged(prepared, { submissionId, rightsConfirmed, basePublication: base,
+        ...(protectedCatalog ? { accessRules: draft.accessPolicy && draft.accessPolicy.entries } : {}) }, ctx, live)
     },
     getDraft: draftId => request({ action: 'getDraft', draftId }, capture()),
     submitDraft: (prepared, options) => submit(prepared, options, capture()),
@@ -165,6 +175,7 @@ function createCatalogAdmin({ getSession, call }) {
 }
 function runtimeClient() {
   return createCatalogAdmin({
+    protectedCatalog: config.protectedCatalog === true,
     getSession: () => wx.getStorageSync('exam_quiz_session_v1'),
     call: data => new Promise((resolve, reject) => {
       if (!wx.__cloudReady || !wx.cloud || typeof wx.cloud.callFunction !== 'function') { reject(new Error('CLOUD_NOT_READY')); return }
