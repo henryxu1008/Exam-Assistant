@@ -20,6 +20,7 @@ const ROOT = path.resolve(__dirname, '..')
 
 /** [源文件, ...部署副本] */
 const MAPPINGS = [
+  ['shared/exam-page-projection.js', 'cloudfunctions/bankSync/exam-page-projection.js'],
   ['shared/commerce-domain.js', 'cloudfunctions/commerce/commerce-domain.js'],
   ['shared/ai-question-domain.js', 'cloudfunctions/aiQuestionGen/ai-question-domain.js'],
   ['shared/paged-catalog-domain.js', 'cloudfunctions/bankSync/paged-catalog-domain.js', 'cloudfunctions/studySync/paged-catalog-domain.js', 'cloudfunctions/commerce/paged-catalog-domain.js'],
