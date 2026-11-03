@@ -13,6 +13,9 @@ module.exports = {
   /** 仅供受保护题库完成端到端验收后统一启用；服务端目前固定关闭 */
   protectedCatalog: false,
 
+  /** 仅供开发者工具体验套餐页面，未完成真实购买和题库保护前保持关闭 */
+  commercePreview: false,
+
   /** 云函数名称 */
   functions: {
     login: 'userLogin', // 登录：code -> openid/token

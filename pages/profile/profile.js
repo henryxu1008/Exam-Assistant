@@ -49,7 +49,8 @@ Page({
     localStorage: storageStatusView(),
     storageReadable: true,
     catalogAccess: false,
-    commerceAccess: false
+    commerceAccess: false,
+    commercePreview: config.commercePreview === true
   },
 
   onLoad() {
@@ -96,6 +97,7 @@ Page({
     } catch (e) { /* Permission lookup failure hides the optional management entry. */ }
   },
   goCommerceAdmin() { if (this.data.commerceAccess) wx.navigateTo({ url: '/pages/commerce-admin/commerce-admin' }) },
+  goExamPlans() { if (config.commercePreview === true) wx.navigateTo({ url: '/pages/exam-plans/exam-plans' }) },
 
   onPullDownRefresh() {
     user.whenReady(() => this.refresh())

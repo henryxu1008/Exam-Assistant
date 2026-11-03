@@ -59,6 +59,29 @@ test('身份绑定微信账号并在事务内重验，关闭购买时不能建�
   assert.equal(h.collections.commerceOrders.size, 0)
 })
 
+test('套餐查询仅返回已上架套餐及当前账号期限，读取异常和脏数据不冒充空列表', async () => {
+  const { h, service, admin, user } = setup(false)
+  await admin({ action: 'putProduct', product, expectedRevision: 0 })
+  const hidden = { ...product, id: subscriptions.productId('exam_1', 90), durationDays: 90, active: false }
+  await admin({ action: 'putProduct', product: hidden, expectedRevision: 0 })
+  const result = await user({ action: 'getExamPlans', examId: 'exam_1' })
+  assert.equal(result.ok, true); assert.equal(result.exam.name, '合成考试')
+  assert.deepEqual(result.plans, [{ id: planId, name: product.name, durationDays: 30, priceFen: 9900 }])
+  assert.deepEqual(result.subscription, { active: false, endAt: null }); assert.equal(result.purchasingAvailable, false)
+  assert.equal((await user({ action: 'getExamPlans', examId: 'missing' })).error, 'EXAM_NOT_FOUND')
+  assert.equal((await service({ action: 'getExamPlans', examId: 'exam_1', token: USER_TOKEN }, adminCtx)).error, 'INVALID_TOKEN')
+  const key = subscriptions.timelineId('normal-openid', 'exam_1')
+  h.collections.commerceTimelines.set(key, subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_1'), 'o1', NOW), 'o1', 30, NOW))
+  assert.equal((await user({ action: 'getExamPlans', examId: 'exam_1' })).subscription.active, true)
+  assert.equal((await admin({ action: 'getExamPlans', examId: 'exam_1' })).subscription.active, false)
+  h.fail.get = name => name === 'commerceProducts'
+  assert.equal((await user({ action: 'getExamPlans', examId: 'exam_1' })).error, 'COMMERCE_FAILED')
+  h.fail.get = null; h.collections.commerceProducts.get(planId).durationDays = 90
+  assert.equal((await user({ action: 'getExamPlans', examId: 'exam_1' })).error, 'INVALID_PRODUCT')
+  h.collections.commerceProducts.get(planId).durationDays = 30; h.collections.commerceTimelines.get(key).digest = 'broken'
+  assert.equal((await user({ action: 'getExamPlans', examId: 'exam_1' })).error, 'INVALID_SUBSCRIPTION')
+})
+
 test('模拟并发下单幂等，价格来自服务端，重试保持原快照且账号隔离', async () => {
   const { h, admin, user } = setup()
   await admin({ action: 'putProduct', product, expectedRevision: 0 })

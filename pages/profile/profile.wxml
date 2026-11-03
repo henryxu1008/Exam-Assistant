@@ -137,6 +137,11 @@
 
   <!-- 入口 -->
   <view class="card menu">
+    <view class="menu-item" wx:if="{{commercePreview}}" bindtap="goExamPlans">
+      <text class="menu-icon mi-blue">学</text>
+      <text class="grow">考试套餐体验</text>
+      <text class="small muted">开发预览 ›</text>
+    </view>
     <view class="menu-item" wx:if="{{catalogAccess}}" bindtap="goCatalogAdmin">
       <text class="menu-icon mi-blue">题</text>
       <text class="grow">考试题库管理</text>

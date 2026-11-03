@@ -26,7 +26,7 @@ function createService({ db, allowOrders = false, now = () => Date.now() }) {
   return async (event = {}, context = {}) => {
     try {
       const { action, token } = event
-      if (!['putProduct', 'getProduct', 'createOrder', 'getOrder', 'getSubscription', 'getManageAccess', 'getManageCatalog', 'getManageProduct'].includes(action)) fail('BAD_ACTION')
+      if (!['putProduct', 'getProduct', 'createOrder', 'getOrder', 'getSubscription', 'getExamPlans', 'getManageAccess', 'getManageCatalog', 'getManageProduct'].includes(action)) fail('BAD_ACTION')
       if (typeof token !== 'string' || !token || typeof context.OPENID !== 'string' || !context.OPENID) fail('INVALID_TOKEN')
       if (!db || typeof db.runTransaction !== 'function') fail('TRANSACTION_REQUIRED')
       const users = await db.collection('users').where({ token }).limit(1).get()
@@ -62,6 +62,21 @@ function createService({ db, allowOrders = false, now = () => Date.now() }) {
           if (!list.some(exam => exam.id === product.examId)) fail('EXAM_NOT_FOUND')
           await write(tx, 'commerceProducts', product.id, product)
           return { ok: true, product }
+        }
+        if (action === 'getExamPlans') {
+          if (!validId(event.examId)) fail('BAD_SUBSCRIPTION')
+          const list = await publishedExams(tx), exam = list.find(item => item.id === event.examId)
+          if (!exam) fail('EXAM_NOT_FOUND')
+          const plans = []
+          for (const days of subscriptions.TERM_DAYS) {
+            const key = subscriptions.productId(event.examId, days), product = await read(tx, 'commerceProducts', key)
+            if (product && (!validPlan(product) || product.id !== key || product.examId !== event.examId)) fail('INVALID_PRODUCT')
+            if (product && product.active) plans.push({ id: product.id, name: product.name, durationDays: product.durationDays, priceFen: product.priceFen })
+          }
+          const timeline = await read(tx, 'commerceTimelines', subscriptions.timelineId(context.OPENID, event.examId))
+          if (timeline && (!subscriptions.valid(timeline, context.OPENID, event.examId) || at < timeline.updatedAt)) fail('INVALID_SUBSCRIPTION')
+          const endAt = timeline ? subscriptions.activeUntil(timeline, context.OPENID, event.examId, at) : null
+          return { ok: true, exam: { id: exam.id, name: exam.name }, plans, subscription: { active: endAt !== null, endAt }, purchasingAvailable: false }
         }
         if (action === 'getProduct') {
           if (!validId(event.productId)) fail('BAD_PRODUCT')

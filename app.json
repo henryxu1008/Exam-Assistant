@@ -9,7 +9,8 @@
     "pages/agreement/agreement",
     "pages/login/login",
     "pages/catalog-admin/catalog-admin",
-    "pages/commerce-admin/commerce-admin"
+    "pages/commerce-admin/commerce-admin",
+    "pages/exam-plans/exam-plans"
   ],
   "window": {
     "backgroundTextStyle": "light",
