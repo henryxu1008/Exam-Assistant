@@ -3,7 +3,7 @@
   <!-- 品牌 -->
   <view class="brand">
     <view class="brand-logo">备</view>
-    <view class="brand-name">备考刷题助手</view>
+    <view class="brand-name">回练</view>
     <view class="brand-slogan">
       {{step === 'login' ? '不登录也能刷题，登录后学习记录同步到云端' : '完善资料，让 AI 更懂你'}}
     </view>

@@ -196,7 +196,7 @@ Page({
   onAbout() {
     wx.showModal({
       title: '关于',
-      content: `备考刷题助手 v${config.version}\n云端题库与 AI 助教；换设备前请确认学习数据已同步。`,
+      content: `回练 v${config.version}\n云端题库与 AI 助教；换设备前请确认学习数据已同步。`,
       showCancel: false,
       confirmText: '知道了'
     })
