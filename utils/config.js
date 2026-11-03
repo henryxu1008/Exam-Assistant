@@ -19,6 +19,9 @@ module.exports = {
   /** 只用于隔离环境在线验证；云端受保护路由在正式入口固定关闭 */
   protectedPracticePreview: false,
 
+  /** 受保护作答持久化联调；需服务端及删除清理同时启用 */
+  protectedRecordsPreview: false,
+
   /** 云函数名称 */
   functions: {
     login: 'userLogin', // 登录：code -> openid/token

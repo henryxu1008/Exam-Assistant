@@ -23,6 +23,8 @@ const questionDomain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
 const paged = require('./paged-catalog-domain.js')
 const grading = require('./grading-domain.js')
+// Enable only in a coordinated protected-mode rollout after its collections and rules exist.
+const PROTECTED_RECORDS_ENABLED = false
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -132,6 +134,10 @@ async function purgeRows(collection, filter) {
 async function purgeBefore(openid, dataEpoch) {
   for (const condition of [db.command.lt(dataEpoch), db.command.exists(false)]) {
     await purgeRows(ATTEMPTS, { openid, dataEpoch: condition })
+    if (PROTECTED_RECORDS_ENABLED) {
+      await purgeRows(db.collection('protectedAttempts'), { openid, dataEpoch: condition })
+      await purgeRows(db.collection('protectedStudyHeads'), { openid, dataEpoch: condition })
+    }
   }
   await purgeRows(STATS, { kind: 'aiClearReceipt', openid, dataEpoch: db.command.lt(dataEpoch) })
 }

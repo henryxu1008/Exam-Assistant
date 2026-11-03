@@ -9,6 +9,7 @@ const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
 const grading = require('../shared/grading-domain.js')
 const { createLocalRepository } = require('./local-repository.js')
+const { isStorageReadable } = require('./storage-status.js')
 const localStorageListeners = new Set()
 function effectiveLocalStatus(status) {
   return { ...status, ...(scopeMigrationError ? { state: 'read_error', readError: 'LOCAL_LEGACY_MIGRATION_FAILED', error: 'LOCAL_LEGACY_MIGRATION_FAILED' } : {}) }
@@ -537,6 +538,19 @@ function captureSyncContext() {
  */
 function isStaleContext(ctx) {
   return ctx.gen !== cloudSyncGeneration || ctx.scope !== userScope || getToken() !== ctx.token
+}
+
+/** 受保护作答不能越过本机待确认的清空操作。 */
+function captureProtectedSyncContext() {
+  load()
+  const ctx = captureSyncContext()
+  if (ctx.scope === 'anon' || !ctx.token || getPendingDelete(ctx.scope) || !Number.isSafeInteger(ctx.dataEpoch) || ctx.dataEpoch < 0 ||
+      !isStorageReadable(effectiveLocalStatus(localRepository.status(ctx.scope)))) throw Object.assign(new Error('PROTECTED_SYNC_UNAVAILABLE'), { code: 'PROTECTED_SYNC_UNAVAILABLE' })
+  return ctx
+}
+function isProtectedSyncContextCurrent(ctx) {
+  try { return !!ctx && !isStaleContext(ctx) && !getPendingDelete(ctx.scope) && Number(load().dataEpoch || 0) === ctx.dataEpoch &&
+    isStorageReadable(effectiveLocalStatus(localRepository.status(ctx.scope))) } catch (e) { return false }
 }
 
 /**
@@ -1684,6 +1698,8 @@ module.exports = {
   exportLocalSnapshot: () => localRepository.read(userScope),
   rollbackLocalStorage,
   getPracticeContext,
+  captureProtectedSyncContext,
+  isProtectedSyncContextCurrent,
   isPracticeContextCurrent,
   onPracticeRestored,
   onSyncRestored,

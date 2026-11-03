@@ -27,7 +27,7 @@ const MAPPINGS = [
   ['shared/ai-question-domain.js', 'cloudfunctions/aiQuestionGen/ai-question-domain.js'],
   ['shared/paged-catalog-domain.js', 'cloudfunctions/bankSync/paged-catalog-domain.js', 'cloudfunctions/studySync/paged-catalog-domain.js', 'cloudfunctions/commerce/paged-catalog-domain.js'],
   ['shared/exam-catalog-domain.js', 'cloudfunctions/bankSync/exam-catalog-domain.js', 'cloudfunctions/studySync/exam-catalog-domain.js', 'cloudfunctions/aiQuestionGen/exam-catalog-domain.js', 'cloudfunctions/commerce/exam-catalog-domain.js'],
-  ['shared/grading-domain.js', 'cloudfunctions/studySync/grading-domain.js'],
+  ['shared/grading-domain.js', 'cloudfunctions/studySync/grading-domain.js', 'cloudfunctions/bankSync/grading-domain.js'],
   ['shared/workflow-domain.js', 'cloudfunctions/bankSync/workflow-domain.js', 'cloudfunctions/studySync/workflow-domain.js', 'cloudfunctions/aiQuestionGen/workflow-domain.js', 'cloudfunctions/commerce/workflow-domain.js'],
   ['shared/question-domain.js', 'cloudfunctions/bankSync/question-domain.js', 'cloudfunctions/studySync/question-domain.js', 'cloudfunctions/aiQuestionGen/question-domain.js', 'cloudfunctions/commerce/question-domain.js'],
   ['shared/stats-merge.js', 'cloudfunctions/studySync/stats-merge.js'],

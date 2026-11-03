@@ -84,7 +84,7 @@ function device(server, saved, cloudReady = true, questionBank, { sourceRoot = p
     module, wx, console, setTimeout, clearTimeout, Date: DeviceDate,
     require(name) {
       if (name === './questions.js') return questionBank || { getSubjects: () => [{ name: '公基' }] }
-      if (['./local-repository.js', './sync-coordinator.js', './attempt-outbox.js', './config.js',
+      if (['./local-repository.js', './sync-coordinator.js', './attempt-outbox.js', './config.js', './storage-status.js',
         '../shared/attempt-domain.js', '../shared/grading-domain.js', '../shared/stats-merge.js'].includes(name)) return require(path.resolve(sourceRoot, 'utils', name))
       throw new Error('Unexpected module ' + name)
     }
