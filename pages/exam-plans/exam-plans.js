@@ -8,7 +8,7 @@ const dateText = at => {
   const d = new Date(at), pad = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-const blank = () => ({ available: config.commercePreview === true, busy: false, loaded: false, logged: false, error: '', exam: null, plans: [], subscription: null,
+const blank = () => ({ available: config.commercePreview === true, protectedPreview: config.protectedPracticePreview === true, busy: false, loaded: false, logged: false, error: '', exam: null, plans: [], subscription: null,
   endText: '', demo: false, demoActive: false, demoEnd: '', selected: 30, answered: false, answerText: '' })
 Page({
   data: blank(),
@@ -42,6 +42,7 @@ Page({
     } finally { if (this._active && generation === this._generation) this.setData({ busy: false }) }
   },
   goLogin() { user.promptLogin() },
+  goProtectedPractice() { if (config.protectedPracticePreview === true && config.commercePreview === true && this.data.logged) wx.navigateTo({ url: '/pages/protected-practice/protected-practice' }) },
   startDemo() { if (config.commercePreview !== true || !this._active) return; this._preview = createPreview(); this.setData({ demo: true, demoActive: false, demoEnd: '', selected: 30, answered: false, answerText: '' }) },
   selectTerm(e) { const n = Number(e.currentTarget.dataset.days); if ([30, 90, 365].includes(n)) this.setData({ selected: n }) },
   updateDemo(state) { this.setData({ demoActive: state.active, demoEnd: dateText(state.endAt), answered: false, answerText: '' }) },

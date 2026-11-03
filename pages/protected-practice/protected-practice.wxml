@@ -1,0 +1,16 @@
+<view class="page">
+  <view wx:if="{{!available}}" class="card">在线练习尚未开放。</view>
+  <block wx:else>
+    <view class="card notice"><view class="title">{{examName || '在线练习联调'}}</view><view class="sub">仅限隔离环境。每题联网校验权限；本次作答暂不保存，离开页面后清除。</view></view>
+    <view wx:if="{{busy}}" class="card">正在校验并加载…</view>
+    <view wx:if="{{error}}" class="card error">{{error}}</view>
+    <button wx:if="{{error && !busy}}" bindtap="restart">重新开始</button>
+    <block wx:if="{{question && !busy}}">
+      <question-card question="{{question}}" selected="{{selected}}" submitted="{{submitted}}" show-tools="{{false}}" bind:select="onSelect" bind:fill="onFill" bind:sort="onSort" />
+      <view wx:if="{{submitted}}" class="card"><view class="title">{{correct ? '回答正确' : '回答错误'}}</view><view class="sub">{{question.explain || '暂无解析'}}</view></view>
+      <button wx:if="{{!submitted}}" type="primary" bindtap="onSubmit">提交答案</button>
+      <button wx:else type="primary" bindtap="onNext">下一题</button>
+    </block>
+    <view wx:if="{{finished}}" class="card"><view class="title">练习完成</view><view class="sub">共回答 {{answered}} 题，答对 {{correctCount}} 题。</view><button bindtap="restart">重新练习</button></view>
+  </block>
+</view>

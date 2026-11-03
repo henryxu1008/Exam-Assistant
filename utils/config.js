@@ -16,6 +16,9 @@ module.exports = {
   /** 仅供开发者工具体验套餐页面，未完成真实购买和题库保护前保持关闭 */
   commercePreview: false,
 
+  /** 只用于隔离环境在线验证；云端受保护路由在正式入口固定关闭 */
+  protectedPracticePreview: false,
+
   /** 云函数名称 */
   functions: {
     login: 'userLogin', // 登录：code -> openid/token

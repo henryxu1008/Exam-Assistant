@@ -13,7 +13,8 @@ const POLICY_ID = 'examAccessPolicy'
 function createProtectedReader({ db, now = () => Date.now() }) {
   return async (event = {}, context = {}) => {
     try {
-      if (!validId(event.examId) || !/^qb_[a-f0-9]{64}$/.test(event.releaseId || '') ||
+      const initial = event.releaseId === undefined && event.index === 0
+      if (!validId(event.examId) || (!initial && !/^qb_[a-f0-9]{64}$/.test(event.releaseId || '')) ||
           !Number.isSafeInteger(event.index) || event.index < 0 || event.index >= paged.limits.MAX_PAGES) fail('BAD_PAGE_QUERY')
       if (typeof event.token !== 'string' || !event.token || !context.OPENID) fail('INVALID_TOKEN')
       if (!db || typeof db.runTransaction !== 'function') fail('TRANSACTION_REQUIRED')
@@ -27,7 +28,7 @@ function createProtectedReader({ db, now = () => Date.now() }) {
         const active = await read(tx, 'questions', 'bank')
         if (!active || active.schemaVersion !== 4 || !paged.validRoot(active.root) ||
             !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_RELEASE')
-        if (active.root.releaseId !== event.releaseId) fail('STALE_RELEASE')
+        if (!initial && active.root.releaseId !== event.releaseId) fail('STALE_RELEASE')
         const scope = projection.examScope(active.root, event.examId)
         const policy = await read(tx, 'appConfig', POLICY_ID)
         if (!accessPolicy.validPolicy(active.root, active.publicationRevision, policy)) fail('INVALID_ACCESS_POLICY')
@@ -38,10 +39,11 @@ function createProtectedReader({ db, now = () => Date.now() }) {
           if (subscriptions.activeUntil(timeline, context.OPENID, event.examId, at) === null) fail('ENTITLEMENT_REQUIRED')
         }
         if (event.index >= scope.sourcePageCount) fail('BAD_PAGE_QUERY')
-        const archive = await read(tx, 'questions', event.releaseId)
+        const releaseId = active.root.releaseId
+        const archive = await read(tx, 'questions', releaseId)
         if (!archive || archive.kind !== 'pagedQuestionBankRelease' || !paged.validRoot(archive.root) ||
             archive.root.releaseId !== active.root.releaseId || !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_RELEASE')
-        const stored = await read(tx, 'questions', paged.pageDocumentId(event.releaseId, event.index))
+        const stored = await read(tx, 'questions', paged.pageDocumentId(releaseId, event.index))
         if (!stored || stored.kind !== 'pagedQuestionBankPage' || !stored.page || stored.page.index !== event.index) fail('INVALID_PUBLISHED_PAGE')
         const page = projection.projectPage(active.root, stored.page, event.examId)
         return { ok: true, scope, page, publicationRevision: active.publicationRevision }

@@ -1,0 +1,1 @@
+.page{padding:24rpx;background:#f5f7fb;min-height:100vh;box-sizing:border-box;color:#172b4d}.card{background:#fff;border-radius:20rpx;padding:28rpx;margin-bottom:22rpx}.notice{background:#eef4ff}.title{font-size:34rpx;font-weight:700}.sub{font-size:25rpx;color:#687993;line-height:1.6;margin-top:12rpx}.error{color:#aa3333}button{margin-top:20rpx}
