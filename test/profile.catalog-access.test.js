@@ -9,7 +9,9 @@ function setup(client) {
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
     Page: value => { definition = value }, getApp: () => ({}), wx: { navigateTo: opt => { navigated = opt.url } },
     require: name => name === '../../utils/catalog-admin.js' ? { runtimeClient: () => client }
-      : name === '../../utils/storage-status.js' ? { storageStatusView: () => ({}), isStorageReadable: () => true } : {}
+      : name === '../../utils/storage-status.js' ? { storageStatusView: () => ({}), isStorageReadable: () => true }
+        : name === '../../utils/user.js' ? { isLogged: () => true, whenReady(cb) { if (cb) cb(); return true } }
+          : {}
   })
   definition.setData = patch => Object.assign(definition.data, patch)
   definition._visible = true

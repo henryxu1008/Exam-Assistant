@@ -14,7 +14,7 @@ function profile(store) {
     Page: value => { page = value }, getApp: () => ({}),
     wx: { showToast: value => toasts.push(value), stopPullDownRefresh() {} },
     require: name => name === '../../utils/store.js' ? store : name === '../../utils/user.js'
-      ? { requireLogin(cb) { if (cb) cb(); return true }, getProfile: () => ({ logged: true }), initial: () => '合' }
+      ? { whenReady(cb) { if (cb) cb(); return true }, isLogged: () => true, getProfile: () => ({ logged: true }), initial: () => '合' }
       : require(path.resolve(path.dirname(file), name))
   })
   page.setData = patch => Object.assign(page.data, patch)

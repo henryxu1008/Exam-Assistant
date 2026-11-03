@@ -52,7 +52,7 @@ Page({
 
   onLoad() {
     this._unsubscribeSync = store.onSyncRestored(() => {
-      if (this._visible) user.requireLogin(() => { if (this._visible) this.refresh() })
+      if (this._visible) user.whenReady(() => { if (this._visible) this.refresh() })
     })
     this._unsubscribeStorage = store.onLocalStorageChange(status => {
       if (this._visible) this.setData({ localStorage: storageStatusView(status), storageReadable: isStorageReadable(status) })
@@ -69,12 +69,14 @@ Page({
 
   onShow() {
     this._visible = true
-    user.requireLogin(() => { if (this._visible) { this.refresh(); this.refreshCatalogAccess() } })
+    user.whenReady(() => { if (this._visible) { this.refresh(); this.refreshCatalogAccess() } })
   },
 
   async refreshCatalogAccess() {
     const generation = this._catalogGeneration = (this._catalogGeneration || 0) + 1
     this.setData({ catalogAccess: false })
+    // 游客没有身份，管理端入口必然不可见，不必为此发起云调用
+    if (!user.isLogged()) return
     try {
       const client = runtimeClient(), ctx = client.capture(), result = await client.access()
       if (this._visible && generation === this._catalogGeneration && client.current(ctx)) this.setData({ catalogAccess: Array.isArray(result.roles) && result.roles.length > 0 })
@@ -84,7 +86,7 @@ Page({
   goCatalogAdmin() { if (this.data.catalogAccess) wx.navigateTo({ url: '/pages/catalog-admin/catalog-admin' }) },
 
   onPullDownRefresh() {
-    user.requireLogin(() => this.refresh())
+    user.whenReady(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 
@@ -162,7 +164,7 @@ Page({
   /* ---------------- 数据管理 ---------------- */
 
   onRetryStorage() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     const result = store.retryLocalStorage()
     this.refresh()
     const title = result.ok ? '本地保存检查完成' : result.deferred ? '存储优化仍需延期' : result.cleanupPending ? '存储清理仍待完成' :
@@ -220,14 +222,15 @@ Page({
   onLogout() {
     wx.showModal({
       title: '退出登录',
-      content: '退出后需要重新微信授权登录（学习数据已保存在云端）',
+      content: '退出后回到游客模式，本机游客记录不受影响；账号学习数据已保存在云端',
       confirmText: '退出',
       confirmColor: '#e5484d',
       success(res) {
         if (!res.confirm) return
         user.logout().then(() => {
           app.setLogged(false)
-          wx.reLaunch({ url: '/pages/login/login' })
+          // 退出不等于被踢出应用：回到首页以游客身份继续使用
+          wx.reLaunch({ url: '/pages/index/index' })
         })
       }
     })

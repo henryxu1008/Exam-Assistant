@@ -16,7 +16,6 @@ require('../pages/ai/ai.js')
 let pages
 let timers
 let requests
-let logged
 let modal
 let original
 
@@ -29,19 +28,19 @@ beforeEach(() => {
   pages = []
   timers = new Map()
   requests = []
-  logged = true
   modal = null
   original = {
     setTimeout: global.setTimeout, clearTimeout: global.clearTimeout,
     requestLLM: ai.requestLLM, chat: ai.chat,
-    requireLogin: user.requireLogin, showModal: wx.showModal
+    whenReady: user.whenReady, showModal: wx.showModal
   }
   let id = 0
   global.setTimeout = (fn) => { timers.set(++id, fn); return id }
   global.clearTimeout = (key) => timers.delete(key)
   ai.requestLLM = (...args) => new Promise((resolve, reject) => requests.push({ args, resolve, reject }))
   ai.chat = () => ({ reply: '本地回复', bullets: [], cards: [] })
-  user.requireLogin = (onLogged) => { if (logged && onLogged) onLogged(); return logged }
+  // 会话就绪闸门对游客同样放行：页面是否展示历史只取决于当前数据作用域
+  user.whenReady = (onReady) => { if (onReady) onReady(); return true }
   wx.showModal = (options) => { modal = options }
 })
 
@@ -52,7 +51,7 @@ afterEach(() => {
   global.clearTimeout = original.clearTimeout
   ai.requestLLM = original.requestLLM
   ai.chat = original.chat
-  user.requireLogin = original.requireLogin
+  user.whenReady = original.whenReady
   wx.showModal = original.showModal
 })
 
@@ -106,30 +105,30 @@ test('请求期间考试 A→B→A 也不能接受旧回复', async t => {
   assert.ok(!texts(page).includes('过时答案')); assert.ok(!savedTexts().includes('过时答案'))
 })
 
-test('匿名页登录后先重载用户历史，再且仅消费一次预填输入', () => {
+test('游客态直接消费预填并展示本机历史，登录后整体切换到账号历史', () => {
   switchWithHistory('A', 'A 的历史')
   switchWithHistory('anon', '匿名历史')
-  logged = false
   const page = makePage()
   page.onInput({ detail: { value: '匿名草稿' } })
   app.globalData.aiPreInput = '这道题怎么解？'
   const context = { questionId: 'q1', userAnswer: ['B'] }
   app.globalData.aiContext = context
-  page.onShow()
-  assert.equal(requests.length, 0)
-  assert.equal(app.globalData.aiPreInput, '这道题怎么解？')
 
-  store.setUserScope('A')
-  logged = true
+  // 游客不登录也能用 AI：先展示本机匿名历史，并只消费这一次预填
   page.onShow()
-  assert.deepEqual(texts(page), ['A 的历史', '这道题怎么解？'])
+  assert.deepEqual(texts(page), ['匿名历史', '这道题怎么解？'])
   assert.equal(page.data.input, '')
-  assert.deepEqual(requests[0].args[0].map((msg) => msg.content), ['A 的历史', '这道题怎么解？'])
+  assert.deepEqual(requests[0].args[0].map((msg) => msg.content), ['匿名历史', '这道题怎么解？'])
   assert.deepEqual(requests[0].args[2], context)
   assert.equal(app.globalData.aiPreInput, '')
   assert.equal(app.globalData.aiContext, null)
+  requests[0].resolve('匿名答案')
+
+  // 登录后作用域切到账号：历史必须整体换成账号的，不能残留游客消息
+  store.setUserScope('A')
   page.onShow()
-  assert.equal(requests.length, 1)
+  assert.deepEqual(texts(page), ['A 的历史'])
+  assert.equal(requests.length, 1, '预填只允许消费一次')
 })
 
 test('同一账号反复显示页面保留草稿、历史和正在等待的回复', async () => {
@@ -259,11 +258,10 @@ test('账号切换后旧清空确认框不能删除新用户对话', () => {
   assert.deepEqual(savedTexts(), ['B 的历史'])
 })
 
-test('登出跳转登录前移除旧用户页面历史', () => {
+test('登出切到游客作用域后不残留旧账号页面历史', () => {
   switchWithHistory('A', 'A 的历史')
   const page = makePage()
   store.setUserScope('anon')
-  logged = false
   page.onShow()
   assert.ok(!texts(page).includes('A 的历史'))
 })

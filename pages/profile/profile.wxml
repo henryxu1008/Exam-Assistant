@@ -24,17 +24,17 @@
       </view>
     </block>
 
-    <!-- 未登录 -->
+    <!-- 游客（未登录） -->
     <block wx:else>
       <view class="row">
         <view class="avatar guest">?</view>
         <view class="grow">
-          <view class="user-name">未登录</view>
-          <view class="card-sub">请先完成微信授权登录</view>
+          <view class="user-name">游客模式</view>
+          <view class="card-sub">未登录 · 学习记录仅保存在本机</view>
         </view>
-        <view class="btn btn-primary btn-round login-btn" bindtap="goLogin">去登录</view>
+        <view class="btn btn-primary btn-round login-btn" bindtap="goLogin">登录同步</view>
       </view>
-      <view class="guest-tip small muted">登录后才能查看完整学习档案</view>
+      <view class="guest-tip small muted">登录后记录同步到云端，换设备不丢；游客期间的记录也会一并并入账号</view>
     </block>
 
     <view class="row user-meta" wx:if="{{storageReadable}}">

@@ -38,7 +38,7 @@ Page({
 
   onLoad() {
     this._unsubscribeSync = store.onSyncRestored(() => {
-      if (this._visible) user.requireLogin(() => { if (this._visible) this.refresh() })
+      if (this._visible) user.whenReady(() => { if (this._visible) this.refresh() })
     })
   },
 
@@ -51,11 +51,11 @@ Page({
 
   onShow() {
     this._visible = true
-    user.requireLogin(() => this.refresh())
+    user.whenReady(() => this.refresh())
   },
 
   onPullDownRefresh() {
-    user.requireLogin(() => this.refresh())
+    user.whenReady(() => this.refresh())
     wx.stopPullDownRefresh()
   },
 

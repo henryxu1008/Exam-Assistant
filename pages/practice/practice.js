@@ -58,7 +58,7 @@ Page({
   },
 
   onShow() {
-    user.requireLogin(() => this._showPractice())
+    user.whenReady(() => this._showPractice())
   },
 
   _showPractice() {
@@ -101,7 +101,7 @@ Page({
 
   /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
   loadPending() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     return this._consumePending()
   },
 
@@ -403,7 +403,7 @@ Page({
   },
 
   onStar() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     const q = this.data.question
     if (!q) return
     store.ensureRecord(q)
@@ -413,7 +413,7 @@ Page({
   },
 
   onSubmit() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     if (!this._ensurePracticeContext()) return
     const q = this.data.question
     if (!q || this.data.submitted) return
@@ -518,7 +518,7 @@ Page({
   },
 
   onSubjectChange(e) {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     const subject = e.currentTarget.dataset.subject || ''
     if (!subject) return // 已去掉「全部」，dataset 里只会是具体科目
     // 切换全应用当前科目；换科目后原章节约束失效，chapter 降级为整科顺序练习
@@ -557,7 +557,7 @@ Page({
   },
 
   restart() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     this._params = null
     const params = {
       mode: this.data.mode,

@@ -182,6 +182,66 @@ function getUserScope() {
 }
 
 /**
+ * 游客档案并入账号：登录成功后、切换作用域之前调用。
+ *
+ * 为什么需要：登录不是使用前提，游客态（'anon'）也能完整刷题；若登录时直接切到账号
+ * 作用域，游客期间积累的作答与错题在界面上会「凭空消失」（数据仍留在本机 anon 命名空间）。
+ *
+ * 安全约束（与既有评审结论对齐）：
+ *  - 只在「账号作用域在本机还没有任何档案」时采纳：账号一旦有自己的数据就不再并，
+ *    避免共享设备上把别人的游客记录混进账号，也避免重复登录反复并出重复事实；
+ *  - 只做一次性本地写入，不发云端请求：随后的首次拉取按 mergeStats 与云端档案双向合并
+ *    （records/daily 取并集、attempts 按 id 并集），服务端写入同样是 mergeStats，
+ *    因此不会用游客档案整doc覆盖账号备份（评审 P1）；
+ *  - 不搬运算/删除类意图：syncCursor、dataEpoch、pendingDeleteId、aiClearQueue 一律丢弃，
+ *    游客的清空操作只作用于本机匿名档案，不能替账号发起云端删除；
+ *  - 不删除匿名档案，退出登录后仍可继续以游客身份看到这些记录。
+ *
+ * @param {String} openid 登录后的账号 openid
+ * @returns {{adopted: Boolean, questions: Number, attempts: Number}} 供登录页提示
+ */
+function adoptGuestProfile(openid) {
+  const target = openid ? String(openid) : ''
+  const skipped = { adopted: false, questions: 0, attempts: 0 }
+  if (!target || target === 'anon' || userScope !== 'anon') return skipped
+  // 节流窗口内的游客作答可能还没落盘，先写一次，避免漏掉最后一段记录
+  if (state && dirty) {
+    try {
+      attemptOutbox.ensure(state)
+      localRepository.write('anon', state)
+    } catch (e) {
+      return skipped // 落盘失败就不并，宁可少并也不能读半份档案
+    }
+  }
+  let guest = null
+  let existing = null
+  try {
+    guest = migrate(localRepository.read('anon'))
+    existing = migrate(localRepository.read(target))
+  } catch (e) {
+    // 任一检查点不可读都不写入：不可读的账号档案不是空账号，覆盖等于丢数据
+    return skipped
+  }
+  if (!guest || !hasLocalSyncData(guest)) return skipped
+  if (existing && hasLocalSyncData(existing)) return skipped
+  const adopted = mergeStats(getDefaultState(), guest)
+  delete adopted.syncCursor
+  delete adopted.pendingDeleteId
+  delete adopted.aiClearQueue
+  delete adopted.dataEpoch
+  // 游客的清空代次不作用于账号：留 0 才能与账号已有对话并集，而不是把账号对话抹掉
+  adopted.aiEpoch = 0
+  // attemptOutbox 不搬：重新加载时 ensure() 会按 attempts 重建待传队列，游客作答才会真正上云
+  delete adopted.attemptOutbox
+  try {
+    localRepository.write(target, adopted)
+  } catch (e) {
+    return skipped
+  }
+  return { adopted: true, questions: Object.keys(adopted.records || {}).length, attempts: (adopted.attempts || []).length }
+}
+
+/**
  * 切换数据存储作用域（通常在登录成功后用 openid、登出时用 null/'anon' 调用）。
  * 会重置内存态并从新 key 重新加载；首次从旧版全局 key 迁移数据（仅一次，避免丢数据）。
  */
@@ -1616,6 +1676,7 @@ module.exports = {
   onSyncRestored,
   syncNow,
   setUserScope,
+  adoptGuestProfile,
   clearScope,
   load,
   flush,

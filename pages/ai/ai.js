@@ -65,8 +65,8 @@ Page({
   },
 
   onShow() {
-    if (user.requireLogin(() => this._showConversation())) return
-    // 待校验或未登录时不展示缓存历史；全局预填输入继续保留，认证后再消费。
+    if (user.whenReady(() => this._showConversation())) return
+    // 仅入口守卫（版本过低）拦下时走到这里：清空展示，保留全局预填输入待解除阻断后再消费。
     this._invalidateReply()
     this._conversationVersion = null
     this.setData({ messages: [], input: '', loading: false, scrollTo: '', scopeLabel: '' })
@@ -106,7 +106,7 @@ Page({
   send(text, context) {
     // 版本被判定为过低时阻断发送（守卫为可选方法，缺失时不影响原有流程）
     if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     this._syncConversation()
     const content = String(text || '').trim()
     if (!content || this.data.loading) return
@@ -203,7 +203,7 @@ Page({
   },
 
   onClear() {
-    if (!user.requireLogin()) return
+    if (!user.whenReady()) return
     this._syncConversation()
     const version = this._conversationVersion
     const scopeVersion = this._studyScopeVersion

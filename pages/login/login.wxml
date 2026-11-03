@@ -5,7 +5,7 @@
     <view class="brand-logo">备</view>
     <view class="brand-name">备考刷题助手</view>
     <view class="brand-slogan">
-      {{step === 'login' ? '微信授权登录，开始你的备考' : '完善资料，让 AI 更懂你'}}
+      {{step === 'login' ? '不登录也能刷题，登录后学习记录同步到云端' : '完善资料，让 AI 更懂你'}}
     </view>
   </view>
 
@@ -27,6 +27,16 @@
       <text class="wx-icon">微</text>
       <text>{{loading ? '登录中…' : '微信一键登录'}}</text>
     </button>
+
+    <!-- 不授权的出口：微信不允许以登录作为使用前提 -->
+    <view class="divider">
+      <view class="divider-line"></view>
+      <text class="divider-text">或</text>
+      <view class="divider-line"></view>
+    </view>
+
+    <view class="btn-ghost-entry" bindtap="goGuest">先随便逛逛</view>
+    <view class="small muted guest-hint">游客状态可正常刷题，记录先存本机，登录后并入账号</view>
 
     <view class="error-box" wx:if="{{error}}">
       <text class="error-text">{{error}}</text>

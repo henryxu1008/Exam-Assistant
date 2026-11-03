@@ -96,6 +96,8 @@ function requestLLM(messages, subject, context) {
       resolve(null)
       return
     }
+    // 游客没有业务令牌，远端一定鉴权失败：直接回落本地规则引擎，省一次必然失败的请求
+    if (!token) { resolve(null); return }
     // 透传当前科目，保证大模型回答只讲该科目（与全应用科目口径一致）
     // 端上助手消息 role 用 'ai'，云函数白名单只认 'user'/'assistant'/'system'，
     // 在此归一化，避免大模型侧把助手历史整段丢弃导致多轮上下文丢失

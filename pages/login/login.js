@@ -106,7 +106,12 @@ Page({
           avatarPreview: profile.avatarUrl || ''
         })
         self.refreshExamOptions()
-        wx.showToast({ title: '登录成功', icon: 'none' })
+        // 游客期间的学习记录会在登录时并入账号，明确告知用户，避免以为数据丢失
+        const merged = user.takeGuestMergeInfo()
+        wx.showToast({
+          title: merged && merged.adopted ? `已并入游客记录 ${merged.questions} 题` : '登录成功',
+          icon: 'none'
+        })
       })
       .catch((err) => {
         self.setData({ loading: false, error: (err && err.message) || '登录失败' })
@@ -195,7 +200,8 @@ Page({
         if (!res.confirm) return
         user.logout().then(() => {
           app.setLogged(false)
-          wx.reLaunch({ url: '/pages/login/login' })
+          // 退出后回到游客态，而不是重新落到登录页
+          wx.reLaunch({ url: '/pages/index/index' })
         })
       }
     })
@@ -203,6 +209,14 @@ Page({
 
   goPractice() {
     wx.switchTab({ url: '/pages/practice/practice' })
+  },
+
+  /**
+   * 游客进入：不登录直接使用。
+   * 微信不允许把授权登录当作使用前提，登录页必须留出不授权的出口。
+   */
+  goGuest() {
+    this.goBack()
   },
 
   /* ---------------- 返回 ---------------- */
