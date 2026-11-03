@@ -94,9 +94,10 @@ test('受保护模式封闭旧公开读取和旧发布路径，实际入口只�
     assert.equal(result.error, 'PROTECTED_READER_REQUIRED', action); assert.equal(result.page, undefined); assert.equal(result.bank, undefined)
   }
   assert.equal((await protectedMain({})).error, 'PROTECTED_READER_REQUIRED')
-  for (const action of ['set', 'publish', 'publishDraft', 'publishExamDraft', 'publishPagedDraft']) {
+  for (const action of ['set', 'publish', 'publishDraft', 'publishExamDraft']) {
     assert.equal((await protectedMain({ ...request, action })).error, 'PROTECTED_PUBLICATION_NOT_READY', action)
   }
+  assert.equal((await protectedMain({ action: 'publishPagedDraft' })).error, 'NO_TOKEN')
   const accepted = await protectedMain({ ...request, action: 'getProtectedExamPage' })
   assert.equal(accepted.ok, true); assert.equal(accepted.page.questions[0].id, 'A')
   assert.equal(JSON.stringify(accepted).includes('付费乙'), false)

@@ -30,7 +30,6 @@ const { checkIdentities } = require('./identity-registry.js')
 const { createPagedWorkflow } = require('./paged-workflow.js')
 const { createProtectedReader } = require('./protected-reader.js')
 const workflow = createWorkflow(db, activateBank)
-const pagedWorkflow = createPagedWorkflow(db)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
 const ADMIN_ACTOR_ID = 'admin'
@@ -98,6 +97,7 @@ async function publish(event, actor) {
 // must first complete protected clients, database rules and atomic publication before enabling it.
 function createMain({ protectedMode = false, getContext = () => cloud.getWXContext() } = {}) {
   const protectedRead = createProtectedReader({ db })
+  const pagedWorkflow = createPagedWorkflow(db, { protectedMode })
   return async (event = {}) => {
   const action = event.action || 'get'
   if (action === 'getProtectedExamPage') {
@@ -111,11 +111,16 @@ function createMain({ protectedMode = false, getContext = () => cloud.getWXConte
       return { ok: false, error: 'PROTECTED_READER_REQUIRED' }
     }
     // Existing publishers do not yet atomically commit access policies with the publication.
-    if (['set', 'publish', 'publishDraft', 'publishExamDraft', 'publishPagedDraft'].includes(action)) {
+    if (['set', 'publish', 'publishDraft', 'publishExamDraft', 'getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft'].includes(action)) {
       return { ok: false, error: 'PROTECTED_PUBLICATION_NOT_READY' }
     }
   }
-  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) return pagedWorkflow(event)
+  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) {
+    if (!protectedMode) return pagedWorkflow(event)
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return pagedWorkflow(event, context)
+  }
   if (['getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft', 'publishDraft', 'publishExamDraft'].includes(action)) return workflow(event)
   if (action === 'getPagedPublished') {
     try {
