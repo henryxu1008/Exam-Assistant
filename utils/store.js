@@ -190,6 +190,8 @@ function getUserScope() {
  * 安全约束（与既有评审结论对齐）：
  *  - 只在「账号作用域在本机还没有任何档案」时采纳：账号一旦有自己的数据就不再并，
  *    避免共享设备上把别人的游客记录混进账号，也避免重复登录反复并出重复事实；
+ *  - 旧版全局档案（`exam_quiz_data_v1`）先并入再叠加游客记录：本函数抢在 setUserScope
+ *    之前写检查点，不先处理那份历史就会被迁移逻辑当成「已有档案」直接删除；
  *  - 只做一次性本地写入，不发云端请求：随后的首次拉取按 mergeStats 与云端档案双向合并
  *    （records/daily 取并集、attempts 按 id 并集），服务端写入同样是 mergeStats，
  *    因此不会用游客档案整doc覆盖账号备份（评审 P1）；
@@ -215,16 +217,27 @@ function adoptGuestProfile(openid) {
   }
   let guest = null
   let existing = null
+  let legacyState = null
   try {
     guest = migrate(localRepository.read('anon'))
     existing = migrate(localRepository.read(target))
+    // 旧版全局档案（作用域隔离前的单 key）必须在这里一起处理：
+    // setUserScope 的迁移只在目标作用域还没有检查点时才导入，而本函数已经抢先写了检查点，
+    // 若不管它，升级用户的历史会被那条「已有档案就删旧 key」的分支直接丢掉。
+    const rawLegacy = wx.getStorageSync(STORAGE_KEY)
+    if (rawLegacy && typeof rawLegacy === 'object') {
+      legacyState = migrate(rawLegacy)
+      // 版本无法识别就不碰：宁可放弃并入，也不能让旧档案在 setUserScope 里被删除
+      if (!legacyState) return skipped
+    }
   } catch (e) {
     // 任一检查点不可读都不写入：不可读的账号档案不是空账号，覆盖等于丢数据
     return skipped
   }
   if (!guest || !hasLocalSyncData(guest)) return skipped
   if (existing && hasLocalSyncData(existing)) return skipped
-  const adopted = mergeStats(getDefaultState(), guest)
+  // 旧档案是同一用户更早的历史，先铺底再叠游客记录（两者都是本机产生、互不重叠）
+  const adopted = mergeStats(mergeStats(getDefaultState(), legacyState || {}), guest)
   delete adopted.syncCursor
   delete adopted.pendingDeleteId
   delete adopted.aiClearQueue

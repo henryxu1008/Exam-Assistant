@@ -267,6 +267,29 @@ test('游客记录在首次登录时并入账号，匿名档案保留', () => {
   })
 })
 
+test('升级用户登录：旧版全局档案与游客记录都保留（评审 P1）', () => {
+  const user = freshUser()
+  const store = require('../utils/store.js')
+  const merge = require('../shared/stats-merge.js')
+  // 升级前的老版本：学习档案在全局单 key，尚无作用域隔离
+  const legacy = merge.getDefaultState()
+  legacy.records.q_legacy = {
+    id: 'q_legacy', subject: SUBJECT, chapter: 'c', attempts: 1, right: 1, wrong: 0,
+    answerBy: { legacy: { attempts: 1, right: 1, wrong: 0 } }, updatedAt: Date.now() - 1000
+  }
+  wx.setStorageSync('exam_quiz_data_v1', legacy)
+  // 升级后先以游客身份做了一题，随后登录
+  store.setUserScope('anon')
+  store.recordAnswer(GUEST_Q, true, 100)
+  store.flush()
+  loginAs('OPENID_UPGRADE')
+  return user.login().then(() => {
+    assert.deepStrictEqual(Object.keys(store.getRecords()).sort(), ['q_guest', 'q_legacy'],
+      '并入游客档案不能把旧版全局档案挡在迁移之外')
+    assert.strictEqual(wx.getStorageSync('exam_quiz_data_v1'), '', '旧全局 key 应已清理')
+  })
+})
+
 test('账号在本机已有档案时不并入游客记录', () => {
   const user = freshUser()
   const store = require('../utils/store.js')
