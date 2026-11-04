@@ -8,6 +8,8 @@
     <block wx:if="{{protectedLoaded}}">
       <view class="protected-summary">答 {{protectedReport.total}} 次 · 对 {{protectedReport.correct}} 次 · 正确率 {{protectedReport.rate}}%</view>
       <view wx:if="{{!protectedReport.total}}" class="small muted">当前考试暂无受保护练习记录。</view>
+      <view wx:if="{{protectedReport.total}}" class="card-sub">近 7 天正确率</view>
+      <view wx:for="{{protectedReport.trend}}" wx:key="date" class="trend-row"><text class="trend-date">{{item.date}}</text><view class="bar trend-bar"><view class="bar-inner" style="width: {{item.rate}}%"></view></view><text class="trend-value">{{item.total ? item.rate + '%' : '未练'}}</text></view>
       <view wx:for="{{protectedReport.subjects}}" wx:key="subject" class="protected-item"><text>{{item.label}}</text><text>答 {{item.attempts}} · 正确率 {{item.rate}}%</text></view>
       <view wx:for="{{protectedReport.chapters}}" wx:key="key" class="protected-item protected-chapter"><text>{{item.subjectLabel}} · {{item.label}}</text><text>答 {{item.attempts}} · 正确率 {{item.rate}}%</text></view>
     </block>

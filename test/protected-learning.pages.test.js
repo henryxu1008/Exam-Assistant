@@ -4,6 +4,8 @@ const assert = require('node:assert/strict')
 const { makeHarness } = require('./support/study-sync-harness.js')
 const { createProtectedStudy } = require('../cloudfunctions/bankSync/protected-study.js')
 const { createProtectedReader } = require('../cloudfunctions/bankSync/protected-reader.js')
+const { createProtectedState } = require('../cloudfunctions/bankSync/protected-state.js')
+const { createProtectedMarkerClient } = require('../utils/protected-marker-client.js')
 const { createProtectedStudyClient } = require('../utils/protected-study-client.js')
 const { createProtectedPracticeClient } = require('../utils/protected-practice-client.js')
 const { createProtectedReportLoader } = require('../utils/protected-report-loader.js')
@@ -40,7 +42,9 @@ function setup(t) {
   const recorder = createProtectedStudySession({ client, outbox: createProtectedOutbox(wx),
     captureSync: () => ({ scope: session.openid, token: session.token, dataEpoch: 0, generation }),
     syncCurrent: ctx => ctx.generation === generation && ctx.scope === session.openid && ctx.token === session.token })
-  const loader = createProtectedReportLoader({ client, reader, session: recorder, getExam: () => examId })
+  const markerService = createProtectedState({ db: h.db, now: () => clock })
+  const markers = createProtectedMarkerClient({ call: data => markerService(data, { OPENID: session.openid }) })
+  const loader = createProtectedReportLoader({ client, reader, session: recorder, getExam: () => examId, markers })
   const q = id => built.publicPages.flatMap(p => p.questions).find(q => q.id === id)
   const add = async (id, op, correct, target = 'exam_a') => {
     const question = q(id), choice = correct ? question.answer[0] : question.options.find(option => !question.answer.includes(option.key)).key
@@ -54,7 +58,7 @@ function setup(t) {
   t.mock.method(bankApi, 'getSubjects', () => []); t.mock.method(bankApi, 'getSubjectLabel', id => ({ a: '甲科', a2: '第二科', b: '乙科' }[id] || id))
   t.mock.method(bankApi, 'getChapterLabel', (_subject, id) => id)
   t.after(() => { config.protectedRecordsPreview = old.records; config.protectedPracticePreview = old.practice; __wxStorage.clearAll() })
-  return { h, bank, built, timelineKey, q, add, loader, reader, recorder, client, clock: v => { clock = v },
+  return { h, bank, built, timelineKey, q, add, loader, reader, recorder, client, markers, clock: v => { clock = v },
     session: v => { session = v; generation++ }, exam: v => { examId = v; generation++ } }
 }
 function page(file, loader, reader) {
@@ -211,4 +215,78 @@ test('受保护模式下旧错题、学情和练习会话不回显本机题目�
   assert.equal(p.data.question, null); assert.deepEqual(p.data.queue, []); assert.match(p.data.emptyTip, /受保护/)
   assert.equal(p._restoreSession({ id: 'old' }), false)
   mistakes.onHide(); analysis.onHide(); p.onUnload(); delete require.cache[location]
+})
+
+
+test('错题收藏、标记掌握、取消掌握在跨设备恢复后保持一致', async t => {
+  const { add, loader, reader, markers } = setup(t); await add('A', 'wrong', false)
+  const first = page('../pages/mistakes/mistakes.js', loader, reader); first._protectedMarkers = markers; await settle()
+  const row = first.data.protectedWrongs[0], action = field => ({ currentTarget: { dataset: { key: row.key, field } } })
+  await first.setProtectedMarker(action('starred'))
+  assert.equal(first.data.protectedWrongs[0].starred, true)
+  const second = page('../pages/mistakes/mistakes.js', loader, reader); second._protectedMarkers = markers; await settle()
+  assert.equal(second.data.protectedWrongs[0].starred, true)
+  await second.setProtectedMarker(action('mastered'))
+  assert.equal(second.data.protectedWrongs.length, 0)
+  second.protectedTabChange({ currentTarget: { dataset: { tab: 'mastered' } } })
+  assert.equal(second.data.protectedWrongs[0].mastered, true)
+  await second.setProtectedMarker(action('mastered'))
+  second.protectedTabChange({ currentTarget: { dataset: { tab: 'all' } } })
+  assert.equal(second.data.protectedWrongs[0].mastered, false)
+  first.onHide(); second.onHide()
+})
+
+test('练习提交后可收藏正确题，随后在收藏分类恢复', async t => {
+  const { reader, recorder, markers, loader } = setup(t)
+  global.getApp = () => ({ globalData: {}, startPractice() {} }); let definition; global.Page = value => { definition = value }
+  const location = require.resolve('../pages/protected-practice/protected-practice.js'); delete require.cache[location]; require(location)
+  const p = Object.assign({}, definition, { data: clone(definition.data), setData(value) { Object.assign(this.data, value) } })
+  p.onLoad({ questionId: 'A' }); p._client = reader; p._recorder = recorder; p._markers = markers; p.onShow(); await settle(); await settle()
+  p.onSelect({ detail: { key: p.data.question.answer[0] } }); await p.onSubmit(); await settle()
+  assert.equal(p.data.markerLoaded, true); await p.toggleStar(); assert.equal(p.data.starred, true)
+  const mistakes = page('../pages/mistakes/mistakes.js', loader, reader); mistakes._protectedMarkers = markers; await settle()
+  mistakes.protectedTabChange({ currentTarget: { dataset: { tab: 'starred' } } })
+  assert.equal(mistakes.data.protectedWrongs[0].questionId, 'A'); assert.equal(mistakes.data.protectedWrongs[0].wrong, 0)
+  p.onUnload(); mistakes.onHide(); delete require.cache[location]
+})
+
+test('收藏回执丢失后重新读取真实状态，避免重复反转', async t => {
+  const { add, loader, reader, markers } = setup(t); await add('A', 'wrong', false)
+  const p = page('../pages/mistakes/mistakes.js', loader, reader); await settle()
+  p._protectedMarkers = { set: async (...args) => { await markers.set(...args); throw Object.assign(new Error('lost ack'), { code: 'NETWORK_ERROR' }) } }
+  const row = p.data.protectedWrongs[0]
+  await p.setProtectedMarker({ currentTarget: { dataset: { key: row.key, field: 'starred' } } })
+  assert.equal(p.data.protectedWrongs[0].starred, true)
+  assert.match(p.data.protectedQuestionError, /未确认/); p.onHide()
+})
+
+test('收藏响应在账号 A→B→A 后返回时不应用到页面', async t => {
+  const { add, loader, reader, session } = setup(t); await add('A', 'wrong', false)
+  const p = page('../pages/mistakes/mistakes.js', loader, reader); await settle()
+  let resolve; p._protectedMarkers = { set: () => new Promise(r => { resolve = r }) }
+  const row = p.data.protectedWrongs[0], pending = p.setProtectedMarker({ currentTarget: { dataset: { key: row.key, field: 'starred' } } })
+  session({ logged: true, openid: 'bob', token: 'tokB' }); session({ logged: true, openid: 'alice', token: 'tokA' })
+  resolve({ revision: 1, duplicate: false }); await pending
+  assert.equal(p.data.protectedLoaded, false); assert.deepEqual(p.data.protectedWrongs, [])
+  p.onHide()
+})
+
+test('已掌握的题目再次答错会原子取消掌握，收藏不受影响', async t => {
+  const { add, loader, reader, markers } = setup(t); await add('A', 'wrong1', false)
+  const p = page('../pages/mistakes/mistakes.js', loader, reader); p._protectedMarkers = markers; await settle()
+  const row = p.data.protectedWrongs[0], action = field => ({ currentTarget: { dataset: { key: row.key, field } } })
+  await p.setProtectedMarker(action('starred')); await p.setProtectedMarker(action('mastered'))
+  assert.equal(p.data.protectedWrongs.length, 0)
+  assert.equal((await add('A', 'wrong2', false)).ok, true)
+  await p.refreshProtected()
+  assert.equal(p.data.protectedWrongs[0].mastered, false); assert.equal(p.data.protectedWrongs[0].starred, true)
+  p.onHide()
+})
+
+test('恢复期间收藏或掌握状态变化时不发布混合快照', async t => {
+  const { add, reader, recorder, client } = setup(t); await add('A', 'wrong', false)
+  let calls = 0
+  const markers = { get: async () => ({ revision: ++calls, entries: [] }) }
+  const loader = createProtectedReportLoader({ client, reader, session: recorder, getExam: () => 'exam_a', markers })
+  await assert.rejects(loader.load(loader.capture()), /SNAPSHOT_CHANGED/)
 })

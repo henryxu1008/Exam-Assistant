@@ -166,3 +166,14 @@ test('考试目录仅返回已认证用户可见的名称，不因权益失效�
   h.fail.get = name => name === 'appConfig'
   assert.equal((await reader(event, ctx)).error, 'PROTECTED_READ_FAILED')
 })
+
+test('收藏状态路由默认关闭，受保护入口只允许当前账号读取', async () => {
+  const { h, ctx } = setup()
+  const request = { action: 'getProtectedMarkers', token: USER_TOKEN, examId: 'exam_a', dataEpoch: 0 }
+  assert.equal((await h.main(request)).error, 'PROTECTED_READ_DISABLED')
+  const main = h.createMain({ protectedMode: true, getContext: () => ctx })
+  const result = await main(request)
+  assert.equal(result.ok, true); assert.equal(result.revision, 0); assert.equal(result.entries.length, 0)
+  const forged = h.createMain({ protectedMode: true, getContext: () => ({ OPENID: ADMIN_OPENID }) })
+  assert.equal((await forged(request)).error, 'INVALID_TOKEN')
+})

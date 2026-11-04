@@ -6,6 +6,7 @@ const user = require('../../utils/user.js')
 const config = require('../../utils/config.js')
 const { runtimeProtectedReportLoader } = require('../../utils/protected-report-loader.js')
 const { runtimeProtectedPracticeClient } = require('../../utils/protected-practice-client.js')
+const { runtimeProtectedMarkerClient } = require('../../utils/protected-marker-client.js')
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -34,10 +35,11 @@ Page({
     counts: { all: 0, stubborn: 0, due: 0, starred: 0 },
     emptyTip: '', protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true), protectedPracticeEnabled: (config.protectedPracticePreview === true || config.protectedCatalog === true),
     protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
-    protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false
+    protectedWrongs: [], protectedHasMore: false, protectedTab: 'all', protectedCounts: {}, protectedMarkerBusy: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false
   },
 
   onLoad() {
+    this._protectedMarkers = runtimeProtectedMarkerClient()
     this.setData({ subjects: bank.getSubjects() })
     if ((config.protectedRecordsPreview === true || config.protectedCatalog === true)) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
   },
@@ -51,8 +53,8 @@ Page({
   },
 
   onHide() {
-    this._visible = false; this._protectedGeneration = (this._protectedGeneration || 0) + 1; this._questionGeneration = (this._questionGeneration || 0) + 1
-    this._protectedContext = null; this._protectedRows = []; this.setData({ protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
+    this._visible = false; this._markerOperation = (this._markerOperation || 0) + 1; this._protectedGeneration = (this._protectedGeneration || 0) + 1; this._questionGeneration = (this._questionGeneration || 0) + 1
+    this._protectedContext = null; this._protectedRows = []; this.setData({ protectedMarkerBusy: false, protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
       protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false })
   },
   onUnload() { this.onHide() },
@@ -110,9 +112,13 @@ Page({
       if (!this._visible || generation !== this._protectedGeneration) return
       if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
       this._protectedContext = ctx
-      this._protectedRows = report.wrongs.map((item, index) => ({ ...item, label: `错题 ${index + 1}` }))
+      this._protectedRows = report.questions.filter(item => item.wrong > 0 || item.starred || item.mastered).map((item, index) => ({ ...item, label: `题目 ${index + 1}` }))
+      this._protectedRevision = report.markerRevision; this._protectedRelease = { releaseId: report.releaseId, publicationRevision: report.publicationRevision }
       this._protectedLimit = 20; this._renderProtected()
-      this.setData({ protectedBusy: false, protectedLoaded: true, protectedWrongCount: report.wrongs.length })
+      this.setData({ protectedBusy: false, protectedLoaded: true, protectedWrongCount: report.wrongs.length,
+        protectedCounts: { all: this._protectedRows.filter(item => item.wrong && !item.mastered).length,
+          due: this._protectedRows.filter(item => item.due).length, starred: this._protectedRows.filter(item => item.starred).length,
+          mastered: this._protectedRows.filter(item => item.mastered).length } })
     } catch (e) {
       if (this._visible && generation === this._protectedGeneration) this.setData({ protectedBusy: false, protectedLoaded: false,
         protectedError: e.code === 'NO_TOKEN' ? '登录后可查看受保护错题记录。' : e.code === 'STALE_CONTEXT' ? '账号或考试已切换，请重新载入。' : '受保护学习记录读取失败，请联网后重试。' })
@@ -123,7 +129,38 @@ Page({
     this.setData({ protectedBusy: false, protectedLoaded: false, protectedError: '账号或考试已切换，请重新载入。', protectedWrongCount: 0,
       protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false })
   },
-  _renderProtected() { this.setData({ protectedWrongs: this._protectedRows.slice(0, this._protectedLimit), protectedHasMore: this._protectedRows.length > this._protectedLimit }) },
+  _renderProtected() {
+    const tab = this.data.protectedTab
+    const rows = this._protectedRows.filter(item => tab === 'due' ? item.due : tab === 'starred' ? item.starred : tab === 'mastered' ? item.mastered : item.wrong && !item.mastered)
+    this.setData({ protectedWrongs: rows.slice(0, this._protectedLimit), protectedHasMore: rows.length > this._protectedLimit })
+  },
+  protectedTabChange(e) {
+    const tab = e.currentTarget.dataset.tab
+    if (!['all', 'due', 'starred', 'mastered'].includes(tab)) return
+    this._protectedLimit = 20; this.setData({ protectedTab: tab }); this._renderProtected()
+  },
+  async setProtectedMarker(e) {
+    const ctx = this._protectedContext, field = e.currentTarget.dataset.field
+    const row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
+    if (!row || !ctx || !['starred', 'mastered'].includes(field) || this.data.protectedMarkerBusy || !this._visible) return
+    if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+    const generation = this._protectedGeneration, operation = this._markerOperation = (this._markerOperation || 0) + 1
+    const input = { examId: ctx.examId, questionId: row.questionId, field, value: !row[field], expectedRevision: this._protectedRevision,
+      ...this._protectedRelease, operationId: 'pm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) }
+    this.setData({ protectedMarkerBusy: true, protectedQuestionError: '' })
+    try {
+      await this._protectedMarkers.set(input, ctx.context, value => this._protectedLoader.current({ ...ctx, context: value }))
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      await this.refreshProtected()
+    } catch (err) {
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      await this.refreshProtected()
+      if (this._visible) this.setData({ protectedQuestionError: err.code === 'STATE_CONFLICT' ? '其他设备已修改，请核对最新状态后重试。' :
+        err.code === 'ENTITLEMENT_REQUIRED' ? '当前权限已失效，记录仍保留。' : '状态未确认，请核对最新状态后重试。' })
+    } finally { if (this._visible && operation === this._markerOperation) this.setData({ protectedMarkerBusy: false }) }
+  },
   showMoreProtected() { if (!this._protectedContext || !this._protectedLoader.current(this._protectedContext)) { this.refreshProtected(); return }; this._protectedLimit += 20; this._renderProtected() },
   async showProtectedQuestion(e) {
     const ctx = this._protectedContext, row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
@@ -135,7 +172,7 @@ Page({
       if (!this._visible || generation !== this._protectedGeneration || request !== this._questionGeneration) return
       if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
       this.setData({ protectedQuestion: { ...result.question, answerText: typeof bank.answerPlain === 'function' ? bank.answerPlain(result.question) : '',
-        updated: result.question.versionId !== row.lastWrongVersion }, protectedQuestionBusy: false })
+        updated: !!row.lastWrongVersion && result.question.versionId !== row.lastWrongVersion }, protectedQuestionBusy: false })
     } catch (err) {
       if (!this._visible || generation !== this._protectedGeneration || request !== this._questionGeneration) return
       if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }

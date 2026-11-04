@@ -24,11 +24,19 @@
     <view class="card-sub">当前考试已确认的历史错题{{protectedLoaded ? ' · 共 ' + protectedWrongCount + ' 道' : ''}}；待同步作答不计入。</view>
     <view wx:if="{{protectedBusy}}" class="small muted">正在读取学习记录…</view>
     <view wx:if="{{protectedError}}" class="protected-error">{{protectedError}} <text bindtap="refreshProtected">重试</text></view>
-    <view wx:if="{{protectedLoaded && !protectedWrongCount}}" class="small muted">当前考试还没有受保护练习错题。</view>
+    <view wx:if="{{protectedLoaded}}" class="row protected-actions">
+      <text data-tab="all" bindtap="protectedTabChange">错题 {{protectedCounts.all}}</text>
+      <text data-tab="due" bindtap="protectedTabChange">待复习 {{protectedCounts.due}}</text>
+      <text data-tab="starred" bindtap="protectedTabChange">收藏 {{protectedCounts.starred}}</text>
+      <text data-tab="mastered" bindtap="protectedTabChange">已掌握 {{protectedCounts.mastered}}</text>
+    </view>
+    <view wx:if="{{protectedLoaded && !protectedWrongs.length}}" class="small muted">当前分类暂无记录。</view>
     <view wx:for="{{protectedWrongs}}" wx:key="key" class="protected-row">
       <view class="row between"><text class="strong">{{item.label}}</text><text class="small muted">错 {{item.wrong}} 次 / 答 {{item.attempts}} 次</text></view>
       <view class="small muted">{{item.subjectLabel}} · {{item.chapterLabel}}</view>
-      <view class="row protected-actions"><text data-key="{{item.key}}" bindtap="showProtectedQuestion">查看题目</text><text wx:if="{{protectedPracticeEnabled}}" data-key="{{item.key}}" bindtap="redoProtected">重练</text></view>
+      <view class="small muted">{{item.mastered ? '已掌握' : (item.due ? '待复习' : (item.wrong ? '未到复习时间' : '已收藏'))}}</view>
+      <view class="row protected-actions"><text data-key="{{item.key}}" bindtap="showProtectedQuestion">查看题目</text><text wx:if="{{protectedPracticeEnabled}}" data-key="{{item.key}}" bindtap="redoProtected">{{item.due ? '复习' : '重练'}}</text></view>
+      <view class="row protected-actions"><text data-key="{{item.key}}" data-field="starred" bindtap="setProtectedMarker">{{item.starred ? '取消收藏' : '收藏'}}</text><text data-key="{{item.key}}" data-field="mastered" bindtap="setProtectedMarker">{{item.mastered ? '取消掌握' : '标记掌握'}}</text></view>
     </view>
     <view wx:if="{{protectedHasMore}}" class="protected-more" bindtap="showMoreProtected">显示更多</view>
     <view wx:if="{{protectedQuestionBusy}}" class="small muted">正在校验权限并读取题目…</view>

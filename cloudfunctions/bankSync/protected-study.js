@@ -6,6 +6,7 @@ const paged = require('./paged-catalog-domain.js')
 const policyDomain = require('./exam-access-policy.js')
 const subscription = require('./subscription-domain.js')
 const grading = require('./grading-domain.js')
+const markerDomain = require('./protected-state.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const validId = v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(v)
 const read = (tx, name, id) => readOptionalDoc(() => tx.collection(name).doc(id).get())
@@ -90,6 +91,19 @@ function createProtectedStudy({ db, now = () => Date.now() }) {
           const head = await read(tx, 'protectedStudyHeads', hId) || { openid: actor, dataEpoch: event.dataEpoch, examId: event.examId, sequence: 0, correct: 0 }
           if (!validHead(head, actor, event.dataEpoch, event.examId) || head.sequence >= Number.MAX_SAFE_INTEGER) fail('INVALID_PROTECTED_HEAD')
           const score = grading.judge(question.type, event.selected, question.answer) ? 1 : 0
+          // An incorrect new answer reopens a manually mastered question atomically.
+          if (!score) {
+            const markerId = markerDomain.stateId(actor, event.dataEpoch, event.examId)
+            const markers = await read(tx, 'protectedQuestionStates', markerId)
+            if (markers) {
+              if (!markerDomain.validState(markers, actor, event.dataEpoch, event.examId) || markers.revision >= Number.MAX_SAFE_INTEGER) fail('INVALID_PROTECTED_STATE')
+              const marker = markers.entries.find(row => row.questionId === question.id)
+              if (marker && marker.mastered) {
+                const entries = markers.entries.map(row => row.questionId === question.id ? { ...row, mastered: false } : row).filter(row => row.starred || row.mastered)
+                await tx.collection('protectedQuestionStates').doc(markerId).set({ data: { ...markers, _id: markerId, revision: markers.revision + 1, entries } })
+              }
+            }
+          }
           const record = { _id: id, openid: actor, dataEpoch: event.dataEpoch, operationId: event.operationId, requestDigest,
             examId: event.examId, releaseId: event.releaseId, publicationRevision: event.publicationRevision, questionId: question.id, questionVersionId: question.versionId,
             subject: question.subject, chapter: question.chapter, selected: event.selected, score, costMs: event.costMs, createdAt: at, sequence: head.sequence + 1 }

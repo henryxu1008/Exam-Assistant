@@ -7,16 +7,17 @@ const { canonical } = require('../../shared/question-domain.js')
 const { judge, validSelection } = require('../../shared/grading-domain.js')
 const { runtimeProtectedPracticeClient } = require('../../utils/protected-practice-client.js')
 const { runtimeProtectedStudySession } = require('../../utils/protected-study-session.js')
+const { runtimeProtectedMarkerClient } = require('../../utils/protected-marker-client.js')
 const errors = { ENTITLEMENT_REQUIRED: '该考试尚无有效权限，或权限已到期。', STALE_RELEASE: '题库已更新，请重新开始练习。',
   INVALID_TOKEN: '登录已失效，请重新登录。', STALE_CONTEXT: '账号已切换，请重新开始。',
   PROTECTED_READ_DISABLED: '受保护题库尚未开放，请在隔离环境联调。', NETWORK_ERROR: '网络不可用，请联网后重试。' }
 const blank = () => ({ available: available(), busy: false, question: null, selected: [], submitted: false,
   correct: false, finished: false, error: '', showPlans: false, answered: 0, correctCount: 0, examName: '',
-  recordsPreview: recordsEnabled(), historyCount: 0, historyCorrect: 0 })
+  recordsPreview: recordsEnabled(), historyCount: 0, historyCorrect: 0, markerLoaded: false, markerBusy: false, markerError: '', starred: false })
 Page({
   data: blank(),
   onLoad(options) {
-    this._client = runtimeProtectedPracticeClient(); this._recorder = runtimeProtectedStudySession(); this._generation = 0
+    this._client = runtimeProtectedPracticeClient(); this._recorder = runtimeProtectedStudySession(); this._markers = runtimeProtectedMarkerClient(); this._generation = 0
     const id = options && options.questionId
     const subject = options && options.subject
     this._subjectId = typeof subject === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(subject) ? subject : ''
@@ -68,7 +69,8 @@ Page({
       if (!this._live(generation, ctx)) { if (this._active && generation === this._generation) this._clear(errors.STALE_CONTEXT); return }
       this._baseline = result.baseline; this._cursor = result.cursor; this._operation = null; this._startedAt = Date.now()
       const question = result.question
-      this.setData({ busy: false, question, examName: result.scope.exam.name, selected: question.type === 'fill' ? question.answer.map(() => '') : [] })
+      this.setData({ busy: false, question, examName: result.scope.exam.name, selected: question.type === 'fill' ? question.answer.map(() => '') : [], markerLoaded: false, starred: false, markerError: '' })
+      if (recordsEnabled()) this._loadMarker(question.id)
     } catch (e) { if (this._active && generation === this._generation) this._clear(e.code === 'QUESTION_UNAVAILABLE' ? '该题已不在当前题库，学习记录仍保留。' : (errors[e.code] || '题目读取失败，请检查网络或稍后重试。')) }
   },
   async _load(pageIndex, position) {
@@ -88,7 +90,8 @@ Page({
           this._operation = null
           this._startedAt = Date.now()
           this._cursor = { pageIndex: current, position: offset }
-          this.setData({ question, examName: result.scope.exam.name, selected: question.type === 'fill' ? question.answer.map(() => '') : [], busy: false })
+          this.setData({ question, examName: result.scope.exam.name, selected: question.type === 'fill' ? question.answer.map(() => '') : [], busy: false, markerLoaded: false, starred: false, markerError: '' })
+          if (recordsEnabled()) this._loadMarker(question.id)
           return
         }
         current++; offset = 0
@@ -138,6 +141,7 @@ Page({
         const correct = receipt.attempt.score === 1
         this.setData({ busy: false, question, selected, submitted: true, correct, answered: this.data.answered + 1,
           correctCount: this.data.correctCount + (correct ? 1 : 0) })
+        if (!this.data.markerLoaded) this._loadMarker(question.id)
         return
       }
       const fresh = await this._client.page(this._examId, cursor.pageIndex, this._baseline, ctx)
@@ -151,6 +155,38 @@ Page({
       if (recordsEnabled() && this._operation) this._clear((errors[e.code] ? errors[e.code] + ' ' : '') + '提交尚未确认，请重新开始并核对学习记录。')
       else this._clear(errors[e.code] || '权益校验失败，请联网后重试。')
     }
+  },
+  async _loadMarker(questionId) {
+    if (!this._check() || !recordsEnabled() || !this._syncCtx || !questionId) return
+    const ctx = this._ctx, generation = this._generation, request = this._markerGeneration = (this._markerGeneration || 0) + 1
+    this.setData({ markerLoaded: false, markerError: '' })
+    try {
+      const state = await this._markers.get(this._examId, this._syncCtx, value => this._recorder.current(value))
+      if (!this._live(generation, ctx) || request !== this._markerGeneration || !this.data.question || this.data.question.id !== questionId) return
+      this._markerRevision = state.revision
+      const row = state.entries.find(entry => entry.questionId === questionId)
+      this.setData({ markerLoaded: true, starred: !!(row && row.starred) })
+    } catch (e) {
+      if (this._live(generation, ctx) && request === this._markerGeneration && this.data.question && this.data.question.id === questionId) this.setData({ markerError: '收藏状态读取失败，可重试。' })
+    }
+  },
+  retryMarker() { if (this.data.question) return this._loadMarker(this.data.question.id) },
+  async toggleStar() {
+    if (!this._check() || !this.data.question || !this.data.submitted || !this.data.markerLoaded || this.data.markerBusy) return
+    const question = this.data.question, ctx = this._ctx, generation = this._generation
+    const input = { examId: this._examId, questionId: question.id, field: 'starred', value: !this.data.starred, expectedRevision: this._markerRevision,
+      releaseId: this._baseline.releaseId, publicationRevision: this._baseline.publicationRevision,
+      operationId: 'pm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) }
+    this.setData({ markerBusy: true, markerError: '' })
+    try {
+      const result = await this._markers.set(input, this._syncCtx, value => this._recorder.current(value))
+      if (!this._live(generation, ctx) || !this.data.question || this.data.question.id !== question.id) return
+      this._markerRevision = result.revision; this.setData({ starred: input.value })
+    } catch (err) {
+      if (!this._live(generation, ctx) || !this.data.question || this.data.question.id !== question.id) return
+      await this._loadMarker(question.id)
+      if (this._live(generation, ctx)) this.setData({ markerError: err.code === 'STATE_CONFLICT' ? '其他设备已修改，请核对后重试。' : '收藏未确认，请核对状态后重试。' })
+    } finally { if (this._live(generation, ctx)) this.setData({ markerBusy: false }) }
   },
   onNext() {
     if (!this._check() || !this.data.submitted || !this._cursor) return

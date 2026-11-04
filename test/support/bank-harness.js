@@ -22,6 +22,7 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
     commerceGrants: new Map(),
     commerceEvents: new Map(),
     commerceTimelines: new Map(),
+    protectedQuestionStates: new Map(), protectedStateReceipts: new Map(), studyStats: new Map(),
     users: new Map([
       ['u1', { _id: 'u1', openid: 'normal-openid', token: USER_TOKEN, tokenAt: NOW }],
       ['u2', { _id: 'u2', openid: ADMIN_OPENID, token: ADMIN_TOKEN, tokenAt: NOW }],

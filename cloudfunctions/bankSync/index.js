@@ -30,6 +30,7 @@ const { checkIdentities } = require('./identity-registry.js')
 const { createPagedWorkflow } = require('./paged-workflow.js')
 const { createProtectedReader } = require('./protected-reader.js')
 const { createProtectedStudy } = require('./protected-study.js')
+const { createProtectedState } = require('./protected-state.js')
 const workflow = createWorkflow(db, activateBank)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
@@ -99,9 +100,16 @@ async function publish(event, actor) {
 function createMain({ protectedMode = false, getContext = () => cloud.getWXContext() } = {}) {
   const protectedRead = createProtectedReader({ db })
   const protectedStudy = createProtectedStudy({ db })
+  const protectedState = createProtectedState({ db })
   const pagedWorkflow = createPagedWorkflow(db, { protectedMode })
   return async (event = {}) => {
   const action = event.action || 'get'
+  if (['getProtectedMarkers', 'setProtectedMarker'].includes(action)) {
+    if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return protectedState(event, context)
+  }
   if (['commitProtectedAttempt', 'getProtectedAttempts'].includes(action)) {
     if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
     let context

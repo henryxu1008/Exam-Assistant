@@ -14,12 +14,12 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
   const studyStats = new Map()
   const attempts = new Map()
   const questions = questionDocuments || new Map()
-  const appConfig = new Map(), commerceTimelines = new Map(), protectedAttempts = new Map(), protectedStudyHeads = new Map()
+  const appConfig = new Map(), commerceTimelines = new Map(), protectedAttempts = new Map(), protectedStudyHeads = new Map(), protectedQuestionStates = new Map(), protectedStateReceipts = new Map()
 
-  const stores = { users: users, studyStats: studyStats, attempts: attempts, questions, appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads }
+  const stores = { users: users, studyStats: studyStats, attempts: attempts, questions, appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts, protectedQuestionStates, protectedStateReceipts }
 
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
-  const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined }
+  const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined, openid: 'alice' }
 
   const transactions = []
   function collection(name, source = stores, trace = null) {
@@ -40,6 +40,8 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
             if (name === 'attempts' && fail.attemptWrite) throw fail.attemptWrite
             if (name === 'protectedAttempts' && fail.protectedAttemptWrite) throw fail.protectedAttemptWrite
             if (name === 'protectedStudyHeads' && fail.protectedHeadWrite) throw fail.protectedHeadWrite
+            if (name === 'protectedQuestionStates' && fail.protectedStateWrite) throw fail.protectedStateWrite
+            if (name === 'protectedStateReceipts' && fail.protectedStateReceiptWrite) throw fail.protectedStateReceiptWrite
             if (name === 'studyStats' && fail.statsWrite) throw fail.statsWrite
             if (name === 'studyStats' && data.kind === 'aiClearReceipt' && fail.receiptWrite) throw fail.receiptWrite
             if (name === 'attempts' && fail.pauseAttempt) await fail.pauseAttempt()
@@ -130,7 +132,7 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
       Buffer,
       process: { env: {} },
       require(name) {
-        if (name === 'wx-server-sdk') return { init() {}, database: () => db }
+        if (name === 'wx-server-sdk') return { init() {}, database: () => db, getWXContext: () => ({ OPENID: fail.openid }) }
         if (name === 'crypto') return crypto
         if (name.indexOf('./') === 0) return loadModule(path.join(path.dirname(absPath), name))
         throw new Error(`unexpected module ${name}`)
@@ -146,7 +148,7 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
     studyStats: studyStats,
     attempts: attempts,
     questions,
-    appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads,
+    appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts,
     fail: fail,
     main: loadModule(path.join(sourceRoot, 'cloudfunctions/studySync/index.js')).main
   }

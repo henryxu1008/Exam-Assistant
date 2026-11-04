@@ -43,7 +43,8 @@ function buildStaticSource() {
 }
 
 // 当前数据源：先尝试用上一次缓存的云端题库，否则用静态兜底
-let source = buildStaticSource()
+const emptySource = () => ({ schemaVersion: 4, manifest: { exams: [], subjects: [] }, questions: {}, releaseId: '', publicationRevision: 0 })
+let source = config.protectedCatalog === true ? emptySource() : buildStaticSource()
 
 const CLOUD_BANK_KEY = 'exam_quiz_bank_published_v2'
 function loadPersistedCloudBank() {
@@ -55,7 +56,7 @@ function loadPersistedCloudBank() {
   }
   return null
 }
-if (typeof wx !== 'undefined') {
+if (typeof wx !== 'undefined' && config.protectedCatalog !== true) {
   const persisted = loadPersistedCloudBank()
   if (persisted) source = persisted
   const cached = createPagedCache(wx).read()
@@ -72,6 +73,7 @@ function index() {
 }
 
 function allQuestions() {
+  if (config.protectedCatalog === true) return []
   let out = []
   source.manifest.subjects.forEach((s) => {
     out = out.concat((source.questions[s.key] || []).map(q => JSON.parse(JSON.stringify({ ...q, bankReleaseId: source.releaseId, ...(source.schemaVersion === 4 ? { catalogProtocol: 4 } : {}) }))))
@@ -80,7 +82,7 @@ function allQuestions() {
 }
 
 function findQuestion(id) {
-  if (!id) return null
+  if (config.protectedCatalog === true || !id) return null
   const q = index().get(id)
   return q ? domain.snapshotQuestion(q) : null
 }
@@ -89,8 +91,9 @@ function getAllQuestions() {
   return allQuestions().slice()
 }
 
-function getExams() { return JSON.parse(JSON.stringify(source.manifest.exams || [])) }
+function getExams() { return config.protectedCatalog === true ? [] : JSON.parse(JSON.stringify(source.manifest.exams || [])) }
 function getSubjects(examId) {
+  if (config.protectedCatalog === true) return []
   // 科目清单由 dataSource 驱动；count 按真实题目累计
   return source.manifest.subjects.filter(s => !examId || s.examId === examId).map((s) => ({
     name: source.schemaVersion >= 3 ? s.key : s.name,
@@ -100,11 +103,13 @@ function getSubjects(examId) {
   }))
 }
 function getSubjectLabel(id) {
+  if (config.protectedCatalog === true) return id
   const subject = source.manifest.subjects.find(s => (source.schemaVersion >= 3 ? s.key : s.name) === id)
   return subject ? subject.name : id
 }
 
 function getChapters(subject) {
+  if (config.protectedCatalog === true) return []
   // 章节清单由 dataSource 驱动
   if (!subject) {
     const all = []
@@ -115,6 +120,7 @@ function getChapters(subject) {
   return s ? s.chapters.map((c) => source.schemaVersion >= 3 ? examDomain.chapterIdentity(s.key, c.key) : c.name) : []
 }
 function getChapterLabel(subjectId, chapterId) {
+  if (config.protectedCatalog === true) return chapterId
   if (source.schemaVersion < 3) return chapterId
   const subject = source.manifest.subjects.find(s => s.key === subjectId)
   const chapter = subject && subject.chapters.find(c => examDomain.chapterIdentity(subjectId, c.key) === chapterId)
@@ -226,6 +232,7 @@ function hasCloud() {
 }
 
 async function loadPagedRelease() {
+  if (config.protectedCatalog === true) return false
   const call = async data => { const result = await wx.cloud.callFunction({ name: config.functions.bankSync, data }); return result && result.result }
   const active = await call({ action: 'getPagedPublished' })
   if (!active || !active.ok || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) return false
@@ -243,6 +250,7 @@ async function loadPagedRelease() {
   if (!latest || !latest.ok || latest.publicationRevision !== active.publicationRevision || !paged.validRoot(latest.root) || latest.root.releaseId !== active.root.releaseId ||
       active.publicationRevision < (source.publicationRevision || 0) ||
       (active.publicationRevision === source.publicationRevision && active.root.releaseId !== source.releaseId)) return false
+  if (config.protectedCatalog === true) return false
   const cache = createPagedCache(wx)
   cache.cleanup() // Optional: only removes unreferenced cache pages, never pending learning data.
   const result = cache.install(active.root, active.publicationRevision, pages)
@@ -254,7 +262,7 @@ async function loadPagedRelease() {
 
 /** 从云端拉取题库并整体替换数据源；无云/失败时保持现有数据源 */
 async function loadCloudBank() {
-  if (!hasCloud()) return false
+  if (config.protectedCatalog === true || !hasCloud()) return false
   try {
     const res = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getPublished' } })
     let r = res && res.result
@@ -263,7 +271,7 @@ async function loadCloudBank() {
       const upgraded = await wx.cloud.callFunction({ name: config.functions.bankSync, data: { action: 'getExamPublished' } })
       r = upgraded && upgraded.result
     }
-    if (r && r.ok && r.bank) return swapSource(r.bank)
+    if (config.protectedCatalog !== true && r && r.ok && r.bank) return swapSource(r.bank)
   } catch (e) {
     /* ignore */
   }
@@ -290,7 +298,7 @@ function getToken() {
  */
 const SEED_FLAG_KEY = 'exam_quiz_bank_seeded_v1'
 async function pushStaticBankToCloud(opt) {
-  if (!hasCloud()) return false
+  if (config.protectedCatalog === true || !hasCloud()) return false
   try {
     const force = !!(opt && opt.force)
     if (!force && wx.getStorageSync(SEED_FLAG_KEY)) return false

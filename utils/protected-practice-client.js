@@ -59,14 +59,14 @@ function createProtectedPracticeClient({ getSession, call }) {
     return { scope, question: q, cursor, baseline: { releaseId: scope.releaseId, publicationRevision: result.publicationRevision, scope } }
   }
   async function scope(examId, ctx) {
-    if (!current(ctx)) fail('STAALE_CONTEXT')
+    if (!current(ctx)) fail('STALE_CONTEXT')
     if (!key(examId)) fail('BAD_PAGE_QUERY')
     let result
     try { result = await call({ action: 'getProtectedExamScope', token: ctx.token, examId }) } catch (e) { fail('NETWORK_ERROR') }
     if (!current(ctx)) fail('STALE_CONTEXT')
     if (!result || result.ok !== true) fail(result && /^[A-Z_]+$/.test(result.error || '') ? result.error : 'INVALID_RESPONSE')
     validateScope(result.scope, examId, result.publicationRevision)
-    return result.scope
+    return { ...result.scope, publicationRevision: result.publicationRevision }
   }
   return { capture, current, page, question, scope }
 }

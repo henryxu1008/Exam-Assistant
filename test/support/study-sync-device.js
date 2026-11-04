@@ -7,7 +7,7 @@ function device(server, saved, cloudReady = true, questionBank, { sourceRoot = p
   const storage = saved ? new Map([...saved].map(([key, value]) => [key, JSON.parse(JSON.stringify(value))]))
     : new Map([['exam_quiz_session_v1', { logged: true, token: 'tokA', openid: 'alice' }]])
   const inflight = new Set()
-  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, failAckWrite: false, loseUpdateAck: false, failUpdate: 0, updateAckGate: null, changeUpdateResult: null, failGet: 0, pageLimit: null, getAckGate: null, afterGet: null, changeGetResult: null, failCursorWrite: false, now: null, requests: [] }
+  const controls = { offline: false, loseDeleteAck: false, loseClearAck: false, clearAckGate: null, failStorage: false, failDeleteWrite: false, failDeleteRead: false, failDeleteRemove: false, failDataSyncWrite: false, failAckWrite: false, loseUpdateAck: false, failUpdate: 0, updateAckGate: null, changeUpdateResult: null, failGet: 0, pageLimit: null, getAckGate: null, protectedEpochAckGate: null, afterGet: null, changeGetResult: null, failCursorWrite: false, now: null, requests: [] }
   const clone = value => value === undefined ? '' : JSON.parse(JSON.stringify(value))
   const wx = {
     __cloudReady: cloudReady,
@@ -50,6 +50,7 @@ function device(server, saved, cloudReady = true, questionBank, { sourceRoot = p
           if (['commitAttempts', 'commitVersionedAttempts', 'commitPagedAttempts'].includes(opts.data.action) && controls.failUpdate && --controls.failUpdate === 0) { opts.fail(new Error('injected update transport failure')); return }
           if (request.action === 'get' && controls.failGet && --controls.failGet === 0) { opts.fail(new Error('injected get transport failure')); return }
           let result = await server.main(request)
+          if (request.action === 'getProtectedEpoch' && controls.protectedEpochAckGate) await controls.protectedEpochAckGate
           if (request.action === 'get') {
             if (controls.getAckGate) await controls.getAckGate
             if (controls.afterGet) await controls.afterGet(result, request)

@@ -11,6 +11,8 @@
       <view wx:if="{{submitted}}" class="card"><view class="title">{{correct ? '回答正确' : '回答错误'}}</view><view class="sub">{{question.explain || '暂无解析'}}</view></view>
       <button wx:if="{{!submitted}}" type="primary" bindtap="onSubmit">提交答案</button>
       <button wx:else type="primary" bindtap="onNext">下一题</button>
+      <button wx:if="{{submitted && recordsPreview && markerLoaded}}" disabled="{{markerBusy}}" bindtap="toggleStar">{{starred ? '取消收藏' : '收藏本题'}}</button>
+      <view wx:if="{{submitted && recordsPreview && markerError}}" class="sub">{{markerError}} <text bindtap="retryMarker">重试</text></view>
     </block>
     <view wx:if="{{finished}}" class="card"><view class="title">练习完成</view><view class="sub">共回答 {{answered}} 题，答对 {{correctCount}} 题。</view><button bindtap="restart">重新练习</button></view>
   </block>
