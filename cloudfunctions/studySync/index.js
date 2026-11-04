@@ -297,6 +297,12 @@ exports.main = async (event = {}) => {
   if (!user) return { ok: false, error: 'INVALID_TOKEN' }
   const openid = user.openid
   const action = event.action || 'get'
+  const protectedIdentityValid = async tx => {
+    if (!user._id) return false
+    const current = await readOptionalDoc(() => tx.collection('users').doc(user._id).get()), at = Date.now()
+    return !!current && current.openid === openid && current.token === event.token && Number.isSafeInteger(current.tokenAt) &&
+      current.tokenAt > 0 && current.tokenAt <= at && at - current.tokenAt <= TOKEN_TTL
+  }
 
   if (PROTECTED_STUDY_ONLY) {
     let context
@@ -306,10 +312,7 @@ exports.main = async (event = {}) => {
       if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
       try {
         return await db.runTransaction(async tx => {
-          const current = await readOptionalDoc(() => tx.collection('users').doc(user._id).get())
-          const at = Date.now()
-          if (!current || current.openid !== openid || current.token !== event.token || !Number.isSafeInteger(current.tokenAt) ||
-              current.tokenAt <= 0 || current.tokenAt > at || at - current.tokenAt > TOKEN_TTL) return { ok: false, error: 'INVALID_TOKEN' }
+          if (!await protectedIdentityValid(tx)) return { ok: false, error: 'INVALID_TOKEN' }
           const stats = await readOptionalDoc(() => tx.collection('studyStats').doc(openid).get())
           const dataEpoch = stats && stats.dataEpoch !== undefined ? stats.dataEpoch : 0
           if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'INVALID_EPOCH' }
@@ -487,6 +490,7 @@ exports.main = async (event = {}) => {
     let result
     try {
       result = await db.runTransaction(async (tx) => {
+        if (PROTECTED_STUDY_ONLY && !await protectedIdentityValid(tx)) return { ok: false, error: 'INVALID_TOKEN' }
         const ref = tx.collection('studyStats').doc(openid)
         const existing = await readExisting(() => ref.get())
         const current = epochOf(existing)

@@ -14,9 +14,9 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
   const studyStats = new Map()
   const attempts = new Map()
   const questions = questionDocuments || new Map()
-  const appConfig = new Map(), commerceTimelines = new Map(), protectedAttempts = new Map(), protectedStudyHeads = new Map(), protectedQuestionStates = new Map(), protectedStateReceipts = new Map()
+  const appConfig = new Map(), commerceTimelines = new Map(), protectedAttempts = new Map(), protectedStudyHeads = new Map(), protectedQuestionStates = new Map(), protectedStateReceipts = new Map(), commerceProducts = new Map(), commerceOrders = new Map(), commerceGrants = new Map(), commerceEvents = new Map()
 
-  const stores = { users: users, studyStats: studyStats, attempts: attempts, questions, appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts, protectedQuestionStates, protectedStateReceipts }
+  const stores = { users: users, studyStats: studyStats, attempts: attempts, questions, appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts, commerceProducts, commerceOrders, commerceGrants, commerceEvents }
 
   /** 置为 Error 可模拟数据库操作抛出非「不存在」的失败 */
   const fail = { remove: null, get: null, attempts: null, attemptsResult: undefined, openid: 'alice' }
@@ -104,6 +104,7 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
   let queue = Promise.resolve()
   db.runTransaction = (fn) => {
     const run = queue.then(async () => {
+      if (fail.beforeTransaction) { const hook = fail.beforeTransaction; fail.beforeTransaction = null; await hook() }
       const draft = Object.fromEntries(Object.entries(stores).map(([key, map]) => [key, new Map(Array.from(map, ([id, row]) => [id, clone(row)]))]))
       const trace = []
       transactions.push(trace)
@@ -148,7 +149,7 @@ function makeHarness({ source, questionDocuments, sourceRoot = path.join(__dirna
     studyStats: studyStats,
     attempts: attempts,
     questions,
-    appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts,
+    appConfig, commerceTimelines, protectedAttempts, protectedStudyHeads, protectedQuestionStates, protectedStateReceipts, commerceProducts, commerceOrders, commerceGrants, commerceEvents,
     fail: fail,
     main: loadModule(path.join(sourceRoot, 'cloudfunctions/studySync/index.js')).main
   }

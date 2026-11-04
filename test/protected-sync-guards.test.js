@@ -55,3 +55,21 @@ test('代次回执迟到时 A→B→A 不复用旧账号上下文', async t => {
   d.controls.protectedEpochAckGate = null; assert.equal(await d.store.syncNow(), true)
   assert.equal(d.store.captureProtectedSyncContext().dataEpoch, 3); d.store.__clearFlushTimer()
 })
+
+
+test('受保护清空事务开始前令牌被撤销时不能删除数据', async () => {
+  const h = setup(); h.studyStats.set('alice', { _id: 'alice', dataEpoch: 0, records: { keep: { attempts: 1 } } })
+  h.fail.beforeTransaction = () => { h.users.get('u1').token = 'revoked' }
+  const result = await h.main({ action: 'delete', token: 'tokA', dataEpoch: 0, deleteId: 'race' })
+  assert.equal(result.error, 'INVALID_TOKEN')
+  assert.equal(h.studyStats.get('alice').dataEpoch, 0); assert.ok(h.studyStats.get('alice').records.keep)
+})
+
+test('受保护清空时身份读取故障或令牌时间非法均不得改写数据', async () => {
+  const h = setup(); h.studyStats.set('alice', { _id: 'alice', dataEpoch: 0, records: { keep: { attempts: 1 } } })
+  const event = { action: 'delete', token: 'tokA', dataEpoch: 0, deleteId: 'readfail' }
+  h.fail.get = name => name === 'users'
+  assert.equal((await h.main(event)).error, 'DELETE_STATS_FAILED'); assert.equal(h.studyStats.get('alice').dataEpoch, 0)
+  h.fail.get = null; h.users.get('u1').tokenAt += 1000
+  assert.equal((await h.main(event)).error, 'INVALID_TOKEN'); assert.equal(h.studyStats.get('alice').dataEpoch, 0)
+})

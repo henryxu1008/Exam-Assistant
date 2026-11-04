@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 1,
+  "status": "review-only",
+  "description": "本文件为人工审核清单，不是 CloudBase CLI 配置，也不执行任何创建或修改。",
+  "clientRuleFile": "deny-client.rule.json",
+  "collections": [
+    {
+      "name": "users",
+      "purpose": "登录令牌和个人身份",
+      "indexes": [
+        {
+          "name": "users_openid",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "登录身份查找"
+        },
+        {
+          "name": "users_token",
+          "keys": [
+            {
+              "field": "token",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "会话令牌查找；非唯一，登出后令牌可能为空"
+        }
+      ]
+    },
+    {
+      "name": "appConfig",
+      "purpose": "管理员角色、访问策略及运营配置",
+      "indexes": []
+    },
+    {
+      "name": "questions",
+      "purpose": "题目、草稿、来源、归档及发布信息",
+      "indexes": []
+    },
+    {
+      "name": "attempts",
+      "purpose": "旧作答可能包含题目快照",
+      "indexes": [
+        {
+          "name": "attempts_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "清理旧代次"
+        },
+        {
+          "name": "attempts_op",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "sessionId",
+              "direction": "asc"
+            },
+            {
+              "field": "questionId",
+              "direction": "asc"
+            },
+            {
+              "field": "clientOpId",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "已有业务操作查重，代次 0 使用前缀"
+        },
+        {
+          "name": "attempts_boot_legacy",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "createdAt",
+              "direction": "asc"
+            },
+            {
+              "field": "_id",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "旧协议代次 0 完整恢复"
+        },
+        {
+          "name": "attempts_boot_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            },
+            {
+              "field": "createdAt",
+              "direction": "asc"
+            },
+            {
+              "field": "_id",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "旧协议指定代次完整恢复"
+        },
+        {
+          "name": "attempts_delta_legacy",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "serverSequence",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "旧协议代次 0 增量恢复"
+        },
+        {
+          "name": "attempts_delta_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            },
+            {
+              "field": "serverSequence",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "旧协议指定代次增量恢复"
+        }
+      ]
+    },
+    {
+      "name": "studyStats",
+      "purpose": "学习记录、旧会话和 AI 对话",
+      "indexes": [
+        {
+          "name": "ai_receipts_epoch",
+          "keys": [
+            {
+              "field": "kind",
+              "direction": "asc"
+            },
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "清理旧代次 AI 清空回执"
+        }
+      ]
+    },
+    {
+      "name": "protectedAttempts",
+      "purpose": "受保护作答事实",
+      "indexes": [
+        {
+          "name": "protected_facts_cursor",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            },
+            {
+              "field": "examId",
+              "direction": "asc"
+            },
+            {
+              "field": "sequence",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "账号考试顺序恢复；前缀覆盖旧代次清理"
+        }
+      ]
+    },
+    {
+      "name": "protectedStudyHeads",
+      "purpose": "受保护作答计数与序号",
+      "indexes": [
+        {
+          "name": "protected_heads_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "清理旧代次"
+        }
+      ]
+    },
+    {
+      "name": "protectedQuestionStates",
+      "purpose": "收藏与掌握状态",
+      "indexes": [
+        {
+          "name": "protected_states_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "清理旧代次"
+        }
+      ]
+    },
+    {
+      "name": "protectedStateReceipts",
+      "purpose": "状态变更幂等回执",
+      "indexes": [
+        {
+          "name": "protected_receipts_epoch",
+          "keys": [
+            {
+              "field": "openid",
+              "direction": "asc"
+            },
+            {
+              "field": "dataEpoch",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "清理旧代次"
+        }
+      ]
+    },
+    {
+      "name": "commerceProducts",
+      "purpose": "商品配置与管理修订",
+      "indexes": []
+    },
+    {
+      "name": "commerceOrders",
+      "purpose": "订单信息",
+      "indexes": []
+    },
+    {
+      "name": "commerceGrants",
+      "purpose": "权益凭证",
+      "indexes": []
+    },
+    {
+      "name": "commerceEvents",
+      "purpose": "支付或退款幂等事件",
+      "indexes": []
+    },
+    {
+      "name": "commerceTimelines",
+      "purpose": "账户考试期限",
+      "indexes": []
+    },
+    {
+      "name": "aiQuestionUsage",
+      "purpose": "管理端 AI 出题配额",
+      "indexes": []
+    },
+    {
+      "name": "aiTutorUsage",
+      "purpose": "AI 助教用量",
+      "indexes": [
+        {
+          "name": "ai_tutor_daily",
+          "keys": [
+            {
+              "field": "date",
+              "direction": "asc"
+            },
+            {
+              "field": "_id",
+              "direction": "asc"
+            }
+          ],
+          "unique": false,
+          "purpose": "AI 助教旧用量日期分页"
+        }
+      ]
+    }
+  ]
+}
