@@ -32,20 +32,20 @@ Page({
     list: [],
     total: 0,
     counts: { all: 0, stubborn: 0, due: 0, starred: 0 },
-    emptyTip: '', protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true, protectedPracticeEnabled: config.protectedPracticePreview === true,
+    emptyTip: '', protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true), protectedPracticeEnabled: (config.protectedPracticePreview === true || config.protectedCatalog === true),
     protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
     protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false
   },
 
   onLoad() {
     this.setData({ subjects: bank.getSubjects() })
-    if (config.protectedRecordsPreview === true) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true)) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
   },
 
   onShow() {
-    if (config.protectedRecordsPreview === true && !this._protectedLoader) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
-    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true,
-      protectedPracticeEnabled: config.protectedPracticePreview === true })
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true) && !this._protectedLoader) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
+    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true),
+      protectedPracticeEnabled: (config.protectedPracticePreview === true || config.protectedCatalog === true) })
     this._visible = true; const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
     user.whenReady(() => { if (this._visible && generation === this._protectedGeneration) { this.refresh(); this.refreshProtected() } })
   },
@@ -99,7 +99,7 @@ Page({
   },
 
   async refreshProtected() {
-    if (config.protectedRecordsPreview !== true || !this._visible || !this._protectedLoader) return
+    if ((config.protectedRecordsPreview !== true && config.protectedCatalog !== true) || !this._visible || !this._protectedLoader) return
     const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
     this._questionGeneration = (this._questionGeneration || 0) + 1
     this._protectedContext = null; this._protectedRows = []
@@ -147,7 +147,7 @@ Page({
   closeProtectedQuestion() { this._questionGeneration = (this._questionGeneration || 0) + 1; this.setData({ protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false }) },
   redoProtected(e) {
     const ctx = this._protectedContext, row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
-    if (!row || !ctx || config.protectedPracticePreview !== true) return
+    if (!row || !ctx || (config.protectedPracticePreview !== true && config.protectedCatalog !== true)) return
     if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
     wx.navigateTo({ url: '/pages/protected-practice/protected-practice?questionId=' + encodeURIComponent(row.questionId) })
   },

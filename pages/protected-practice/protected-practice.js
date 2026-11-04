@@ -1,6 +1,8 @@
 const config = require('../../utils/config.js')
 const user = require('../../utils/user.js')
-const store = require('../../utils/store.js')
+const { currentExam } = require('../../utils/protected-catalog.js')
+const available = () => config.protectedPracticePreview === true || config.protectedCatalog === true
+const recordsEnabled = () => config.protectedRecordsPreview === true || config.protectedCatalog === true
 const { canonical } = require('../../shared/question-domain.js')
 const { judge, validSelection } = require('../../shared/grading-domain.js')
 const { runtimeProtectedPracticeClient } = require('../../utils/protected-practice-client.js')
@@ -8,43 +10,46 @@ const { runtimeProtectedStudySession } = require('../../utils/protected-study-se
 const errors = { ENTITLEMENT_REQUIRED: '该考试尚无有效权限，或权限已到期。', STALE_RELEASE: '题库已更新，请重新开始练习。',
   INVALID_TOKEN: '登录已失效，请重新登录。', STALE_CONTEXT: '账号已切换，请重新开始。',
   PROTECTED_READ_DISABLED: '受保护题库尚未开放，请在隔离环境联调。', NETWORK_ERROR: '网络不可用，请联网后重试。' }
-const blank = () => ({ available: config.protectedPracticePreview === true, busy: false, question: null, selected: [], submitted: false,
-  correct: false, finished: false, error: '', answered: 0, correctCount: 0, examName: '',
-  recordsPreview: config.protectedRecordsPreview === true, historyCount: 0, historyCorrect: 0 })
+const blank = () => ({ available: available(), busy: false, question: null, selected: [], submitted: false,
+  correct: false, finished: false, error: '', showPlans: false, answered: 0, correctCount: 0, examName: '',
+  recordsPreview: recordsEnabled(), historyCount: 0, historyCorrect: 0 })
 Page({
   data: blank(),
   onLoad(options) {
     this._client = runtimeProtectedPracticeClient(); this._recorder = runtimeProtectedStudySession(); this._generation = 0
     const id = options && options.questionId
+    const subject = options && options.subject
+    this._subjectId = typeof subject === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(subject) ? subject : ''
     this._targetQuestionId = typeof id === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(id) ? id : ''
   },
   onShow() {
     this._active = true; const generation = ++this._generation
     this._ctx = null; this._syncCtx = null; this._operation = null; this._baseline = null; this._cursor = null; this.setData(blank())
-    if (config.protectedPracticePreview !== true) return
+    if (!available()) return
     user.whenReady(() => { if (this._active && generation === this._generation) this.restart() })
   },
   onHide() { this._active = false; this._generation++; this._ctx = null; this._syncCtx = null; this._operation = null; this._baseline = null; this._cursor = null; this.setData(blank()) },
   onUnload() { this.onHide() },
   _live(generation, ctx) {
-    try { return this._active && generation === this._generation && this._ctx === ctx && this._client.current(ctx) && store.getCurrentExam() === this._examId &&
-      (config.protectedRecordsPreview !== true || this._recorder.current(this._syncCtx)) }
+    try { return this._active && generation === this._generation && this._ctx === ctx && this._client.current(ctx) && currentExam() === this._examId &&
+      (!recordsEnabled() || this._recorder.current(this._syncCtx)) }
     catch (e) { return false }
   },
-  _clear(message) { this._baseline = null; this._cursor = null; this.setData({ busy: false, question: null, selected: [], submitted: false, finished: false, error: message }) },
+  _clear(message) { this._baseline = null; this._cursor = null; this.setData({ busy: false, question: null, selected: [], submitted: false, finished: false, error: message, showPlans: message === errors.ENTITLEMENT_REQUIRED }) },
+  goPlans() { if (this.data.showPlans) wx.navigateTo({ url: '/pages/exam-plans/exam-plans' }) },
   _check() {
-    try { if (this._active && this._ctx && this._client.current(this._ctx) && store.getCurrentExam() === this._examId &&
-      (config.protectedRecordsPreview !== true || this._recorder.current(this._syncCtx))) return true } catch (e) { /* fail closed on unreadable account or exam */ }
+    try { if (this._active && this._ctx && this._client.current(this._ctx) && currentExam() === this._examId &&
+      (!recordsEnabled() || this._recorder.current(this._syncCtx))) return true } catch (e) { /* fail closed on unreadable account or exam */ }
     this._clear(errors.STALE_CONTEXT); return false
   },
   async restart() {
-    if (!this._active || config.protectedPracticePreview !== true || this.data.busy) return
-    try { this._ctx = this._client.capture(); this._examId = store.getCurrentExam(); this._syncCtx = config.protectedRecordsPreview === true ? this._recorder.capture() : null } catch (e) { this._clear('请先登录并完成学习数据同步或清空操作。'); return }
+    if (!this._active || !available() || this.data.busy) return
+    try { this._ctx = this._client.capture(); this._examId = currentExam(); this._syncCtx = recordsEnabled() ? this._recorder.capture() : null } catch (e) { this._clear('请先登录并完成学习数据同步或清空操作。'); return }
     if (!this._examId) { this._clear('请先在首页选择考试。'); return }
     this._generation++; this._baseline = null; this._cursor = null; this._operation = null
     const generation = this._generation, ctx = this._ctx
     this.setData({ ...blank(), busy: false })
-    if (config.protectedRecordsPreview === true) {
+    if (recordsEnabled()) {
       this.setData({ busy: true })
       try {
         const history = await this._recorder.prepare(this._examId, this._syncCtx)
@@ -76,7 +81,9 @@ Page({
         const result = await this._client.page(this._examId, current, this._baseline, ctx)
         if (!this._live(generation, ctx)) { if (this._active && generation === this._generation) this._clear(errors.STALE_CONTEXT); return }
         this._baseline = result.baseline
-        if (offset < result.page.questions.length) {
+        if (this._subjectId && !result.scope.subjects.some(subject => subject.key === this._subjectId)) { this._clear('该科目已不存在，请返回首页重新选择。'); return }
+        offset = result.page.questions.findIndex((question, index) => index >= offset && (!this._subjectId || question.subject === this._subjectId))
+        if (offset >= 0) {
           const question = result.page.questions[offset]
           this._operation = null
           this._startedAt = Date.now()
@@ -121,7 +128,7 @@ Page({
     const ctx = this._ctx, generation = this._generation
     this.setData({ busy: true, question: null, error: '' })
     try {
-      if (config.protectedRecordsPreview === true) {
+      if (recordsEnabled()) {
         if (!this._operation) this._operation = { dataEpoch: this._syncCtx.dataEpoch,
           operationId: 'ps_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
           examId: this._examId, releaseId: this._baseline.releaseId, publicationRevision: this._baseline.publicationRevision,
@@ -141,7 +148,7 @@ Page({
     } catch (e) {
       if (!this._active || generation !== this._generation) return
       if (!this._live(generation, ctx)) { this._clear(errors.STALE_CONTEXT); return }
-      if (config.protectedRecordsPreview === true && this._operation) this._clear((errors[e.code] ? errors[e.code] + ' ' : '') + '提交尚未确认，请重新开始并核对学习记录。')
+      if (recordsEnabled() && this._operation) this._clear((errors[e.code] ? errors[e.code] + ' ' : '') + '提交尚未确认，请重新开始并核对学习记录。')
       else this._clear(errors[e.code] || '权益校验失败，请联网后重试。')
     }
   },

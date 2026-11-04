@@ -1,5 +1,6 @@
 const user = require('../../utils/user.js')
-const store = require('../../utils/store.js')
+const { currentExam } = require('../../utils/protected-catalog.js')
+const available = () => config.commercePreview === true || config.protectedCatalog === true
 const config = require('../../utils/config.js')
 const { runtimeCommerceClient } = require('../../utils/commerce-client.js')
 const { createPreview } = require('../../utils/commerce-preview.js')
@@ -8,7 +9,7 @@ const dateText = at => {
   const d = new Date(at), pad = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-const blank = () => ({ available: config.commercePreview === true, protectedPreview: config.protectedPracticePreview === true, busy: false, loaded: false, logged: false, error: '', exam: null, plans: [], subscription: null,
+const blank = () => ({ available: available(), demoAvailable: config.commercePreview === true, protectedPreview: config.protectedPracticePreview === true, busy: false, loaded: false, logged: false, error: '', exam: null, plans: [], subscription: null,
   endText: '', demo: false, demoActive: false, demoEnd: '', selected: 30, answered: false, answerText: '' })
 Page({
   data: blank(),
@@ -16,7 +17,7 @@ Page({
   onShow() {
     this._active = true; const generation = ++this._generation
     this._preview = null; this.setData(blank())
-    if (config.commercePreview !== true) return
+    if (!available()) return
     user.whenReady(() => {
       if (!this._active || generation !== this._generation) return
       if (!user.isLogged()) return
@@ -26,15 +27,15 @@ Page({
   onHide() { this._active = false; this._generation++; this._preview = null; this.setData(blank()) },
   onUnload() { this.onHide() },
   async refresh() {
-    if (!this._active || this.data.busy || config.commercePreview !== true) return
+    if (!this._active || this.data.busy || !available()) return
     let ctx, examId
-    try { ctx = this._client.capture(); examId = store.getCurrentExam() } catch (e) { this.setData({ error: '无法读取当前账号或考试，请重试。' }); return }
+    try { ctx = this._client.capture(); examId = currentExam() } catch (e) { this.setData({ error: '无法读取当前账号或考试，请重试。' }); return }
     if (!examId) { this.setData({ error: '请先在首页选择考试。' }); return }
     const generation = this._generation
     this.setData({ busy: true, loaded: false, error: '', plans: [], subscription: null, endText: '' })
     try {
       const result = await this._client.plans(examId, ctx)
-      if (!this._active || generation !== this._generation || !this._client.current(ctx) || store.getCurrentExam() !== examId) return
+      if (!this._active || generation !== this._generation || !this._client.current(ctx) || currentExam() !== examId) return
       this.setData({ loaded: true, exam: result.exam, plans: result.plans.map(p => ({ ...p, price: (p.priceFen / 100).toFixed(2) })),
         subscription: result.subscription, endText: dateText(result.subscription.endAt) })
     } catch (e) {

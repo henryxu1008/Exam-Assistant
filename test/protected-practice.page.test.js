@@ -130,3 +130,28 @@ test('在线练习复用填空、排序和多选题的输入与判分', async t 
     item.act(); await p.onSubmit(); assert.equal(p.data.correct, true, item.question.type)
   }
 })
+
+test('科目练习只展示选定科目的题目，无权限时提供套餐入口', async t => {
+  const { p, buy } = setup(t); await settle()
+  assert.equal(p.data.showPlans, true)
+  await buy(); p._subjectId = 'b'; await p.restart()
+  assert.equal(p.data.question, null); assert.match(p.data.error, /科目/)
+  p._subjectId = 'a'; await p.restart()
+  assert.equal(p.data.question.subject, 'a')
+  p.onSelect({ detail: { key: p.data.question.answer[0] } }); await p.onSubmit(); await p.onNext()
+  assert.equal(p.data.question.subject, 'a')
+})
+
+test('科目筛选跨页跳过其他科目并保留实际分页位置', async t => {
+  const { p, buy } = setup(t); await settle(); await buy(); await p.restart()
+  const q = p.data.question, original = p._client.page
+  p._subjectId = 'target'
+  p._client.page = async (exam, index, baseline, ctx) => {
+    assert.equal(exam, 'exam_a'); assert.equal(p._client.current(ctx), true)
+    return { baseline: baseline || { releaseId: 'fake' }, scope: { exam: { name: '考试甲' }, subjects: [{ key: 'target' }], sourcePageCount: 2 },
+      page: { questions: index === 0 ? [{ ...q, id: 'other', subject: 'other' }] : [{ ...q, id: 'other2', subject: 'other' }, { ...q, id: 'target', subject: 'target' }] } }
+  }
+  p._baseline = null; await p._load(0, 0)
+  assert.equal(p.data.question.id, 'target'); assert.deepEqual(p._cursor, { pageIndex: 1, position: 1 })
+  p._client.page = original
+})

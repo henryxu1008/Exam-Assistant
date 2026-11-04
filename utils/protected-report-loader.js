@@ -3,7 +3,7 @@ const { runtimeProtectedStudySession } = require('./protected-study-session.js')
 const { runtimeProtectedPracticeClient } = require('./protected-practice-client.js')
 const { buildProtectedLearningReport } = require('./protected-learning-report.js')
 const { chapterIdentity } = require('../shared/exam-catalog-domain.js')
-const store = require('./store.js')
+const { currentExam } = require('./protected-catalog.js')
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 function createProtectedReportLoader({ client, reader, session, getExam }) {
   function capture() {
@@ -30,6 +30,6 @@ function createProtectedReportLoader({ client, reader, session, getExam }) {
   return { capture, current, load }
 }
 function runtimeProtectedReportLoader() {
-  return createProtectedReportLoader({ client: runtimeProtectedStudyClient(), reader: runtimeProtectedPracticeClient(), session: runtimeProtectedStudySession(), getExam: () => store.getCurrentExam() })
+  return createProtectedReportLoader({ client: runtimeProtectedStudyClient(), reader: runtimeProtectedPracticeClient(), session: runtimeProtectedStudySession(), getExam: currentExam })
 }
 module.exports = { createProtectedReportLoader, runtimeProtectedReportLoader }

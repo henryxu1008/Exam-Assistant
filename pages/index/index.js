@@ -5,9 +5,12 @@ const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const ai = require('../../utils/ai.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
+const { runtimeProtectedCatalog } = require('../../utils/protected-catalog.js')
 
 Page({
   data: {
+    protectedMode: config.protectedCatalog === true, catalogLoading: false, catalogError: '', catalogLogged: false,
     greeting: '你好',
     overview: {
       total: 0,
@@ -83,6 +86,8 @@ Page({
   },
 
   refresh() {
+    if (config.protectedCatalog === true) return this.refreshProtectedCatalog()
+    this.setData({ protectedMode: false })
     const hour = new Date().getHours()
     let greeting = '你好'
     if (hour < 6) greeting = '夜深了'
@@ -120,6 +125,23 @@ Page({
     })
   },
 
+  async refreshProtectedCatalog() {
+    const generation = this._refreshGeneration = (this._refreshGeneration || 0) + 1
+    const logged = user.isLogged()
+    this.setData({ protectedMode: true, catalogLoading: logged, catalogLogged: logged, catalogError: '', exams: [], subjects: [], currentExam: '' })
+    if (!logged) { runtimeProtectedCatalog().clear(); return }
+    try {
+      const catalog = await runtimeProtectedCatalog().load()
+      if (!this._visible || generation !== this._refreshGeneration) return
+      this.setData({ catalogLoading: false, exams: catalog.exams, subjects: catalog.subjects, currentExam: catalog.selected })
+    } catch (e) {
+      if (!this._visible || generation !== this._refreshGeneration) return
+      this.setData({ catalogLoading: false, catalogError: e.code === 'NO_TOKEN' ? '请先登录并完成学习数据同步。' : '考试目录读取失败，请检查网络后重试。' })
+    }
+  },
+
+  catalogLogin() { user.promptLogin() },
+
   _buildDateText() {
     const d = new Date()
     const weeks = ['日', '一', '二', '三', '四', '五', '六']
@@ -150,7 +172,14 @@ Page({
 
   /* ---------------- 事件 ---------------- */
 
-  onExamChange(e) { store.setCurrentExam(e.currentTarget.dataset.exam); this.refresh() },
+  onExamChange(e) {
+    if (config.protectedCatalog === true) {
+      const catalog = runtimeProtectedCatalog()
+      if (catalog.select(e.currentTarget.dataset.exam)) { const state = catalog.snapshot(); this.setData({ currentExam: state.selected, subjects: state.subjects }) }
+      return
+    }
+    store.setCurrentExam(e.currentTarget.dataset.exam); this.refresh()
+  },
 
   // 练习页属于 tabBar 页面，无法 navigateTo，统一走 app.startPractice
   goPractice(e) {

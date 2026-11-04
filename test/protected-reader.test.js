@@ -148,3 +148,21 @@ test('受保护入口拒绝客户端伪造上下文及读取失败，事务前�
   const forged = h.createMain({ protectedMode: true, getContext: () => ({ OPENID: ADMIN_OPENID }) })
   assert.equal((await forged(event)).error, 'INVALID_TOKEN')
 })
+
+test('考试目录仅返回已认证用户可见的名称，不因权益失效泄漏题目', async () => {
+  const { h, reader, request, ctx, key } = setup()
+  h.collections.commerceTimelines.set(key, subscriptions.revoke(h.collections.commerceTimelines.get(key), 'order_a', NOW))
+  const event = { action: 'getProtectedExamCatalog', token: request.token }
+  const result = await reader(event, ctx)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.exams.map(e => e.id), ['exam_a', 'exam_b'])
+  assert.deepEqual(result.subjects.map(s => s.key), ['a', 'b'])
+  assert.doesNotMatch(JSON.stringify(result), /付费甲|付费乙|questions|answer/)
+  assert.equal((await reader(event, { OPENID: ADMIN_OPENID })).error, 'INVALID_TOKEN')
+  assert.equal((await reader({ ...event, token: '' }, ctx)).error, 'INVALID_TOKEN')
+  assert.equal((await h.main(event)).error, 'PROTECTED_READ_DISABLED')
+  h.config.delete(POLICY_ID)
+  assert.equal((await reader(event, ctx)).error, 'INVALID_ACCESS_POLICY')
+  h.fail.get = name => name === 'appConfig'
+  assert.equal((await reader(event, ctx)).error, 'PROTECTED_READ_FAILED')
+})

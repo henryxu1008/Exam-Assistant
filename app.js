@@ -210,6 +210,16 @@ App({
   startPractice(options) {
     if (this.guardEntry()) return
     const params = Object.assign({ mode: 'all' }, options || {})
+    if (config.protectedCatalog === true) {
+      if (!require('./utils/protected-catalog.js').currentExam()) { wx.showToast({ title: '请先登录并选择考试', icon: 'none' }); wx.switchTab({ url: '/pages/index/index' }); return }
+      if (!['all', 'single'].includes(params.mode)) { wx.showToast({ title: '该练习方式暂未开放', icon: 'none' }); return }
+      const id = params.mode === 'single' && Array.isArray(params.ids) && params.ids.length === 1 ? params.ids[0] : ''
+      if ((params.mode === 'single' && !/^[A-Za-z0-9_-]{1,120}$/.test(id)) || (params.subject && !/^[A-Za-z0-9_-]{1,120}$/.test(params.subject))) {
+        wx.showToast({ title: '练习参数无效', icon: 'none' }); return
+      }
+      const query = id ? '?questionId=' + encodeURIComponent(id) : params.subject ? '?subject=' + encodeURIComponent(params.subject) : ''
+      wx.navigateTo({ url: '/pages/protected-practice/protected-practice' + query }); return
+    }
     // 携带科目时（首页科目卡 / 学情章节专练）同步为全应用当前科目
     if (params.subject) store.setCurrentSubject(params.subject)
     params.__stamp = Date.now()

@@ -4,6 +4,7 @@
     <view class="card notice"><view class="title">{{examName || '在线练习联调'}}</view><view wx:if="{{recordsPreview}}" class="sub">仅限隔离环境。联网校验权益并保存不含题目内容的作答；进入时同步历史 {{historyCount}} 条，答对 {{historyCorrect}} 条。</view><view wx:else class="sub">仅限隔离环境。每题联网校验权限；本次作答暂不保存，离开页面后清除。</view></view>
     <view wx:if="{{busy}}" class="card">正在校验并加载…</view>
     <view wx:if="{{error}}" class="card error">{{error}}</view>
+    <button wx:if="{{showPlans && !busy}}" type="primary" bindtap="goPlans">查看考试套餐</button>
     <button wx:if="{{error && !busy}}" bindtap="restart">重新开始</button>
     <block wx:if="{{question && !busy}}">
       <question-card question="{{question}}" selected="{{selected}}" submitted="{{submitted}}" show-tools="{{false}}" bind:select="onSelect" bind:fill="onFill" bind:sort="onSort" />

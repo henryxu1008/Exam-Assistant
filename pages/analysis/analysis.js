@@ -35,12 +35,12 @@ Page({
     strong: [],
     stubborn: [],
     advice: [],
-    currentSubject: '', protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true,
+    currentSubject: '', protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true),
     protectedBusy: false, protectedLoaded: false, protectedError: '', protectedReport: null
   },
 
   onLoad() {
-    if (config.protectedRecordsPreview === true) this._protectedLoader = runtimeProtectedReportLoader()
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true)) this._protectedLoader = runtimeProtectedReportLoader()
     this._unsubscribeSync = store.onSyncRestored(() => {
       if (this._visible) user.whenReady(() => { if (this._visible) { this.refresh(); this.refreshProtected() } })
     })
@@ -57,8 +57,8 @@ Page({
   },
 
   onShow() {
-    if (config.protectedRecordsPreview === true && !this._protectedLoader) this._protectedLoader = runtimeProtectedReportLoader()
-    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true })
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true) && !this._protectedLoader) this._protectedLoader = runtimeProtectedReportLoader()
+    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true) })
     this._visible = true; const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
     user.whenReady(() => { if (this._visible && generation === this._protectedGeneration) { this.refresh(); this.refreshProtected() } })
   },
@@ -137,7 +137,7 @@ Page({
   },
 
   async refreshProtected() {
-    if (config.protectedRecordsPreview !== true || !this._visible || !this._protectedLoader) return
+    if ((config.protectedRecordsPreview !== true && config.protectedCatalog !== true) || !this._visible || !this._protectedLoader) return
     const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
     this.setData({ protectedBusy: true, protectedLoaded: false, protectedError: '', protectedReport: null })
     try {

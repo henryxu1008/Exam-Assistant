@@ -17,7 +17,7 @@
           <view class="sub">真实购买暂未开放，不会自动扣费。</view>
         </block>
       </view>
-      <view class="card"><view class="title">模拟购买与练习</view><view class="sub">体验期限接续、到期和退款后的练习变化。关闭页面后演示状态清除。</view><button class="btn" type="primary" bindtap="startDemo">开始模拟体验</button></view>
+      <view wx:if="{{demoAvailable}}" class="card"><view class="title">模拟购买与练习</view><view class="sub">体验期限接续、到期和退款后的练习变化。关闭页面后演示状态清除。</view><button class="btn" type="primary" bindtap="startDemo">开始模拟体验</button></view>
       <view wx:if="{{protectedPreview && logged}}" class="card"><view class="title">受保护题库联调</view><view class="sub">需隔离环境的受保护服务和对应测试权益；模拟开通不会产生真实权限。</view><button bindtap="goProtectedPractice">开始在线练习</button></view>
     </block>
     <block wx:else>

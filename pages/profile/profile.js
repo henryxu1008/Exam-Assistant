@@ -265,6 +265,6 @@ Page({
   },
 
   goPractice() {
-    app.startPractice({ mode: 'random' })
+    app.startPractice({ mode: config.protectedCatalog === true ? 'all' : 'random' })
   }
 })

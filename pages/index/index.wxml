@@ -1,5 +1,23 @@
 <!-- pages/index/index.wxml -->
 <view class="page home">
+  <block wx:if="{{protectedMode}}">
+    <view class="hero"><view class="hero-title">开始练习</view><view class="hero-sub">选择考试和科目，联网后即可开始。</view></view>
+    <view class="card">
+      <view wx:if="{{catalogLoading}}">正在加载考试目录…</view>
+      <block wx:elif="{{!catalogLogged}}"><view>登录后选择考试和科目。</view><button bindtap="catalogLogin">登录</button></block>
+      <block wx:elif="{{catalogError}}"><view>{{catalogError}}</view><button bindtap="refreshProtectedCatalog">重试</button></block>
+      <block wx:else>
+        <view class="card-title">选择考试</view>
+        <view wx:if="{{!exams.length}}" class="small muted">暂无可用考试。</view>
+        <view class="row wrap"><button wx:for="{{exams}}" wx:key="id" size="mini" type="{{item.id === currentExam ? 'primary' : 'default'}}" data-exam="{{item.id}}" bindtap="onExamChange">{{item.name}}</button></view>
+        <view wx:if="{{currentExam}}" class="card-title">选择科目</view>
+        <view wx:for="{{subjects}}" wx:key="key" class="subject-item" bindtap="goPractice" data-mode="all" data-subject="{{item.key}}"><text class="subject-name">{{item.name}}</text></view>
+        <button wx:if="{{currentExam}}" type="primary" bindtap="goPractice" data-mode="all">练习全部科目</button>
+      </block>
+    </view>
+    <view wx:if="{{currentExam}}" class="card"><view class="row between"><text bindtap="goMistakes">错题记录 ›</text><text bindtap="goAnalysis">学情报告 ›</text></view></view>
+  </block>
+  <block wx:else>
   <!-- 云端公告横幅 -->
   <view class="card notice-card" wx:if="{{notice}}">
     <text class="small">📢 {{notice}}</text>
@@ -166,4 +184,5 @@
   </view>
 
   <view class="foot-tip small muted">数据实时同步至云端 · 答题后自动生成学情画像</view>
+  </block>
 </view>
