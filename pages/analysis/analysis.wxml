@@ -1,9 +1,22 @@
 <!--pages/analysis/analysis.wxml-->
 <view class="page analysis">
+  <view wx:if="{{protectedEnabled}}" class="card protected-report">
+    <view class="card-title">受保护练习 · {{protectedLoaded ? protectedReport.examName : '当前考试'}}</view>
+    <view class="card-sub">仅统计已确认的受保护作答，与下方普通练习分别计算。</view>
+    <view wx:if="{{protectedBusy}}" class="small muted">正在读取学习记录…</view>
+    <view wx:if="{{protectedError}}" class="protected-error">{{protectedError}} <text bindtap="refreshProtected">重试</text></view>
+    <block wx:if="{{protectedLoaded}}">
+      <view class="protected-summary">答 {{protectedReport.total}} 次 · 对 {{protectedReport.correct}} 次 · 正确率 {{protectedReport.rate}}%</view>
+      <view wx:if="{{!protectedReport.total}}" class="small muted">当前考试暂无受保护练习记录。</view>
+      <view wx:for="{{protectedReport.subjects}}" wx:key="subject" class="protected-item"><text>{{item.label}}</text><text>答 {{item.attempts}} · 正确率 {{item.rate}}%</text></view>
+      <view wx:for="{{protectedReport.chapters}}" wx:key="key" class="protected-item protected-chapter"><text>{{item.subjectLabel}} · {{item.label}}</text><text>答 {{item.attempts}} · 正确率 {{item.rate}}%</text></view>
+    </block>
+  </view>
+  <block wx:if="{{!protectedMode}}">
   <!-- 空状态 -->
   <view class="empty" wx:if="{{!hasData}}">
     <view class="empty-icon">◔</view>
-    <view class="empty-title">还没有答题数据</view>
+    <view class="empty-title">{{protectedEnabled ? '当前科目暂无普通练习数据' : '还没有答题数据'}}</view>
     <view class="small muted">完成一组练习后，这里会生成你的知识点画像</view>
     <view class="btn btn-primary btn-round empty-btn" bindtap="goPractice">开始摸底练习</view>
   </view>
@@ -13,7 +26,7 @@
     <view class="card hero-card">
       <view class="row between">
         <view>
-          <view class="card-title">学情总览 · {{currentSubject}}</view>
+          <view class="card-title">{{protectedEnabled ? '普通练习学情' : '学情总览'}} · {{currentSubject}}</view>
           <view class="card-sub">累计 {{overview.total}} 题 · 覆盖 {{overview.chapterCount}} 个知识点</view>
         </view>
         <view class="rate-badge">
@@ -188,5 +201,6 @@
         </view>
       </view>
     </view>
+  </block>
   </block>
 </view>

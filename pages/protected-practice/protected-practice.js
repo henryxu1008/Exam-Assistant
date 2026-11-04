@@ -13,7 +13,11 @@ const blank = () => ({ available: config.protectedPracticePreview === true, busy
   recordsPreview: config.protectedRecordsPreview === true, historyCount: 0, historyCorrect: 0 })
 Page({
   data: blank(),
-  onLoad() { this._client = runtimeProtectedPracticeClient(); this._recorder = runtimeProtectedStudySession(); this._generation = 0 },
+  onLoad(options) {
+    this._client = runtimeProtectedPracticeClient(); this._recorder = runtimeProtectedStudySession(); this._generation = 0
+    const id = options && options.questionId
+    this._targetQuestionId = typeof id === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(id) ? id : ''
+  },
   onShow() {
     this._active = true; const generation = ++this._generation
     this._ctx = null; this._syncCtx = null; this._operation = null; this._baseline = null; this._cursor = null; this.setData(blank())
@@ -48,7 +52,19 @@ Page({
         this.setData({ busy: false, historyCount: history.snapshotSequence, historyCorrect: history.correct })
       } catch (e) { if (this._active && generation === this._generation) this._clear('学习记录同步失败，请联网后重试。'); return }
     }
-    return this._load(0, 0)
+    return this._targetQuestionId ? this._loadTarget() : this._load(0, 0)
+  },
+  async _loadTarget() {
+    if (!this._check() || this.data.busy) return
+    const ctx = this._ctx, generation = this._generation
+    this.setData({ busy: true, question: null, selected: [], submitted: false, error: '' })
+    try {
+      const result = await this._client.question(this._examId, this._targetQuestionId, ctx)
+      if (!this._live(generation, ctx)) { if (this._active && generation === this._generation) this._clear(errors.STALE_CONTEXT); return }
+      this._baseline = result.baseline; this._cursor = result.cursor; this._operation = null; this._startedAt = Date.now()
+      const question = result.question
+      this.setData({ busy: false, question, examName: result.scope.exam.name, selected: question.type === 'fill' ? question.answer.map(() => '') : [] })
+    } catch (e) { if (this._active && generation === this._generation) this._clear(e.code === 'QUESTION_UNAVAILABLE' ? '该题已不在当前题库，学习记录仍保留。' : (errors[e.code] || '题目读取失败，请检查网络或稍后重试。')) }
   },
   async _load(pageIndex, position) {
     if (!this._check() || this.data.busy) return
@@ -129,5 +145,9 @@ Page({
       else this._clear(errors[e.code] || '权益校验失败，请联网后重试。')
     }
   },
-  onNext() { if (this._check() && this.data.submitted && this._cursor) return this._load(this._cursor.pageIndex, this._cursor.position + 1) }
+  onNext() {
+    if (!this._check() || !this.data.submitted || !this._cursor) return
+    if (this._targetQuestionId) { this._cursor = null; this.setData({ question: null, selected: [], finished: true }); return }
+    return this._load(this._cursor.pageIndex, this._cursor.position + 1)
+  }
 })

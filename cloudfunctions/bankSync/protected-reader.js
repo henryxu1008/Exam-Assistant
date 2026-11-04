@@ -13,9 +13,12 @@ const POLICY_ID = 'examAccessPolicy'
 function createProtectedReader({ db, now = () => Date.now() }) {
   return async (event = {}, context = {}) => {
     try {
-      const initial = event.releaseId === undefined && event.index === 0
-      if (!validId(event.examId) || (!initial && !/^qb_[a-f0-9]{64}$/.test(event.releaseId || '')) ||
-          !Number.isSafeInteger(event.index) || event.index < 0 || event.index >= paged.limits.MAX_PAGES) fail('BAD_PAGE_QUERY')
+      const byQuestion = event.action === 'getProtectedExamQuestion'
+      const metadataOnly = event.action === 'getProtectedExamScope'
+      const initial = byQuestion || metadataOnly || (event.releaseId === undefined && event.index === 0)
+      if (!validId(event.examId) || (byQuestion && !validId(event.questionId)) ||
+          (!byQuestion && !metadataOnly && ((!initial && !/^qb_[a-f0-9]{64}$/.test(event.releaseId || '')) ||
+          !Number.isSafeInteger(event.index) || event.index < 0 || event.index >= paged.limits.MAX_PAGES))) fail('BAD_PAGE_QUERY')
       if (typeof event.token !== 'string' || !event.token || !context.OPENID) fail('INVALID_TOKEN')
       if (!db || typeof db.runTransaction !== 'function') fail('TRANSACTION_REQUIRED')
       const found = await db.collection('users').where({ token: event.token }).limit(1).get()
@@ -34,18 +37,26 @@ function createProtectedReader({ db, now = () => Date.now() }) {
         if (!accessPolicy.validPolicy(active.root, active.publicationRevision, policy)) fail('INVALID_ACCESS_POLICY')
         const rule = policy.entries.find(entry => entry.examId === event.examId)
         if (!rule) fail('INVALID_ACCESS_POLICY')
+        if (metadataOnly) return { ok: true, scope, publicationRevision: active.publicationRevision }
         if (rule.access === 'paid') {
           const timeline = await read(tx, 'commerceTimelines', subscriptions.timelineId(context.OPENID, event.examId))
           if (subscriptions.activeUntil(timeline, context.OPENID, event.examId, at) === null) fail('ENTITLEMENT_REQUIRED')
         }
-        if (event.index >= scope.sourcePageCount) fail('BAD_PAGE_QUERY')
+        const index = byQuestion ? paged.findPageIndex(active.root, event.questionId) : event.index
+        if (index < 0) fail('QUESTION_UNAVAILABLE')
+        if (index >= scope.sourcePageCount) fail('BAD_PAGE_QUERY')
         const releaseId = active.root.releaseId
         const archive = await read(tx, 'questions', releaseId)
         if (!archive || archive.kind !== 'pagedQuestionBankRelease' || !paged.validRoot(archive.root) ||
             archive.root.releaseId !== active.root.releaseId || !Number.isSafeInteger(archive.publishedAt) || archive.publishedAt < 0) fail('INVALID_RELEASE')
-        const stored = await read(tx, 'questions', paged.pageDocumentId(releaseId, event.index))
-        if (!stored || stored.kind !== 'pagedQuestionBankPage' || !stored.page || stored.page.index !== event.index) fail('INVALID_PUBLISHED_PAGE')
+        const stored = await read(tx, 'questions', paged.pageDocumentId(releaseId, index))
+        if (!stored || stored.kind !== 'pagedQuestionBankPage' || !stored.page || stored.page.index !== index) fail('INVALID_PUBLISHED_PAGE')
         const page = projection.projectPage(active.root, stored.page, event.examId)
+        if (byQuestion) {
+          const position = page.questions.findIndex(q => q.id === event.questionId)
+          if (position < 0) fail('QUESTION_UNAVAILABLE')
+          return { ok: true, scope, question: page.questions[position], cursor: { pageIndex: index, position }, publicationRevision: active.publicationRevision }
+        }
         return { ok: true, scope, page, publicationRevision: active.publicationRevision }
       })
     } catch (e) { return { ok: false, error: /^[A-Z_]+$/.test(e.code || '') ? e.code : 'PROTECTED_READ_FAILED' } }

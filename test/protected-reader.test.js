@@ -40,6 +40,31 @@ test('已购用户仅读取其考试的题目，保留原发布并拒绝伪造�
   assert.equal((await h.main({ ...request, action: 'getProtectedExamPage' })).error, 'PROTECTED_READ_DISABLED', '默认入口尚未启用')
 })
 
+test('按题目 ID 查看只返回当前考试单题，过期和跨考试不泄露内容', async () => {
+  const { h, reader, request, ctx, key } = setup()
+  const query = { token: request.token, examId: request.examId, action: 'getProtectedExamQuestion', questionId: 'A' }
+  const result = await reader(query, ctx)
+  assert.equal(result.ok, true); assert.equal(result.question.id, 'A'); assert.equal(result.page, undefined)
+  assert.deepEqual(result.cursor, { pageIndex: 0, position: 0 })
+  assert.equal(JSON.stringify(result).includes('付费乙'), false)
+  assert.equal((await reader({ ...query, questionId: 'B' }, ctx)).error, 'QUESTION_UNAVAILABLE')
+  assert.equal((await reader({ ...query, questionId: 'unknown' }, ctx)).error, 'QUESTION_UNAVAILABLE')
+  h.collections.commerceTimelines.set(key, subscriptions.revoke(h.collections.commerceTimelines.get(key), 'order_a', NOW))
+  const denied = await reader(query, ctx); assert.equal(denied.error, 'ENTITLEMENT_REQUIRED'); assert.equal(denied.question, undefined)
+  assert.equal((await h.main(query)).error, 'PROTECTED_READ_DISABLED')
+})
+
+test('过期后仍可读取已登录考试目录名称，但不会返回题目或其他考试', async () => {
+  const { h, reader, request, ctx, key } = setup()
+  h.collections.commerceTimelines.set(key, subscriptions.revoke(h.collections.commerceTimelines.get(key), 'order_a', NOW))
+  const event = { token: request.token, examId: request.examId, action: 'getProtectedExamScope' }
+  const result = await reader(event, ctx)
+  assert.equal(result.ok, true); assert.equal(result.scope.exam.name, '考试甲'); assert.equal(result.scope.subjects[0].name, '甲')
+  assert.equal(JSON.stringify(result).includes('付费甲'), false); assert.equal(JSON.stringify(result).includes('考试乙'), false)
+  assert.equal((await reader(event, { OPENID: ADMIN_OPENID })).error, 'INVALID_TOKEN')
+  assert.equal((await h.main(event)).error, 'PROTECTED_READ_DISABLED')
+})
+
 test('未购买、过期、退款、缺失策略或读取故障均不返回题目', async () => {
   const { h, reader, request, ctx, key } = setup(), timeline = h.collections.commerceTimelines.get(key)
   const expired = subscriptions.extend(subscriptions.reserve(subscriptions.empty('normal-openid', 'exam_a'), 'order_a', NOW - 2 * subscriptions.DAY_MS), 'order_a', 1, NOW - 2 * subscriptions.DAY_MS)

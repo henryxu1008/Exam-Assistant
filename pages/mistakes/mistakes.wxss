@@ -209,3 +209,11 @@
   margin-top: 28rpx;
   text-align: center;
 }
+
+.protected-card { margin-top: 20rpx; }
+.protected-row { padding: 20rpx 0; border-bottom: 1rpx solid #edf1f8; }
+.protected-actions { gap: 30rpx; margin-top: 12rpx; color: #3d6bff; font-size: 25rpx; }
+.protected-error { color: #b13939; font-size: 25rpx; margin-top: 16rpx; }
+.protected-more { color: #3d6bff; text-align: center; padding: 18rpx; }
+.protected-detail { margin-top: 20rpx; padding: 22rpx; background: #f5f8ff; border-radius: 14rpx; }
+.protected-stem { margin: 16rpx 0; font-weight: 600; }

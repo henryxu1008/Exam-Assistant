@@ -6,6 +6,8 @@ const analytics = require('../../utils/analytics.js')
 const chart = require('../../utils/chart.js')
 const ai = require('../../utils/ai.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
+const { runtimeProtectedReportLoader } = require('../../utils/protected-report-loader.js')
 
 Page({
   data: {
@@ -33,16 +35,21 @@ Page({
     strong: [],
     stubborn: [],
     advice: [],
-    currentSubject: ''
+    currentSubject: '', protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true,
+    protectedBusy: false, protectedLoaded: false, protectedError: '', protectedReport: null
   },
 
   onLoad() {
+    if (config.protectedRecordsPreview === true) this._protectedLoader = runtimeProtectedReportLoader()
     this._unsubscribeSync = store.onSyncRestored(() => {
-      if (this._visible) user.whenReady(() => { if (this._visible) this.refresh() })
+      if (this._visible) user.whenReady(() => { if (this._visible) { this.refresh(); this.refreshProtected() } })
     })
   },
 
-  onHide() { this._visible = false },
+  onHide() {
+    this._visible = false; this._protectedGeneration = (this._protectedGeneration || 0) + 1
+    this.setData({ protectedBusy: false, protectedLoaded: false, protectedError: '', protectedReport: null })
+  },
 
   onUnload() {
     this.onHide()
@@ -50,16 +57,24 @@ Page({
   },
 
   onShow() {
-    this._visible = true
-    user.whenReady(() => this.refresh())
+    if (config.protectedRecordsPreview === true && !this._protectedLoader) this._protectedLoader = runtimeProtectedReportLoader()
+    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: config.protectedRecordsPreview === true })
+    this._visible = true; const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
+    user.whenReady(() => { if (this._visible && generation === this._protectedGeneration) { this.refresh(); this.refreshProtected() } })
   },
 
   onPullDownRefresh() {
-    user.whenReady(() => this.refresh())
+    user.whenReady(() => { this.refresh(); this.refreshProtected() })
     wx.stopPullDownRefresh()
   },
 
   refresh() {
+    if (config.protectedCatalog === true) {
+      this.setData({ hasData: false, overview: { total: 0, correct: 0, rate: 0, todayTotal: 0, todayCorrect: 0, todayRate: 0,
+        wrongCount: 0, stubbornCount: 0, dueCount: 0, streakDays: 0, chapterCount: 0 }, currentSubject: '', radar: { labels: [], values: [] }, radarList: [], trend: { labels: [], values: [] },
+        trendTable: [], barItems: [], chapters: [], weak: [], strong: [], stubborn: [], advice: [] })
+      return
+    }
     // 各指标共用同一次全量扫描结果，避免逐指标重复遍历记录表
     const snap = analytics.snapshot()
     const overview = analytics.overview(snap)
@@ -121,6 +136,22 @@ Page({
     )
   },
 
+  async refreshProtected() {
+    if (config.protectedRecordsPreview !== true || !this._visible || !this._protectedLoader) return
+    const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
+    this.setData({ protectedBusy: true, protectedLoaded: false, protectedError: '', protectedReport: null })
+    try {
+      const ctx = this._protectedLoader.capture(), report = await this._protectedLoader.load(ctx)
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this.setData({ protectedBusy: false, protectedError: '账号或考试已切换，请重新载入。' }); return }
+      const summary = { ...report }; delete summary.wrongs
+      this.setData({ protectedBusy: false, protectedLoaded: true, protectedReport: summary })
+    } catch (e) {
+      if (this._visible && generation === this._protectedGeneration) this.setData({ protectedBusy: false, protectedLoaded: false,
+        protectedError: e.code === 'NO_TOKEN' ? '登录后可查看受保护学情。' : e.code === 'STALE_CONTEXT' ? '账号或考试已切换，请重新载入。' : '受保护学习记录读取失败，请联网后重试。' })
+    }
+  },
+
   drawCharts() {
     if (this.data.radar.values.length >= 3) {
       chart.renderRadar(this, '#radar', this.data.radar)
@@ -134,6 +165,7 @@ Page({
   /* ---------------- 事件 ---------------- */
 
   onChapterPractice(e) {
+    if (config.protectedCatalog === true) return
     const subject = e.currentTarget.dataset.subject || ''
     const chapter = e.currentTarget.dataset.chapter || ''
     if (!chapter) return
@@ -141,14 +173,17 @@ Page({
   },
 
   onWeakPractice() {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'weak' })
   },
 
   onRedo(e) {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'single', ids: [e.currentTarget.dataset.id] })
   },
 
   onAi(e) {
+    if (config.protectedCatalog === true) return
     const id = e.currentTarget.dataset.id
     const q = bank.findQuestion(id)
     if (!q) return
@@ -158,6 +193,7 @@ Page({
   },
 
   goPractice() {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'random' })
   },
 
@@ -166,6 +202,7 @@ Page({
   },
 
   goReview() {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'review' })
   }
 })

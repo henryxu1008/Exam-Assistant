@@ -41,6 +41,7 @@ function createProtectedStudyClient({ getSession, call }) {
   async function restore(examId, dataEpoch, ctx) {
     if (!key(examId) || !Number.isSafeInteger(dataEpoch) || dataEpoch < 0) fail('BAD_CURSOR')
     let afterSequence = 0, snapshotSequence, correct, resultRows = []
+    const seen = new Set()
     for (let round = 0; round < 100; round++) {
       const result = await request({ action: 'getProtectedAttempts', examId, dataEpoch, afterSequence, limit: 100,
         ...(snapshotSequence === undefined ? {} : { snapshotSequence }) }, ctx)
@@ -50,7 +51,8 @@ function createProtectedStudyClient({ getSession, call }) {
           (snapshotSequence !== undefined && (result.snapshotSequence !== snapshotSequence || result.correct !== correct))) fail('INVALID_RESPONSE')
       snapshotSequence = result.snapshotSequence; correct = result.correct
       for (const row of result.attempts) {
-        if (!validFact(row, examId) || row.sequence !== afterSequence + 1) fail('INVALID_RESPONSE')
+        if (!validFact(row, examId) || row.sequence !== afterSequence + 1 || seen.has(row.id)) fail('INVALID_RESPONSE')
+        seen.add(row.id)
         afterSequence = row.sequence
       }
       if (result.nextSequence !== afterSequence || result.hasMore !== (afterSequence < snapshotSequence)) fail('INVALID_RESPONSE')

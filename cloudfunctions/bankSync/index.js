@@ -108,7 +108,7 @@ function createMain({ protectedMode = false, getContext = () => cloud.getWXConte
     try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
     return protectedStudy(event, context)
   }
-  if (action === 'getProtectedExamPage') {
+  if (['getProtectedExamPage', 'getProtectedExamQuestion', 'getProtectedExamScope'].includes(action)) {
     if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
     let context
     try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }

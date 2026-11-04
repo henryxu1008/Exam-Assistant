@@ -5,6 +5,7 @@ const store = require('../../utils/store.js')
 const analytics = require('../../utils/analytics.js')
 const ai = require('../../utils/ai.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
 
 const MODE_TITLES = {
   all: '顺序练习',
@@ -61,7 +62,15 @@ Page({
     user.whenReady(() => this._showPractice())
   },
 
+  _clearLegacyPractice() {
+    if (this._timer) clearTimeout(this._timer)
+    this._timer = null; this._params = null; this._sessionId = null; this._practiceContext = null
+    this.setData({ subjects: [], subject: '', queue: [], total: 0, question: null, selected: [], submitted: false, canSubmit: false,
+      finished: false, summary: null, showAi: false, aiExplain: null, errorIds: [], emptyTip: '请从受保护练习入口开始在线练习' })
+  },
+
   _showPractice() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     this.setData({ subjects: bank.getSubjects(store.getCurrentExam()) })
     const curScope = store.getUserScope()
     const scopeChanged = this._scope && this._scope !== curScope
@@ -101,6 +110,7 @@ Page({
 
   /** 消费 globalData.practiceParams（由 app.startPractice 写入）；供 onShow 与「当前已是练习页」时复用 */
   loadPending() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     if (!user.whenReady()) return
     return this._consumePending()
   },
@@ -125,6 +135,7 @@ Page({
 
   /** 云端恢复与页面重建共用同一处绑定；恢复本身不改写会话进度。 */
   _restoreSession(session) {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return false }
     if (!session || session.subject !== store.getCurrentSubject()) return false
     const queue = (session.questionIds || []).map((id) => {
       const marker = session.submitted && session.submitted[id]
@@ -165,6 +176,7 @@ Page({
 
   /** 所有会话写操作先验证发起页面的上下文；重绑定后也不重放旧交互。 */
   _ensurePracticeContext() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return false }
     if (!this._practiceContext || store.isPracticeContextCurrent(this._practiceContext)) return true
     if (this._timer) clearTimeout(this._timer)
     this._timer = null
@@ -175,6 +187,7 @@ Page({
   /* ---------------- 初始化 ---------------- */
 
   _init(params) {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     const mode = MODE_TITLES[params.mode] ? params.mode : 'all'
     // 从首页科目卡 / 学情章节专练进入时携带科目，先同步为全应用当前科目
     if (params.subject) store.setCurrentSubject(params.subject)
@@ -403,6 +416,7 @@ Page({
   },
 
   onStar() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     if (!user.whenReady()) return
     const q = this.data.question
     if (!q) return
@@ -481,6 +495,7 @@ Page({
   },
 
   onAiExplain() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     const q = this.data.question
     if (!q) return
     this.setData({ showAi: true, aiExplain: ai.explainQuestion(q, this.data.selected) })
@@ -518,6 +533,7 @@ Page({
   },
 
   onSubjectChange(e) {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     if (!user.whenReady()) return
     const subject = e.currentTarget.dataset.subject || ''
     if (!subject) return // 已去掉「全部」，dataset 里只会是具体科目
@@ -571,6 +587,7 @@ Page({
   },
 
   gotoReview() {
+    if (config.protectedCatalog === true) { this._clearLegacyPractice(); return }
     app.startPractice({ mode: 'review' })
   },
 
