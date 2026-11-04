@@ -563,14 +563,17 @@ Page({
       removeQuestion: { subjectKey: this.data.selectedSubject, id }
     }
     if (!actions[action]) return
-    if (this._questionFormDirty && action !== 'removeQuestion') { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     const generation = this._generation, context = this._context, workspace = this._workspace
     wx.showModal({ title: '从草稿中移除', content: '此操作只修改当前编辑内容；提交后仍需审核发布。非空分类不能直接移除。',
       success: result => {
         if (!result.confirm || generation !== this._generation || !this._active || context !== this._context || workspace !== this._workspace || !this._client.current(context)) return
+        if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
         const selection = action === 'removeExam' ? { selectedExam: '', selectedSubject: '', selectedChapter: '' }
           : action === 'removeSubject' ? { selectedSubject: '', selectedChapter: '' }
-            : action === 'removeChapter' ? { selectedChapter: '' } : {}
+            : action === 'removeChapter' ? { selectedChapter: '' }
+              : action === 'removeQuestion' && id === this.data.editingId ? { editingId: '', form: resetQuestion(this.data.form), questionFormDirty: false,
+                questionTypeName: '单选题', sourceTypeName: '原创' } : {}
         this._changeEditor({ type: action, ...actions[action] }, selection)
       } })
   },
