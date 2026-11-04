@@ -711,3 +711,23 @@ test('本地编辑不会在不同账号之间展示', async t => {
   p.onLoadEditor(); await settle(); assert.equal(p.data.editorReady, true)
   assert.equal(p.data.form.stem, '')
 })
+
+test('题目表单未保存时不能删除题目；确认删除当前题后清空编辑绑定', async t => {
+  const ops = operators(), imported = JSON.parse(sample), q = imported.bank.questions.it[0]
+  imported.bank.schemaVersion = 3; imported.bank.manifest.exams = [{ id: 'arch', name: '架构师' }]; imported.bank.manifest.subjects[0].examId = 'arch'
+  const draft = await ops.editor.submitDraft(imported, { submissionId: 'remove-safe', rightsConfirmed: true })
+  await ops.approve(draft.draftId); await ops.publisher.publishExam({ draftId: draft.draftId, expectedRevision: 0 })
+  const p = page(t, ops.editor); await settle(); p.onLoadEditor(); await settle()
+  const select = (kind, id) => p.onSelectNode({ currentTarget: { dataset: { kind, id } } })
+  select('exam', 'arch'); select('subject', 'it'); select('chapter', 'net')
+  p.onEditQuestion({ currentTarget: { dataset: { id: q.id } } })
+  p.onEditorInput({ currentTarget: { dataset: { field: 'stem' } }, detail: { value: '未保存编辑' } })
+  let modals = 0; wx.showModal = options => { modals++; options.success({ confirm: true }) }; t.after(() => { delete wx.showModal })
+  const remove = () => p.onRemoveEditor({ currentTarget: { dataset: { action: 'removeQuestion', id: q.id } } })
+  remove(); assert.equal(p.data.error, 'SAVE_QUESTION_REQUIRED'); assert.equal(modals, 0)
+  assert.equal(p.data.form.stem, '未保存编辑'); assert.ok(p._workspace.bank.questions.it.some(item => item.id === q.id))
+  p.onSaveQuestion(); assert.equal(p.data.error, '')
+  remove(); assert.equal(modals, 1); assert.equal(p.data.editingId, ''); assert.equal(p.data.form.questionId, '')
+  assert.ok(!p._workspace.bank.questions.it.some(item => item.id === q.id))
+  p.onRestoreEditor(); assert.equal(p.data.editingId, ''); assert.equal(p.data.form.questionId, '')
+})
