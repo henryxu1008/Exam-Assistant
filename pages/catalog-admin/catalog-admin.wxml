@@ -1,43 +1,67 @@
 <view class="page catalog-admin">
-  <view class="card">
-    <view class="title">题库管理</view>
-    <view wx:if="{{allowed}}">当前角色：{{roleText}}</view>
-    <view wx:else>当前账号没有题库管理权限，或权限尚未读取成功。</view>
+  <view class="card admin-header">
+    <view class="header-main"><view class="header-copy"><view class="eyebrow">管理工作台</view><view class="page-title">题库管理</view><view class="header-sub" wx:if="{{allowed}}">当前角色：{{roleText}}</view><view class="header-sub" wx:else>当前账号没有题库管理权限，或权限尚未读取成功。</view></view>
+      <button class="refresh-button {{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onShow" disabled="{{busy}}">刷新权限</button></view>
     <view class="error" wx:if="{{error}}">{{errorMessages[error] || '操作未完成，请核对信息后重试。'}}（{{error}}）</view>
-    <button size="mini" bindtap="onShow" disabled="{{busy}}">刷新权限</button>
   </view>
   <block wx:if="{{allowed}}">
-    <view class="card" wx:if="{{canEdit}}">
+    <scroll-view class="workspace-nav" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="workspace-tabs">
+        <view wx:if="{{canEdit}}" class="workspace-tab {{activeTab === 'edit' ? 'active' : ''}}" data-tab="edit" bindtap="onWorkspaceTab">题库编辑</view>
+        <view class="workspace-tab {{activeTab === 'draft' ? 'active' : ''}}" data-tab="draft" bindtap="onWorkspaceTab">提交草稿</view>
+        <view class="workspace-tab {{activeTab === 'review' ? 'active' : ''}}" data-tab="review" bindtap="onWorkspaceTab">查看与审核</view>
+        <view class="workspace-tab {{activeTab === 'publish' ? 'active' : ''}}" data-tab="publish" bindtap="onWorkspaceTab">发布与撤回</view>
+      </view>
+    </scroll-view>
+    <view class="notice" wx:if="{{result}}"><view class="notice-title">操作结果</view><text class="report" selectable="true">{{result}}</text></view>
+    <view class="card section-card" wx:if="{{canEdit}}" hidden="{{activeTab !== 'edit'}}">
       <view class="title">可视化题库编辑</view>
       <view class="hint">先载入当前发布；编辑自动保存在本机当前账号下，提交后须独立审核。</view>
-      <button bindtap="onLoadEditor" disabled="{{busy}}">载入当前题库和来源</button>
-      <view class="row wrap"><button size="mini" bindtap="onRestoreEditor" disabled="{{busy}}">恢复本机编辑</button><button size="mini" bindtap="onDiscardEditor" disabled="{{busy}}">丢弃本机编辑</button><button size="mini" bindtap="onCleanupEditorOrphans" disabled="{{busy}}">清理本机无引用分片</button></view>
+      <button class="primary-button {{(busy) ? 'is-disabled' : ''}}" bindtap="onLoadEditor" disabled="{{busy}}">载入当前题库和来源</button>
+      <view class="row wrap utility-actions"><button class="{{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onRestoreEditor" disabled="{{busy}}">恢复本机编辑</button><button class="{{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onDiscardEditor" disabled="{{busy}}">丢弃本机编辑</button><button class="{{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onCleanupEditorOrphans" disabled="{{busy}}">清理本机无引用分片</button></view>
       <block wx:if="{{editorReady}}">
-        <view class="title">考试项目 · 已选择 {{selectedExam || '无'}}</view>
-        <view class="row wrap"><button size="mini" wx:for="{{exams}}" wx:key="id" data-kind="exam" data-id="{{item.id}}" bindtap="onSelectNode">{{item.name}}</button></view>
-        <input value="{{form.examId}}" data-field="examId" bindinput="onEditorInput" placeholder="新考试 ID（字母、数字、下划线）" />
-        <input value="{{form.examName}}" data-field="examName" bindinput="onEditorInput" placeholder="考试名称" />
-        <view class="row wrap"><button size="mini" data-action="addExam" bindtap="onEditorAction">新增考试</button><button size="mini" data-action="renameExam" bindtap="onEditorAction">修改已选考试名称</button><button size="mini" data-action="removeExam" bindtap="onRemoveEditor">移除已选空考试</button></view>
+        <view class="editor-tabs">
+          <view class="editor-tab {{editorTab === 'structure' ? 'active' : ''}}" data-tab="structure" bindtap="onEditorTab">考试与科目</view>
+          <view class="editor-tab {{editorTab === 'questions' ? 'active' : ''}}" data-tab="questions" bindtap="onEditorTab">题目编辑</view>
+          <view class="editor-tab {{editorTab === 'ai' ? 'active' : ''}}" data-tab="ai" bindtap="onEditorTab">AI 出题</view>
+        </view>
+        <view class="current-scope">当前：{{selectedExamName || '未选考试'}} / {{selectedSubjectName || '未选科目'}} / {{selectedChapterName || '未选章节'}}</view>
+        <view hidden="{{editorTab !== 'structure'}}" class="editor-panel">
+        <view class="step-label">第一步</view>
+        <view class="title">选择或新增考试</view>
+        <view class="hint">先选择已有考试，或输入名称创建新考试。</view>
+        <view class="row wrap"><button class="choice {{selectedExam === item.id ? 'selected' : ''}}" size="mini" wx:for="{{exams}}" wx:key="id" data-kind="exam" data-id="{{item.id}}" bindtap="onSelectNode">{{item.name}}</button></view>
+        <input value="{{form.examName}}" data-field="examName" bindinput="onEditorInput" placeholder="考试名称，例如：系统架构设计师" />
+        <view class="row wrap"><button size="mini" data-action="addExam" bindtap="onEditorAction">新增考试</button><button wx:if="{{selectedExam}}" size="mini" data-action="renameExam" bindtap="onEditorAction">修改已选考试名称</button><button wx:if="{{selectedExam}}" size="mini" data-action="removeExam" bindtap="onRemoveEditor">移除已选空考试</button></view>
 
-        <view class="title">科目 · 已选择 {{selectedSubject || '无'}}</view>
-        <view class="row wrap"><button size="mini" wx:for="{{subjects}}" wx:key="key" data-kind="subject" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}} · {{item.examId || '未分配考试'}}</button></view>
-        <input value="{{form.subjectKey}}" data-field="subjectKey" bindinput="onEditorInput" placeholder="新科目 ID" />
-        <input value="{{form.subjectName}}" data-field="subjectName" bindinput="onEditorInput" placeholder="科目名称" />
-        <view class="row wrap"><button size="mini" data-action="addSubject" bindtap="onEditorAction">向已选考试新增科目</button><button size="mini" data-action="assignSubject" bindtap="onEditorAction">将已选科目分配到已选考试</button><button size="mini" data-action="renameSubject" bindtap="onEditorAction">修改已选科目名称</button><button size="mini" data-action="removeSubject" bindtap="onRemoveEditor">移除已选空科目</button></view>
+        <view wx:if="{{selectedExam}}" class="guided-step">
+        <view class="step-label">第二步</view>
+        <view class="title">选择或新增科目</view>
+        <view class="hint">当前考试：{{selectedExamName}}</view>
+        <view class="row wrap"><button class="choice {{selectedSubject === item.key ? 'selected' : ''}}" size="mini" wx:for="{{visibleSubjects}}" wx:key="key" data-kind="subject" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}}</button></view>
+        <input value="{{form.subjectName}}" data-field="subjectName" bindinput="onEditorInput" placeholder="科目名称，例如：综合知识" />
+        <view class="row wrap"><button size="mini" data-action="addSubject" bindtap="onEditorAction">新增科目</button><button wx:if="{{selectedSubject}}" size="mini" data-action="renameSubject" bindtap="onEditorAction">修改已选科目名称</button><button wx:if="{{selectedSubject}}" size="mini" data-action="removeSubject" bindtap="onRemoveEditor">移除已选空科目</button></view>
+        <picker wx:if="{{selectedSubject && exams.length > 1}}" mode="selector" range="{{exams}}" range-key="name" bindchange="onMoveSubject"><view class="move-subject">调整科目所属考试 ›</view></picker>
+        </view>
 
-        <view class="title">章节 · 已选择 {{selectedChapter || '无'}}</view>
-        <view class="row wrap"><button size="mini" wx:for="{{chapters}}" wx:key="key" data-kind="chapter" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}}</button></view>
-        <input value="{{form.chapterKey}}" data-field="chapterKey" bindinput="onEditorInput" placeholder="新章节 ID" />
-        <input value="{{form.chapterName}}" data-field="chapterName" bindinput="onEditorInput" placeholder="章节名称" />
-        <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
-
+        <view wx:if="{{selectedSubject}}" class="guided-step">
+        <view class="step-label">第三步</view>
+        <view class="title">选择或新增章节</view>
+        <view class="hint">当前科目：{{selectedSubjectName}}</view>
+        <view class="row wrap"><button class="choice {{selectedChapter === item.key ? 'selected' : ''}}" size="mini" wx:for="{{chapters}}" wx:key="key" data-kind="chapter" data-id="{{item.key}}" bindtap="onSelectNode">{{item.name}}</button></view>
+        <input value="{{form.chapterName}}" data-field="chapterName" bindinput="onEditorInput" placeholder="章节名称，例如：软件架构" />
+        <view class="row wrap"><button size="mini" data-action="addChapter" bindtap="onEditorAction">新增章节</button><button wx:if="{{selectedChapter}}" size="mini" data-action="renameChapter" bindtap="onEditorAction">修改已选章节名称</button><button wx:if="{{selectedChapter}}" size="mini" data-action="removeChapter" bindtap="onRemoveEditor">移除已选空章节</button></view>
+        <view class="hint" wx:if="{{selectedChapter}}">章节已选好，可以切换到“题目编辑”或“AI 出题”。</view>
+        </view>
+        </view>
+        <view hidden="{{editorTab !== 'ai'}}" class="editor-panel">
         <view class="title">AI 生成候选题</view>
         <view class="hint">先选择科目和章节。生成后 AI 将独立作答并审题；结果仅供参考，加入编辑内容后仍须人工审核。每次生成最多消耗 3 次模型调用配额。</view>
         <input value="{{aiTopic}}" data-field="aiTopic" bindinput="onAiInput" maxlength="300" placeholder="知识点，例如 CAP 定理" />
         <picker range="{{aiTypes}}" range-key="name" bindchange="onAiType"><view class="picker">题型：{{aiTypeName}} ›</view></picker>
         <input value="{{aiLevel}}" data-field="aiLevel" bindinput="onAiInput" type="number" maxlength="1" placeholder="难度：1、2 或 3" />
         <input value="{{aiCount}}" data-field="aiCount" bindinput="onAiInput" type="number" maxlength="1" placeholder="数量：1 至 5" />
-        <button bindtap="onAiGenerate" disabled="{{busy}}">生成候选题</button>
+        <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onAiGenerate" disabled="{{busy}}">生成候选题</button>
         <view wx:for="{{aiResults}}" wx:key="id" class="question-row">
           <text class="report" selectable="true">{{item.stem}}</text>
           <view wx:for="{{item.options}}" wx:for-item="option" wx:key="key">{{option.key}}. {{option.text}}</view>
@@ -47,12 +71,13 @@
         <block wx:if="{{aiResults.length}}">
           <input value="{{aiReference}}" data-field="aiReference" bindinput="onAiInput" maxlength="1000" placeholder="题目依据或生成依据说明" />
           <input value="{{aiPermission}}" data-field="aiPermission" bindinput="onAiInput" maxlength="1000" placeholder="使用权与授权说明" />
-          <view class="row wrap"><button size="mini" bindtap="onAiAdd" disabled="{{busy}}">加入当前编辑</button><button size="mini" bindtap="onAiDiscard" disabled="{{busy}}">丢弃候选题</button></view>
+          <view class="row wrap"><button class="{{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onAiAdd" disabled="{{busy}}">加入当前编辑</button><button class="{{(busy) ? 'is-disabled' : ''}}" size="mini" bindtap="onAiDiscard" disabled="{{busy}}">丢弃候选题</button></view>
         </block>
-
+        </view>
+        <view hidden="{{editorTab !== 'questions'}}" class="editor-panel">
         <view class="title">章节题目</view>
         <view wx:for="{{questions}}" wx:key="id" class="question-row"><text>{{item.id}} · {{item.stem}}</text><view class="row"><button size="mini" data-id="{{item.id}}" bindtap="onEditQuestion">编辑</button><button size="mini" data-action="removeQuestion" data-id="{{item.id}}" bindtap="onRemoveEditor">移除</button></view></view>
-        <view class="row wrap" wx:if="{{questionTotal}}"><button size="mini" data-delta="-1" bindtap="onQuestionPage" disabled="{{questionPage <= 1}}">上一页</button><text>第 {{questionPage}} / {{questionPages}} 页 · {{questionTotal}} 题</text><button size="mini" data-delta="1" bindtap="onQuestionPage" disabled="{{questionPage >= questionPages}}">下一页</button></view>
+        <view class="row wrap" wx:if="{{questionTotal}}"><button class="{{(questionPage <= 1) ? 'is-disabled' : ''}}" size="mini" data-delta="-1" bindtap="onQuestionPage" disabled="{{questionPage <= 1}}">上一页</button><text>第 {{questionPage}} / {{questionPages}} 页 · {{questionTotal}} 题</text><button class="{{(questionPage >= questionPages) ? 'is-disabled' : ''}}" size="mini" data-delta="1" bindtap="onQuestionPage" disabled="{{questionPage >= questionPages}}">下一页</button></view>
         <view class="row wrap"><button size="mini" bindtap="onNewQuestion">新增题目</button><button size="mini" bindtap="onDiscardQuestion">放弃题目表单修改</button></view>
         <view class="hint">选项可每行写 A=选项内容；已有题目使用 JSON: 加数组，保留换行和空格。选择题答案用英文逗号分隔；填空可用分号、| 分隔，也可用 JSON: 加数组输入原文。</view>
         <input value="{{form.questionId}}" disabled="{{!!editingId}}" data-field="questionId" bindinput="onEditorInput" placeholder="题目 ID" />
@@ -75,51 +100,58 @@
         <input value="{{form.sourceGenerator}}" data-field="sourceGenerator" bindinput="onEditorInput" maxlength="-1" placeholder="AI 生成工具（如适用）" />
         <button bindtap="onSaveQuestion">保存题目到当前编辑内容</button>
         <button bindtap="onPrepareEditor">检查完整题库并准备草稿</button>
+        </view>
       </block>
     </view>
-    <view class="card">
-      <view class="title">1. 导入预检与草稿</view>
+    <view hidden="{{activeTab !== 'draft'}}" class="section-group">
+    <view class="card section-card">
+      <view class="title">提交题库草稿</view>
+      <view class="ready-note" wx:if="{{ready}}">题库内容已通过本地检查，请填写提交 ID 并确认来源。</view>
       <view class="hint">导入内容是完整题库快照，会替换当前目录；已有发布时请先载入当前题库以绑定基线。</view>
       <view class="row"><button size="mini" data-format="json" bindtap="onFormat">JSON</button><button size="mini" data-format="csv" bindtap="onFormat">CSV</button><text>{{format}}</text></view>
       <textarea disabled="{{busy}}" value="{{inputText}}" data-field="inputText" bindinput="onInput" maxlength="-1" placeholder="粘贴完整题库与来源（管理页限 200 KB），先预检再提交" />
-      <button bindtap="onCheck" disabled="{{busy}}">本地预检</button>
+      <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onCheck" disabled="{{busy}}">本地预检</button>
       <text class="report" selectable="true">{{report}}</text>
       <input disabled="{{busy}}" value="{{submissionId}}" data-field="submissionId" bindinput="onInput" placeholder="稳定提交 ID：修改内容或重新审核时换一个 ID" />
       <checkbox-group data-field="rights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{rightsConfirmed}}" />我已核对来源并确认具有发布权</label></checkbox-group>
-      <button bindtap="onSubmit" disabled="{{busy || !canEdit || !ready || !rightsConfirmed}}">提交草稿</button>
+      <button class="{{(busy || !canEdit || !ready || !rightsConfirmed) ? 'is-disabled' : ''}}" bindtap="onSubmit" disabled="{{busy || !canEdit || !ready || !rightsConfirmed}}">提交草稿</button>
     </view>
     <view class="card" wx:if="{{canEdit}}">
       <view class="title">大题库文件导入</view>
       <view class="hint">选择包含完整考试题库和逐题来源的 JSON 文件。导入会替换整个目录；上传完成后仍须逐页独立审核并发布。</view>
-      <button bindtap="onChoosePagedFile" disabled="{{busy}}">选择并校验 JSON 文件</button>
+      <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onChoosePagedFile" disabled="{{busy}}">选择并校验 JSON 文件</button>
       <text class="report" selectable="true">{{pagedReport}}</text>
       <input disabled="{{busy}}" value="{{pagedSubmissionId}}" data-field="pagedSubmissionId" bindinput="onInput" placeholder="稳定提交 ID；断网后使用同一 ID 续传" />
       <checkbox-group data-field="pagedRights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{pagedRights}}" />我已核对来源并确认具有发布权</label></checkbox-group>
-      <button bindtap="onSubmitPaged" disabled="{{busy || !pagedReady || !pagedRights}}">分批上传并提交审核</button>
+      <button class="{{(busy || !pagedReady || !pagedRights) ? 'is-disabled' : ''}}" bindtap="onSubmitPaged" disabled="{{busy || !pagedReady || !pagedRights}}">分批上传并提交审核</button>
     </view>
-    <view class="card">
-      <view class="title">2. 查看与独立审核</view>
+    </view>
+    <view class="card section-card" hidden="{{activeTab !== 'review'}}">
+      <view class="title">查看与独立审核</view>
       <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />
-      <button wx:if="{{canEdit}}" bindtap="onAbandonPagedDraft" disabled="{{busy}}">丢弃本人未封存的分页暂存</button>
-      <button wx:if="{{canEdit}}" bindtap="onCleanupPagedRelease" disabled="{{busy}}">清理已丢弃且无引用的题目暂存</button>
-      <button bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
+      <button class="{{(busy) ? 'is-disabled' : ''}}" wx:if="{{canEdit}}" bindtap="onAbandonPagedDraft" disabled="{{busy}}">丢弃本人未封存的分页暂存</button>
+      <button class="{{(busy) ? 'is-disabled' : ''}}" wx:if="{{canEdit}}" bindtap="onCleanupPagedRelease" disabled="{{busy}}">清理已丢弃且无引用的题目暂存</button>
+      <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
       <text class="report" selectable="true">{{preview}}</text>
       <view wx:for="{{reviewItems}}" wx:key="id" class="question-row"><text class="report" selectable="true">{{item.text}}</text></view>
-      <view class="row wrap" wx:if="{{preview}}"><button size="mini" data-delta="-1" bindtap="onReviewPage" disabled="{{reviewPage <= 1 || busy}}">上一页</button><text>审核第 {{reviewPage}} / {{reviewPages}} 页</text><button size="mini" data-delta="1" bindtap="onReviewPage" disabled="{{reviewPage >= reviewPages || busy}}">下一页</button></view>
+      <view class="row wrap" wx:if="{{preview}}"><button class="{{(reviewPage <= 1 || busy) ? 'is-disabled' : ''}}" size="mini" data-delta="-1" bindtap="onReviewPage" disabled="{{reviewPage <= 1 || busy}}">上一页</button><text>审核第 {{reviewPage}} / {{reviewPages}} 页</text><button class="{{(reviewPage >= reviewPages || busy) ? 'is-disabled' : ''}}" size="mini" data-delta="1" bindtap="onReviewPage" disabled="{{reviewPage >= reviewPages || busy}}">下一页</button></view>
       <checkbox-group data-field="sources" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="sources" checked="{{sourceVerified}}" />我作为独立审核人已核验来源证据</label></checkbox-group>
       <input disabled="{{busy}}" value="{{note}}" data-field="note" bindinput="onInput" maxlength="2000" placeholder="审核结论（必填）" />
-      <view class="row"><button data-decision="approve" bindtap="onReview" disabled="{{busy || !canReview || !sourceVerified || !reviewAllSeen}}">批准</button><button data-decision="reject" bindtap="onReview" disabled="{{busy || !canReview}}">拒绝</button></view>
+      <view class="row"><button class="{{(busy || !canReview || !sourceVerified || !reviewAllSeen) ? 'is-disabled' : ''}}" data-decision="approve" bindtap="onReview" disabled="{{busy || !canReview || !sourceVerified || !reviewAllSeen}}">批准</button><button class="{{(busy || !canReview) ? 'is-disabled' : ''}}" data-decision="reject" bindtap="onReview" disabled="{{busy || !canReview}}">拒绝</button></view>
     </view>
-    <view class="card">
-      <view class="title">3. 发布</view>
-      <button bindtap="onReadRevision" disabled="{{busy}}">读取当前发布修订</button>
+    <view class="card section-card" hidden="{{activeTab !== 'publish'}}">
+      <view class="title">发布</view>
+      <view class="hint">请先在“查看与审核”中读取已批准的草稿，再核对当前发布修订。</view>
+      <input disabled="{{busy}}" value="{{draftId}}" data-field="draftId" bindinput="onInput" placeholder="草稿 ID" />
+      <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onReadRevision" disabled="{{busy}}">读取当前发布修订</button>
       <input disabled="{{busy}}" value="{{revision}}" data-field="revision" bindinput="onInput" type="number" placeholder="核对后输入预期修订号" />
-      <button bindtap="onPublish" disabled="{{busy || !canPublish}}">按该修订发布已批准草稿</button>
+      <button class="{{(busy || !canPublish) ? 'is-disabled' : ''}}" bindtap="onPublish" disabled="{{busy || !canPublish}}">按该修订发布已批准草稿</button>
       <view class="title">撤回题目</view>
       <view>先填写当前已发布草稿 ID、新提交 ID，并确认来源；撤回会生成新草稿，仍需独立审核和发布。</view>
       <input disabled="{{busy}}" value="{{removeIds}}" data-field="removeIds" bindinput="onInput" placeholder="要撤回的题号，用逗号分隔" />
-      <button bindtap="onWithdraw" disabled="{{busy || !canEdit || !rightsConfirmed}}">提交撤回草稿</button>
-      <text class="report" selectable="true">{{result}}</text>
+      <input wx:if="{{canEdit}}" disabled="{{busy}}" value="{{submissionId}}" data-field="submissionId" bindinput="onInput" placeholder="新提交 ID" />
+      <checkbox-group wx:if="{{canEdit}}" data-field="rights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{rightsConfirmed}}" />我已核对来源并确认具有发布权</label></checkbox-group>
+      <button class="{{(busy || !canEdit || !rightsConfirmed) ? 'is-disabled' : ''}}" bindtap="onWithdraw" disabled="{{busy || !canEdit || !rightsConfirmed}}">提交撤回草稿</button>
     </view>
   </block>
 </view>

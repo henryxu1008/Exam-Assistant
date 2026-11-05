@@ -1,13 +1,49 @@
-.catalog-admin { padding: 24rpx; }
-.catalog-admin .title { font-weight: 600; margin: 16rpx 0; }
-.catalog-admin textarea { width: 100%; min-height: 260rpx; box-sizing: border-box; background: #f5f7fb; padding: 16rpx; }
-.catalog-admin input { margin: 20rpx 0; border-bottom: 1rpx solid #d7dce5; min-height: 72rpx; }
-.catalog-admin label { display: block; margin: 20rpx 0; }
-.catalog-admin .report { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 24rpx; margin: 18rpx 0; }
-.catalog-admin .error { color: #aa2631; margin: 16rpx 0; }
-.catalog-admin button { margin: 12rpx 0; }
-.catalog-admin .row { display: flex; gap: 16rpx; align-items: center; }
+.catalog-admin { padding: 24rpx 24rpx calc(48rpx + env(safe-area-inset-bottom)); }
+.catalog-admin .admin-header { padding: 28rpx; border: 1rpx solid #e8edf5; box-shadow: none; }
+.catalog-admin .header-main { display: flex; align-items: flex-start; justify-content: space-between; gap: 20rpx; }
+.catalog-admin .header-copy { flex: 1; min-width: 0; }
+.catalog-admin .eyebrow { font-size: 22rpx; font-weight: 600; letter-spacing: 2rpx; color: #5572ce; }
+.catalog-admin .page-title { margin-top: 6rpx; color: #18243b; font-size: 38rpx; font-weight: 700; line-height: 1.3; }
+.catalog-admin .header-sub { margin-top: 10rpx; color: #68758b; font-size: 24rpx; line-height: 1.6; }
+.catalog-admin .workspace-nav { display: block; width: 100%; margin: 24rpx 0; white-space: nowrap; }
+.catalog-admin .workspace-tabs { display: inline-flex; min-width: 100%; gap: 12rpx; padding: 8rpx; border-radius: 20rpx; background: #e9eef7; box-sizing: border-box; }
+.catalog-admin .workspace-tab { flex: 1 0 auto; padding: 17rpx 22rpx; border-radius: 14rpx; text-align: center; color: #5e6c84; font-size: 25rpx; font-weight: 500; }
+.catalog-admin .workspace-tab.active { color: #284fbb; background: #fff; font-weight: 700; box-shadow: 0 3rpx 12rpx rgba(33, 53, 91, .08); }
+.catalog-admin .editor-tabs { display: flex; gap: 8rpx; margin-top: 32rpx; padding-bottom: 4rpx; border-bottom: 1rpx solid #e8edf5; }
+.catalog-admin .editor-tab { flex: 1; min-width: 0; padding: 18rpx 4rpx; text-align: center; color: #718097; font-size: 25rpx; }
+.catalog-admin .editor-tab.active { color: #315fdb; font-weight: 700; border-bottom: 4rpx solid #4b73ed; }
+.catalog-admin .current-scope { margin-top: 20rpx; padding: 16rpx 18rpx; border-radius: 14rpx; background: #f2f6ff; color: #4e6084; font-size: 23rpx; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-admin .editor-panel { padding-top: 8rpx; }
+.catalog-admin .guided-step { margin-top: 28rpx; padding-top: 22rpx; border-top: 1rpx solid #e8edf5; }
+.catalog-admin .step-label { margin-top: 24rpx; color: #5572ce; font-size: 23rpx; font-weight: 600; }
+.catalog-admin .step-label + .title { margin-top: 8rpx; }
+.catalog-admin .move-subject { display: inline-block; padding: 12rpx 0; color: #315fdb; font-size: 24rpx; }
+.catalog-admin .section-card { border: 1rpx solid #e8edf5; box-shadow: none; }
+.catalog-admin .section-group .card + .card { margin-top: 24rpx; }
+.catalog-admin .title { margin: 32rpx 0 14rpx; color: #1e2a3f; font-size: 29rpx; font-weight: 700; line-height: 1.4; }
+.catalog-admin .section-card > .title:first-child { margin-top: 0; font-size: 32rpx; }
+.catalog-admin input, .catalog-admin textarea, .catalog-admin .picker { display: block; width: 100%; box-sizing: border-box; margin: 14rpx 0; border: 1rpx solid #dce4ef; border-radius: 14rpx; background: #f8faff; color: #263650; font-size: 26rpx; }
+.catalog-admin input { min-height: 76rpx; padding: 0 20rpx; }
+.catalog-admin textarea { min-height: 200rpx; padding: 20rpx; line-height: 1.6; }
+.catalog-admin .picker { min-height: 76rpx; padding: 20rpx; }
+.catalog-admin label { display: block; margin: 22rpx 0; color: #48576f; font-size: 25rpx; line-height: 1.6; }
+.catalog-admin checkbox { transform: scale(.85); transform-origin: left center; }
+.catalog-admin .report { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 24rpx; line-height: 1.6; margin: 14rpx 0; }
+.catalog-admin .error { margin-top: 22rpx; padding: 18rpx; border-radius: 14rpx; background: #fff1f1; color: #a72b37; font-size: 24rpx; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-admin .notice { margin: 0 0 24rpx; padding: 18rpx 22rpx; border: 1rpx solid #cee8da; border-radius: 18rpx; background: #f0faf4; color: #285940; }
+.catalog-admin .notice-title { font-size: 24rpx; font-weight: 700; }
+.catalog-admin .ready-note { margin: 16rpx 0; padding: 16rpx 18rpx; border-radius: 14rpx; background: #eff9f3; color: #287648; font-size: 24rpx; line-height: 1.6; }
+.catalog-admin button { display: block; width: 100%; box-sizing: border-box; margin: 14rpx 0; padding: 16rpx 20rpx; border: 1rpx solid #dce4ef; border-radius: 14rpx; background: #f6f8fc; color: #40516d; font-size: 26rpx; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+.catalog-admin button::after { border: 0; }
+.catalog-admin button.is-disabled { opacity: .45; }
+.catalog-admin .primary-button { border-color: #456fe5; background: #456fe5; color: #fff; font-weight: 600; }
+.catalog-admin .refresh-button { flex: none; width: auto; margin: 0; padding: 12rpx 18rpx; font-size: 23rpx; }
+.catalog-admin .row { display: flex; gap: 12rpx; align-items: center; min-width: 0; }
 .catalog-admin .wrap { flex-wrap: wrap; }
-.catalog-admin .hint { color: #586274; font-size: 25rpx; line-height: 1.6; margin: 16rpx 0; }
-.catalog-admin .question-row { border-bottom: 1rpx solid #e4e8ef; padding: 16rpx 0; overflow-wrap: anywhere; }
-.catalog-admin .picker { padding: 22rpx 0; border-bottom: 1rpx solid #d7dce5; }
+.catalog-admin .row button { flex: 0 1 auto; width: auto; max-width: 100%; margin: 6rpx 0; font-size: 23rpx; }
+.catalog-admin .row text { min-width: 0; overflow-wrap: anywhere; font-size: 24rpx; }
+.catalog-admin .utility-actions { margin-top: 10rpx; }
+.catalog-admin .choice { background: #fff; }
+.catalog-admin .choice.selected { border-color: #6f8fec; background: #edf3ff; color: #2f5bd0; font-weight: 600; }
+.catalog-admin .hint { color: #68758b; font-size: 24rpx; line-height: 1.7; margin: 14rpx 0; }
+.catalog-admin .question-row { margin: 16rpx 0; padding: 20rpx; border: 1rpx solid #e4eaf3; border-radius: 16rpx; background: #fbfcff; overflow-wrap: anywhere; line-height: 1.6; }

@@ -6,6 +6,14 @@ const paged = require('../../shared/paged-catalog-domain.js')
 const { createCatalogCheckpoint } = require('../../utils/catalog-checkpoint.js')
 const { runtimeAiQuestionGenerator } = require('../../utils/ai-question-generator.js')
 const { sha256 } = require('../../shared/question-domain.js')
+function newCatalogId(prefix, values) {
+  const existing = new Set(values)
+  for (let i = 0; i < 16; i++) {
+    const id = `${prefix}_${sha256(JSON.stringify([Date.now(), Math.random(), Math.random(), i])).slice(0, 24)}`
+    if (!existing.has(id)) return id
+  }
+  throw Object.assign(new Error('CATALOG_ID_UNAVAILABLE'), { code: 'CATALOG_ID_UNAVAILABLE' })
+}
 const utf8Bytes = value => encodeURIComponent(value).replace(/%[A-F0-9]{2}/g, 'x').length
 const questionTypes = [{ name: '单选题', value: 'single' }, { name: '多选题', value: 'multiple' }, { name: '判断题', value: 'judge' },
   { name: '不定项', value: 'uncertain' }, { name: '填空题', value: 'fill' }, { name: '排序题', value: 'sort' }]
@@ -14,8 +22,8 @@ const aiTypes = questionTypes.filter(item => ['single', 'multiple', 'judge'].inc
 const errorMessages = {
   STALE_BASE_RELEASE: '题库已更新，请重新载入并核对后再编辑。', BASE_PUBLICATION_REQUIRED: '请先载入当前已发布题库。',
   NO_EDITABLE_PUBLISHED_DRAFT: '当前发布缺少可核对的草稿或来源，请先核查。', INVALID_PUBLISHED_DRAFT: '当前发布的草稿或来源校验失败。',
-  EMPTY_EXAM_DRAFT: '题库至少保留一道题，不能通过空草稿清空。', BAD_EXAMS: '请填写有效且不重复的考试编号和名称。',
-  BAD_EXAM_OWNERSHIP: '请为每个科目选择所属考试。', BAD_MANIFEST: '请检查科目、章节编号和名称是否有效且不重复。',
+  EMPTY_EXAM_DRAFT: '题库至少保留一道题，不能通过空草稿清空。', BAD_EXAMS: '请填写有效且不重复的考试名称。',
+  BAD_EXAM_OWNERSHIP: '请为每个科目选择所属考试。', BAD_MANIFEST: '请检查科目或章节的名称是否有效且不重复。',
   BAD_OPTIONS: '请检查题目选项及格式。', BAD_ANSWER: '请检查答案是否与题型和选项匹配。', BAD_QUESTION: '请检查题号、题面和题型。',
   BAD_SOURCES: '请补充完整的题目来源与授权信息。', EXAM_IMPORT_NOT_SUPPORTED: '考试题库请使用可视化编辑；批量导入暂不支持。',
   SAVE_QUESTION_REQUIRED: '请先保存或放弃当前题目表单，再继续。', QUESTION_ID_IMMUTABLE: '已创建的题号不能修改。',
@@ -36,6 +44,8 @@ const errorMessages = {
   BAD_AI_REVIEW: 'AI 审题结果不完整或无效，候选题未通过，请重试。', AI_REVIEW_CONFIG_INVALID: 'AI 审题服务尚未正确配置。', AI_REVIEW_REQUIRED: '本批题目存在审题问题，请丢弃并重新生成。',
   AI_UPSTREAM_TIMEOUT: 'AI 服务超时，本次可能已消耗部分配额。', AI_UPSTREAM_FAILED: 'AI 服务调用失败，本次可能已消耗部分配额。',
   AI_RESPONSE_TOO_LARGE: 'AI 响应过大，候选题未加入；本次可能已消耗部分配额。',
+  CATALOG_API_VERSION_MISMATCH: '当前云端题库服务未识别载入请求。请检查小程序连接的云环境以及 bankSync 云函数版本。',
+  CATALOG_ID_UNAVAILABLE: '无法生成新的编号，请稍后重试。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -72,9 +82,10 @@ function decodeUtf8(buffer) {
 }
 const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: false, roleText: '', allowed: false, busy: false, inputText: '', format: 'json', report: '', ready: false,
   rightsConfirmed: false, sourceVerified: false, submissionId: '', draftId: '', note: '', revision: '', removeIds: '', preview: '', result: '', error: '',
-  editorReady: false, exams: [], subjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
+  editorReady: false, exams: [], subjects: [], visibleSubjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', selectedExamName: '', selectedSubjectName: '', selectedChapterName: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
   reviewItems: [], reviewPage: 1, reviewPages: 1, reviewAllSeen: false,
   pagedReady: false, pagedReport: '', pagedSubmissionId: '', pagedRights: false,
+  activeTab: 'edit', editorTab: 'structure',
   aiTopic: '', aiType: 'single', aiTypeName: '单选题', aiTypes, aiLevel: '1', aiCount: '3', aiReference: '', aiPermission: '', aiResults: [],
   questionTypeName: '单选题', sourceTypeName: '原创', errorMessages })
 Page({
@@ -98,12 +109,26 @@ Page({
       this.setData({ busy: false, allowed: false })
       this._run(() => this._client.access(), result => {
         const roles = Array.isArray(result.roles) ? result.roles : []
-        this.setData({ roles, roleText: roles.join(' / '), allowed: roles.length > 0, canEdit: roles.includes('editors'), canReview: roles.includes('reviewers'), canPublish: roles.includes('publishers') })
+        const canEdit = roles.includes('editors'), canReview = roles.includes('reviewers'), canPublish = roles.includes('publishers')
+        const validTab = this.data.activeTab === 'edit' ? canEdit : ['draft', 'review', 'publish'].includes(this.data.activeTab) && roles.length > 0
+        const labels = { editors: '编辑', reviewers: '审核', publishers: '发布' }
+        this.setData({ roles, roleText: roles.map(role => labels[role] || role).join(' / '), allowed: roles.length > 0, canEdit, canReview, canPublish,
+          activeTab: validTab ? this.data.activeTab : canEdit ? 'edit' : 'review' })
       })
     })
   },
   onHide() { this._active = false; this._generation += 1; this._aiCandidates = null; this.setData({ aiResults: [] }) },
   onUnload() { this.onHide(); this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._context = null; this._checkpoint = null; this._checkpointToken = null },
+  onWorkspaceTab(e) {
+    if (this.data.busy || !this.data.allowed) return
+    const tab = e.currentTarget.dataset.tab
+    if ((tab === 'edit' && this.data.canEdit) || ['draft', 'review', 'publish'].includes(tab)) this.setData({ activeTab: tab })
+  },
+  onEditorTab(e) {
+    if (this.data.busy || !this.data.canEdit) return
+    const tab = e.currentTarget.dataset.tab
+    if (['structure', 'questions', 'ai'].includes(tab)) this.setData({ editorTab: tab })
+  },
   async _run(task, apply) {
     if (this.data.busy || !this._active || !this._context || !this._client.current(this._context)) return
     const generation = this._generation, ctx = this._context
@@ -277,6 +302,7 @@ Page({
   },
   _renderEditor() {
     const w = this._workspace, subject = w && w.bank.manifest.subjects.find(s => s.key === this.data.selectedSubject)
+    const exam = w && w.bank.manifest.exams.find(e => e.id === this.data.selectedExam)
     const chapter = subject && subject.chapters.find(c => c.key === this.data.selectedChapter)
     const rows = chapter ? w.bank.questions[subject.key].filter(q => q.chapter === chapterIdentity(subject.key, chapter.key)) : []
     const pages = Math.max(1, Math.ceil(rows.length / 20)), page = Math.max(1, Math.min(this.data.questionPage || 1, pages))
@@ -285,6 +311,8 @@ Page({
       return { id: q.id, stem }
     })
     this.setData({ editorReady: !!w, exams: w ? w.bank.manifest.exams : [], subjects: w ? w.bank.manifest.subjects : [],
+      visibleSubjects: w && exam ? w.bank.manifest.subjects.filter(s => s.examId === exam.id) : [],
+      selectedExamName: exam ? exam.name : '', selectedSubjectName: subject ? subject.name : '', selectedChapterName: chapter ? chapter.name : '',
       chapters: subject ? subject.chapters : [], questions: summaries, questionPage: page, questionPages: pages, questionTotal: rows.length })
   },
   _editorUI(patch = {}) {
@@ -331,7 +359,7 @@ Page({
       if (!result.confirm || generation !== this._generation || !this._active || ctx !== this._context || !this._client.current(ctx)) return
       try {
         this._checkpoint.clear(saved.token); this._checkpointToken = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null
-        this.setData({ editorReady: false, exams: [], subjects: [], chapters: [], questions: [], selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', form: editorForm(), ready: false, rightsConfirmed: false, pagedReady: false, pagedRights: false, pagedReport: '', error: '' })
+        this.setData({ editorReady: false, exams: [], subjects: [], visibleSubjects: [], chapters: [], questions: [], selectedExam: '', selectedSubject: '', selectedChapter: '', selectedExamName: '', selectedSubjectName: '', selectedChapterName: '', editingId: '', form: editorForm(), ready: false, rightsConfirmed: false, pagedReady: false, pagedRights: false, pagedReport: '', error: '' })
       } catch (e) { this.setData({ error: e.code || 'LOCAL_DRAFT_CLEANUP_FAILED' }) }
     } })
   },
@@ -362,9 +390,14 @@ Page({
   },
   _readEditor() {
     this._run(async live => {
-      const current = await this._client.pagedCurrent()
-      if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
-      return { result: await this._client.activeDraft() }
+      try {
+        const current = await this._client.pagedCurrent()
+        if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
+        return { result: await this._client.activeDraft() }
+      } catch (e) {
+        if (e && e.code === 'BAD_ACTION') throw Object.assign(new Error('CATALOG_API_VERSION_MISMATCH'), { code: 'CATALOG_API_VERSION_MISMATCH' })
+        throw e
+      }
     }, loaded => {
       if (loaded.workspace) {
         if (!editor.validWorkspace(loaded.workspace)) throw Object.assign(new Error('INVALID_PUBLISHED_DRAFT'), { code: 'INVALID_PUBLISHED_DRAFT' })
@@ -428,7 +461,7 @@ Page({
     const source = { kind: 'ai_generated', title: 'AI 生成练习题', reference: this.data.aiReference, permission: this.data.aiPermission,
       attribution: 'AI 辅助生成，待人工核验', generator: batch.generator }
     if (this._changeEditor({ type: 'addGeneratedQuestions', subjectKey: batch.subjectKey, chapterKey: batch.chapterKey, questions: batch.questions, source })) {
-      this._aiCandidates = null; this.setData({ aiResults: [], result: `已加入 ${batch.questions.length} 道候选题，请逐题核对后提交审核。` })
+      this._aiCandidates = null; this.setData({ aiResults: [], editorTab: 'questions', result: `已加入 ${batch.questions.length} 道候选题，请逐题核对后提交审核。` })
     }
   },
   onEditorInput(e) {
@@ -454,12 +487,19 @@ Page({
   onSelectNode(e) {
     if (this.data.busy || !this._workspace) return
     const { kind, id } = e.currentTarget.dataset
-    if ((kind === 'subject' && id === this.data.selectedSubject) || (kind === 'chapter' && id === this.data.selectedChapter)) return
-    if (this._questionFormDirty && (kind === 'subject' || kind === 'chapter')) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    if ((kind === 'exam' && id === this.data.selectedExam) || (kind === 'subject' && id === this.data.selectedSubject) || (kind === 'chapter' && id === this.data.selectedChapter)) return
+    const manifest = this._workspace.bank.manifest
+    const exam = kind === 'exam' && manifest.exams.find(item => item.id === id)
+    const subject = kind === 'subject' && manifest.subjects.find(item => item.key === id)
+    const currentSubject = manifest.subjects.find(item => item.key === this.data.selectedSubject)
+    const chapter = kind === 'chapter' && currentSubject && currentSubject.chapters.find(item => item.key === id)
+    if ((!exam && kind === 'exam') || (!subject && kind === 'subject') || (!chapter && kind === 'chapter') ||
+        (subject && this.data.selectedExam && subject.examId !== this.data.selectedExam)) return
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     const reset = { editingId: '', form: resetQuestion(this.data.form), questionTypeName: '单选题', sourceTypeName: '原创' }
-    const patch = kind === 'exam' ? { selectedExam: id } : kind === 'subject' ? { selectedSubject: id, selectedChapter: '', editingId: '', questionPage: 1 }
+    const patch = kind === 'exam' ? { selectedExam: id, selectedSubject: '', selectedChapter: '', questionPage: 1 } : kind === 'subject' ? { selectedExam: subject.examId, selectedSubject: id, selectedChapter: '', editingId: '', questionPage: 1 }
       : kind === 'chapter' ? { selectedChapter: id, editingId: '', questionPage: 1 } : null
-    if (patch && kind !== 'exam') Object.assign(patch, reset)
+    if (patch) Object.assign(patch, reset)
     if (!patch || !this._saveEditorForm(this._editorUI(patch))) return
     this.setData(patch)
     this._renderEditor()
@@ -478,16 +518,40 @@ Page({
     } catch (e) { this.setData({ error: /^[A-Z_]+$/.test(e.code || '') ? e.code : 'OPERATION_FAILED' }); return false }
   },
   onEditorAction(e) {
+    if (this.data.busy || !this.data.canEdit || !this._workspace || !this._active || !this._client.current(this._context)) return
     const type = e.currentTarget.dataset.action, f = this.data.form
+    if (['addExam', 'addSubject', 'addChapter'].includes(type) && this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    if (['addExam', 'addSubject', 'addChapter'].includes(type)) {
+      try {
+        const manifest = this._workspace.bank.manifest
+        const subject = manifest.subjects.find(item => item.key === this.data.selectedSubject)
+        const id = type === 'addExam' ? newCatalogId('exam', manifest.exams.map(item => item.id))
+          : type === 'addSubject' ? newCatalogId('subject', manifest.subjects.map(item => item.key))
+            : newCatalogId('chapter', subject ? subject.chapters.map(item => item.key) : [])
+        const action = type === 'addExam' ? { id, name: f.examName.trim() }
+          : type === 'addSubject' ? { examId: this.data.selectedExam, subjectKey: id, name: f.subjectName.trim() }
+            : { subjectKey: this.data.selectedSubject, chapterKey: id, name: f.chapterName.trim() }
+        const form = resetQuestion({ ...f, ...(type === 'addExam' ? { examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '' }
+          : type === 'addSubject' ? { subjectKey: '', subjectName: '', chapterKey: '', chapterName: '' } : { chapterKey: '', chapterName: '' }) })
+        const selection = type === 'addExam' ? { selectedExam: id, selectedSubject: '', selectedChapter: '' }
+          : type === 'addSubject' ? { selectedSubject: id, selectedChapter: '' } : { selectedChapter: id }
+        this._changeEditor({ type, ...action }, { ...selection, form, editingId: '', questionPage: 1, questionTypeName: '单选题', sourceTypeName: '原创' })
+      } catch (err) { this.setData({ error: err.code || 'OPERATION_FAILED' }) }
+      return
+    }
     const actions = {
-      addExam: { id: f.examId, name: f.examName }, renameExam: { id: this.data.selectedExam, name: f.examName },
-      addSubject: { examId: this.data.selectedExam, subjectKey: f.subjectKey, name: f.subjectName },
-      assignSubject: { examId: this.data.selectedExam, subjectKey: this.data.selectedSubject },
-      renameSubject: { subjectKey: this.data.selectedSubject, name: f.subjectName },
-      addChapter: { subjectKey: this.data.selectedSubject, chapterKey: f.chapterKey, name: f.chapterName },
-      renameChapter: { subjectKey: this.data.selectedSubject, chapterKey: this.data.selectedChapter, name: f.chapterName }
+      renameExam: { id: this.data.selectedExam, name: f.examName.trim() },
+      renameSubject: { subjectKey: this.data.selectedSubject, name: f.subjectName.trim() },
+      renameChapter: { subjectKey: this.data.selectedSubject, chapterKey: this.data.selectedChapter, name: f.chapterName.trim() }
     }
     if (actions[type]) this._changeEditor({ type, ...actions[type] })
+  },
+  onMoveSubject(e) {
+    if (this.data.busy || !this.data.canEdit || !this._workspace || !this.data.selectedSubject) return
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+    const exam = this._workspace.bank.manifest.exams[Number(e.detail.value)]
+    if (!exam || exam.id === this.data.selectedExam) return
+    this._changeEditor({ type: 'assignSubject', examId: exam.id, subjectKey: this.data.selectedSubject }, { selectedExam: exam.id })
   },
   onRemoveEditor(e) {
     if (this.data.busy || !this.data.canEdit || !this._workspace || !this._active || !this._client.current(this._context)) return
@@ -499,11 +563,18 @@ Page({
       removeQuestion: { subjectKey: this.data.selectedSubject, id }
     }
     if (!actions[action]) return
+    if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
     const generation = this._generation, context = this._context, workspace = this._workspace
     wx.showModal({ title: '从草稿中移除', content: '此操作只修改当前编辑内容；提交后仍需审核发布。非空分类不能直接移除。',
       success: result => {
         if (!result.confirm || generation !== this._generation || !this._active || context !== this._context || workspace !== this._workspace || !this._client.current(context)) return
-        this._changeEditor({ type: action, ...actions[action] })
+        if (this._questionFormDirty) { this.setData({ error: 'SAVE_QUESTION_REQUIRED' }); return }
+        const selection = action === 'removeExam' ? { selectedExam: '', selectedSubject: '', selectedChapter: '' }
+          : action === 'removeSubject' ? { selectedSubject: '', selectedChapter: '' }
+            : action === 'removeChapter' ? { selectedChapter: '' }
+              : action === 'removeQuestion' && id === this.data.editingId ? { editingId: '', form: resetQuestion(this.data.form), questionFormDirty: false,
+                questionTypeName: '单选题', sourceTypeName: '原创' } : {}
+        this._changeEditor({ type: action, ...actions[action] }, selection)
       } })
   },
   onEditQuestion(e) {
@@ -560,13 +631,13 @@ Page({
       if (this._workspace.bank.schemaVersion === 4) {
         this._pagedPrepared = editor.prepare(this._workspace); this._pagedBase = this._workspace.basePublication
         this._prepared = null; this._preparedBase = null
-        this.setData({ ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
+        this.setData({ activeTab: 'draft', ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
           pagedReport: `编辑内容已校验：${this._pagedPrepared.root.totalQuestions} 题、${this._pagedPrepared.root.pages.length} 页。请在下方填写提交 ID 并确认发布权。`, error: '' })
         return
       }
       this._prepared = editor.prepare(this._workspace); this._preparedBase = this._workspace.basePublication || undefined
       const bank = this._prepared.bank, count = Object.values(bank.questions).reduce((sum, rows) => sum + rows.length, 0)
-      this.setData({ ready: true, rightsConfirmed: false, report: `内容校验通过：${bank.manifest.exams.length} 个考试、${bank.manifest.subjects.length} 个科目、${count} 道题。请核对来源、填写提交 ID 并确认发布权。`, error: '' })
+      this.setData({ activeTab: 'draft', ready: true, rightsConfirmed: false, report: `内容校验通过：${bank.manifest.exams.length} 个考试、${bank.manifest.subjects.length} 个科目、${count} 道题。请核对来源、填写提交 ID 并确认发布权。`, error: '' })
     } catch (e) { this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this.setData({ ready: false, pagedReady: false, pagedRights: false, error: e.code || 'BAD_BANK' }) }
   }
 })
