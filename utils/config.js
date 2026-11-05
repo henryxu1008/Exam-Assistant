@@ -10,12 +10,25 @@ module.exports = {
   /** 小程序当前版本号（用于云端强制更新校验） */
   version: '1.3.0',
 
+  /** 仅供受保护题库完成端到端验收后统一启用；服务端目前固定关闭 */
+  protectedCatalog: false,
+
+  /** 仅供开发者工具体验套餐页面，未完成真实购买和题库保护前保持关闭 */
+  commercePreview: false,
+
+  /** 只用于隔离环境在线验证；云端受保护路由在正式入口固定关闭 */
+  protectedPracticePreview: false,
+
+  /** 受保护作答持久化联调；需服务端及删除清理同时启用 */
+  protectedRecordsPreview: false,
+
   /** 云函数名称 */
   functions: {
     login: 'userLogin', // 登录：code -> openid/token
     profile: 'userProfile', // 资料：读取/更新/登出
     studySync: 'studySync', // 学习档案：云端读取/更新
     bankSync: 'bankSync', // 题库：云端读取/种子写入
-    aiQuestionGen: 'aiQuestionGen' // 管理端候选题生成（默认关闭）
+    aiQuestionGen: 'aiQuestionGen', // 管理端候选题生成（默认关闭）
+    commerce: 'commerce' // 商品配置；下单功能关闭
   }
 }

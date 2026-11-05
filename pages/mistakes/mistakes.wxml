@@ -1,10 +1,10 @@
 <!--pages/mistakes/mistakes.wxml-->
 <view class="page mistakes">
   <!-- 概览 -->
-  <view class="card head-card">
+  <view wx:if="{{!protectedMode}}" class="card head-card">
     <view class="row between">
       <view>
-        <view class="card-title">错题本</view>
+        <view class="card-title">{{protectedEnabled ? '普通练习错题' : '错题本'}}</view>
         <view class="card-sub">共 {{counts.all}} 道错题 · {{counts.stubborn}} 道顽固 · {{counts.due}} 道待复习</view>
       </view>
       <view class="head-badge">
@@ -19,8 +19,40 @@
     </view>
   </view>
 
+  <view wx:if="{{protectedEnabled}}" class="card protected-card">
+    <view class="card-title">受保护练习错题</view>
+    <view class="card-sub">当前考试已确认的历史错题{{protectedLoaded ? ' · 共 ' + protectedWrongCount + ' 道' : ''}}；待同步作答不计入。</view>
+    <view wx:if="{{protectedBusy}}" class="small muted">正在读取学习记录…</view>
+    <view wx:if="{{protectedError}}" class="protected-error">{{protectedError}} <text bindtap="refreshProtected">重试</text></view>
+    <view wx:if="{{protectedLoaded}}" class="row protected-actions">
+      <text data-tab="all" bindtap="protectedTabChange">错题 {{protectedCounts.all}}</text>
+      <text data-tab="due" bindtap="protectedTabChange">待复习 {{protectedCounts.due}}</text>
+      <text data-tab="starred" bindtap="protectedTabChange">收藏 {{protectedCounts.starred}}</text>
+      <text data-tab="mastered" bindtap="protectedTabChange">已掌握 {{protectedCounts.mastered}}</text>
+    </view>
+    <view wx:if="{{protectedLoaded && !protectedWrongs.length}}" class="small muted">当前分类暂无记录。</view>
+    <view wx:for="{{protectedWrongs}}" wx:key="key" class="protected-row">
+      <view class="row between"><text class="strong">{{item.label}}</text><text class="small muted">错 {{item.wrong}} 次 / 答 {{item.attempts}} 次</text></view>
+      <view class="small muted">{{item.subjectLabel}} · {{item.chapterLabel}}</view>
+      <view class="small muted">{{item.mastered ? '已掌握' : (item.due ? '待复习' : (item.wrong ? '未到复习时间' : '已收藏'))}}</view>
+      <view class="row protected-actions"><text data-key="{{item.key}}" bindtap="showProtectedQuestion">查看题目</text><text wx:if="{{protectedPracticeEnabled}}" data-key="{{item.key}}" bindtap="redoProtected">{{item.due ? '复习' : '重练'}}</text></view>
+      <view class="row protected-actions"><text data-key="{{item.key}}" data-field="starred" bindtap="setProtectedMarker">{{item.starred ? '取消收藏' : '收藏'}}</text><text data-key="{{item.key}}" data-field="mastered" bindtap="setProtectedMarker">{{item.mastered ? '取消掌握' : '标记掌握'}}</text></view>
+    </view>
+    <view wx:if="{{protectedHasMore}}" class="protected-more" bindtap="showMoreProtected">显示更多</view>
+    <view wx:if="{{protectedQuestionBusy}}" class="small muted">正在校验权限并读取题目…</view>
+    <view wx:if="{{protectedQuestionError}}" class="protected-error">{{protectedQuestionError}}</view>
+    <view wx:if="{{protectedQuestion}}" class="protected-detail">
+      <view class="row between"><text class="strong">题目详情</text><text bindtap="closeProtectedQuestion">收起</text></view>
+      <view wx:if="{{protectedQuestion.updated}}" class="small muted">题目已更新，当前展示最新版本。</view>
+      <view class="protected-stem">{{protectedQuestion.stem}}</view>
+      <view wx:for="{{protectedQuestion.options}}" wx:key="key" class="small">{{item.key}}. {{item.text}}</view>
+      <view class="small">正确答案：{{protectedQuestion.answerText}}</view>
+      <view class="small muted">解析：{{protectedQuestion.explain || '暂无解析'}}</view>
+    </view>
+  </view>
+
   <!-- 分类 -->
-  <view class="tabs">
+  <view wx:if="{{!protectedMode}}" class="tabs">
     <view
       class="tab {{tab === item.key ? 'on' : ''}}"
       wx:for="{{tabs}}"
@@ -33,7 +65,7 @@
   </view>
 
   <!-- 科目筛选（科目为全应用统一口径，切换后将影响刷题 / 学情 / AI 建议） -->
-  <scroll-view class="chips" scroll-x>
+  <scroll-view wx:if="{{!protectedMode}}" class="chips" scroll-x>
     <view
       class="chip {{subject === item.name ? 'on' : ''}}"
       wx:for="{{subjects}}"
@@ -44,7 +76,7 @@
   </scroll-view>
 
   <!-- 列表 -->
-  <view class="q-item" wx:for="{{list}}" wx:key="id">
+  <view wx:if="{{!protectedMode}}" class="q-item" wx:for="{{list}}" wx:key="id">
     <view class="row q-head">
       <text class="tag tag-gray">{{item.subjectLabel}}</text>
       <text class="tag">{{item.chapterLabel}}</text>
@@ -73,11 +105,11 @@
   </view>
 
   <!-- 空状态 -->
-  <view class="empty" wx:if="{{!total}}">
+  <view class="empty" wx:if="{{!protectedMode && !total}}">
     <view class="empty-icon">✓</view>
-    <view class="empty-title">{{emptyTip}}</view>
+    <view class="empty-title">{{protectedEnabled ? '当前科目暂无普通练习错题' : emptyTip}}</view>
     <view class="btn btn-primary btn-round empty-btn" bindtap="goPractice">去刷一组新题</view>
   </view>
 
-  <view class="foot-tip small muted" wx:if="{{total}}">连续答对可提升掌握等级，标记「已掌握」后移出本页</view>
+  <view class="foot-tip small muted" wx:if="{{!protectedMode && total}}">连续答对可提升掌握等级，标记「已掌握」后移出本页</view>
 </view>

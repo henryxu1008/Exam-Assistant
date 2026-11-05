@@ -3,12 +3,13 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
-function setup(client) {
+function setup(client, commerceClient) {
   let definition, navigated = ''
   const file = path.join(__dirname, '../pages/profile/profile.js')
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
     Page: value => { definition = value }, getApp: () => ({}), wx: { navigateTo: opt => { navigated = opt.url } },
     require: name => name === '../../utils/catalog-admin.js' ? { runtimeClient: () => client }
+      : name === '../../utils/commerce-admin.js' ? { runtimeCommerceAdmin: () => commerceClient }
       : name === '../../utils/storage-status.js' ? { storageStatusView: () => ({}), isStorageReadable: () => true }
         : name === '../../utils/user.js' ? { isLogged: () => true, whenReady(cb) { if (cb) cb(); return true } }
           : {}
@@ -26,6 +27,17 @@ test('管理入口仅在当前身份确有角色时显示并导航', async () =>
   assert.equal(p.page.data.catalogAccess, false)
   client.access = async () => { throw new Error('network') }; await p.page.refreshCatalogAccess()
   assert.equal(p.page.data.catalogAccess, false)
+})
+
+test('商品管理入口仅对当前账号授权显示，迟到的响应不会越过页面隐藏', async () => {
+  let resolve, current = true
+  const client = { capture: () => ({ token: 'admin' }), current: () => current, access: async () => ({ allowed: true }) }
+  const p = setup(null, client); await p.page.refreshCommerceAccess()
+  assert.equal(p.page.data.commerceAccess, true)
+  p.page.goCommerceAdmin(); assert.equal(p.navigated(), '/pages/commerce-admin/commerce-admin')
+  client.access = () => new Promise(r => { resolve = r })
+  const pending = p.page.refreshCommerceAccess(); p.page.onHide(); current = false; resolve({ allowed: true }); await pending
+  assert.equal(p.page.data.commerceAccess, false)
 })
 test('退出页面或切换身份后迟到的角色响应不能重新显示入口', async () => {
   let release, current = true

@@ -8,12 +8,15 @@
     "pages/analysis/analysis",
     "pages/agreement/agreement",
     "pages/login/login",
-    "pages/catalog-admin/catalog-admin"
+    "pages/catalog-admin/catalog-admin",
+    "pages/commerce-admin/commerce-admin",
+    "pages/exam-plans/exam-plans",
+    "pages/protected-practice/protected-practice"
   ],
   "window": {
     "backgroundTextStyle": "light",
     "navigationBarBackgroundColor": "#FFFFFF",
-    "navigationBarTitleText": "备考刷题助手",
+    "navigationBarTitleText": "回练",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#F5F7FB"
   },

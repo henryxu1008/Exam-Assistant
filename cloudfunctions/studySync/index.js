@@ -15,7 +15,7 @@ const ATTEMPTS = db.collection('attempts')
 /** 与端上 utils/store.js 相同的合并语义；部署副本随本函数一起上传 */
 const { mergeStats } = require('./stats-merge.js')
 /** 令牌校验（与 userProfile 保持一致）；部署副本随本函数一起上传 */
-const { findByToken } = require('./auth.js')
+const { findByToken, TOKEN_TTL } = require('./auth.js')
 /** 「读失败不得当成不存在」的统一判定；部署副本随本函数一起上传 */
 const { isNotFound, readOptionalDoc } = require('./db-error.js')
 const attemptDomain = require('./attempt-domain.js')
@@ -23,6 +23,10 @@ const questionDomain = require('./question-domain.js')
 const examDomain = require('./exam-catalog-domain.js')
 const paged = require('./paged-catalog-domain.js')
 const grading = require('./grading-domain.js')
+// Enable only in a coordinated protected-mode rollout after its collections and rules exist.
+const PROTECTED_RECORDS_ENABLED = false
+// Coordinated rollout only: block legacy APIs that can return question snapshots.
+const PROTECTED_STUDY_ONLY = false
 
 /** studyStats 文档允许写入的字段（其余一律丢弃，防越权/脏数据） */
 const ALLOWED = ['records', 'daily', 'settings', 'settingsVersions', 'practiceSession', 'aiMessages', 'aiEpoch', 'version']
@@ -132,6 +136,12 @@ async function purgeRows(collection, filter) {
 async function purgeBefore(openid, dataEpoch) {
   for (const condition of [db.command.lt(dataEpoch), db.command.exists(false)]) {
     await purgeRows(ATTEMPTS, { openid, dataEpoch: condition })
+    if (PROTECTED_RECORDS_ENABLED) {
+      await purgeRows(db.collection('protectedAttempts'), { openid, dataEpoch: condition })
+      await purgeRows(db.collection('protectedStudyHeads'), { openid, dataEpoch: condition })
+      await purgeRows(db.collection('protectedQuestionStates'), { openid, dataEpoch: condition })
+      await purgeRows(db.collection('protectedStateReceipts'), { openid, dataEpoch: condition })
+    }
   }
   await purgeRows(STATS, { kind: 'aiClearReceipt', openid, dataEpoch: db.command.lt(dataEpoch) })
 }
@@ -287,6 +297,31 @@ exports.main = async (event = {}) => {
   if (!user) return { ok: false, error: 'INVALID_TOKEN' }
   const openid = user.openid
   const action = event.action || 'get'
+  const protectedIdentityValid = async tx => {
+    if (!user._id) return false
+    const current = await readOptionalDoc(() => tx.collection('users').doc(user._id).get()), at = Date.now()
+    return !!current && current.openid === openid && current.token === event.token && Number.isSafeInteger(current.tokenAt) &&
+      current.tokenAt > 0 && current.tokenAt <= at && at - current.tokenAt <= TOKEN_TTL
+  }
+
+  if (PROTECTED_STUDY_ONLY) {
+    let context
+    try { context = cloud.getWXContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    if (!context || !context.OPENID || context.OPENID !== openid) return { ok: false, error: 'INVALID_TOKEN' }
+    if (action === 'getProtectedEpoch') {
+      if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
+      try {
+        return await db.runTransaction(async tx => {
+          if (!await protectedIdentityValid(tx)) return { ok: false, error: 'INVALID_TOKEN' }
+          const stats = await readOptionalDoc(() => tx.collection('studyStats').doc(openid).get())
+          const dataEpoch = stats && stats.dataEpoch !== undefined ? stats.dataEpoch : 0
+          if (!Number.isSafeInteger(dataEpoch) || dataEpoch < 0) return { ok: false, error: 'INVALID_EPOCH' }
+          return { ok: true, dataEpoch }
+        })
+      } catch (e) { return { ok: false, error: 'READ_STATS_FAILED' } }
+    }
+    if (action !== 'delete') return { ok: false, error: 'PROTECTED_SYNC_REQUIRED' }
+  } else if (action === 'getProtectedEpoch') return { ok: false, error: 'PROTECTED_READ_DISABLED' }
 
   if (action === 'commitAttempts' || action === 'commitVersionedAttempts' || action === 'commitPagedAttempts') {
     if (action === 'commitVersionedAttempts' && event.questionProtocol !== grading.QUESTION_PROTOCOL) return { ok: false, error: 'QUESTION_PROTOCOL_REQUIRED' }
@@ -455,6 +490,7 @@ exports.main = async (event = {}) => {
     let result
     try {
       result = await db.runTransaction(async (tx) => {
+        if (PROTECTED_STUDY_ONLY && !await protectedIdentityValid(tx)) return { ok: false, error: 'INVALID_TOKEN' }
         const ref = tx.collection('studyStats').doc(openid)
         const existing = await readExisting(() => ref.get())
         const current = epochOf(existing)

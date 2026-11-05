@@ -3,6 +3,7 @@ const app = getApp()
 const ai = require('../../utils/ai.js')
 const store = require('../../utils/store.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
 
 const QUICK = [
   '我哪里最薄弱',
@@ -22,7 +23,7 @@ Page({
     input: '',
     loading: false,
     scrollTo: '',
-    scopeLabel: ''
+    scopeLabel: '', protectedUnavailable: config.protectedCatalog === true
   },
 
   onLoad() {
@@ -65,6 +66,12 @@ Page({
   },
 
   onShow() {
+    if (config.protectedCatalog === true) {
+      this._invalidateReply(); this._conversationVersion = null
+      app.globalData.aiPreInput = ''; app.globalData.aiContext = null
+      this.setData({ protectedUnavailable: true, messages: [], input: '', loading: false, scrollTo: '', scopeLabel: '' }); return
+    }
+    this.setData({ protectedUnavailable: false })
     if (user.whenReady(() => this._showConversation())) return
     // 仅入口守卫（版本过低）拦下时走到这里：清空展示，保留全局预填输入待解除阻断后再消费。
     this._invalidateReply()
@@ -73,6 +80,7 @@ Page({
   },
 
   _showConversation() {
+    if (config.protectedCatalog === true) return
     this._syncConversation()
     // 其他页面（错题本 / 学情报告 / 练习页）携带问题跳转过来
     const pre = app.globalData.aiPreInput
@@ -104,6 +112,7 @@ Page({
   },
 
   send(text, context) {
+    if (config.protectedCatalog === true) return
     // 版本被判定为过低时阻断发送（守卫为可选方法，缺失时不影响原有流程）
     if (app && typeof app.guardEntry === 'function' && app.guardEntry()) return
     if (!user.whenReady()) return
@@ -233,7 +242,7 @@ Page({
 
   /** onShow 尚未执行时也要检查仓储代次，防止旧回复写入新用户作用域。 */
   _isCurrentReply(token) {
-    if (token !== this._reqToken || this._conversationVersion !== store.getAiConversationVersion()) return false
+    if (config.protectedCatalog === true || token !== this._reqToken || this._conversationVersion !== store.getAiConversationVersion()) return false
     const scope = ai.getStudyScope()
     if (this._studyScopeVersion !== store.getAiStudyScopeVersion() ||
         this._studyScopeKey !== JSON.stringify([scope.examId, scope.subjectId])) { this._syncConversation(); return false }

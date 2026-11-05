@@ -24,6 +24,10 @@ Component({
       type: Boolean,
       value: false
     },
+    showTools: {
+      type: Boolean,
+      value: true
+    },
     index: {
       type: Number,
       value: 0

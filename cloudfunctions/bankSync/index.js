@@ -28,8 +28,10 @@ const validRelease = bank => domain.validRelease(bank) || examDomain.validExamRe
 const { createWorkflow, workflowRequired } = require('./workflow.js')
 const { checkIdentities } = require('./identity-registry.js')
 const { createPagedWorkflow } = require('./paged-workflow.js')
+const { createProtectedReader } = require('./protected-reader.js')
+const { createProtectedStudy } = require('./protected-study.js')
+const { createProtectedState } = require('./protected-state.js')
 const workflow = createWorkflow(db, activateBank)
-const pagedWorkflow = createPagedWorkflow(db)
 
 /** 以管理员密钥发起、无登录身份时记录的写入者标识 */
 const ADMIN_ACTOR_ID = 'admin'
@@ -93,9 +95,49 @@ async function publish(event, actor) {
   catch (e) { return { ok: false, error: 'PUBLISH_FAILED' } }
 }
 
-exports.main = async (event = {}) => {
+// This is deliberately not configurable by event or environment. A later coordinated release
+// must first complete protected clients, database rules and atomic publication before enabling it.
+function createMain({ protectedMode = false, getContext = () => cloud.getWXContext() } = {}) {
+  const protectedRead = createProtectedReader({ db })
+  const protectedStudy = createProtectedStudy({ db })
+  const protectedState = createProtectedState({ db })
+  const pagedWorkflow = createPagedWorkflow(db, { protectedMode })
+  return async (event = {}) => {
   const action = event.action || 'get'
-  if (['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) return pagedWorkflow(event)
+  if (['getProtectedMarkers', 'setProtectedMarker'].includes(action)) {
+    if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return protectedState(event, context)
+  }
+  if (['commitProtectedAttempt', 'getProtectedAttempts'].includes(action)) {
+    if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return protectedStudy(event, context)
+  }
+  if (['getProtectedExamPage', 'getProtectedExamQuestion', 'getProtectedExamScope', 'getProtectedExamCatalog'].includes(action)) {
+    if (!protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return protectedRead(event, context)
+  }
+  if (protectedMode) {
+    if (['get', 'getPublished', 'getExamPublished', 'getVersion', 'getPagedPublished', 'getPagedPage'].includes(action)) {
+      return { ok: false, error: 'PROTECTED_READER_REQUIRED' }
+    }
+    // Existing publishers do not yet atomically commit access policies with the publication.
+    if (['set', 'publish', 'publishDraft', 'publishExamDraft', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft'].includes(action)) {
+      return { ok: false, error: 'PROTECTED_PUBLICATION_NOT_READY' }
+    }
+  }
+  if (action === 'getProtectedCatalogCurrent' && !protectedMode) return { ok: false, error: 'PROTECTED_READ_DISABLED' }
+  if ((protectedMode && ['getCatalogAccess', 'getProtectedCatalogCurrent'].includes(action)) || ['beginPagedDraft', 'uploadPagedDraftPage', 'getActivePagedDraft', 'getPagedDraft', 'getPagedDraftPage', 'abandonPagedDraft', 'cleanupPagedRelease', 'sealPagedDraft', 'reviewPagedDraft', 'publishPagedDraft'].includes(action)) {
+    if (!protectedMode) return pagedWorkflow(event)
+    let context
+    try { context = getContext() } catch (e) { return { ok: false, error: 'INVALID_TOKEN' } }
+    return pagedWorkflow(event, context)
+  }
   if (['getCatalogAccess', 'getActiveCatalogDraft', 'createDraft', 'createExamDraft', 'getDraft', 'reviewDraft', 'publishDraft', 'publishExamDraft'].includes(action)) return workflow(event)
   if (action === 'getPagedPublished') {
     try {
@@ -166,4 +208,7 @@ exports.main = async (event = {}) => {
       return { ok: true }
     })
   } catch (e) { return { ok: false, error: 'TX_FAILED' } }
+  }
 }
+exports.main = createMain()
+exports.createMain = createMain

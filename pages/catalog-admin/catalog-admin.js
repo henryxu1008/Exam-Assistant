@@ -6,6 +6,8 @@ const paged = require('../../shared/paged-catalog-domain.js')
 const { createCatalogCheckpoint } = require('../../utils/catalog-checkpoint.js')
 const { runtimeAiQuestionGenerator } = require('../../utils/ai-question-generator.js')
 const { sha256 } = require('../../shared/question-domain.js')
+const accessPolicy = require('../../shared/exam-access-policy.js')
+const config = require('../../utils/config.js')
 function newCatalogId(prefix, values) {
   const existing = new Set(values)
   for (let i = 0; i < 16; i++) {
@@ -46,6 +48,8 @@ const errorMessages = {
   AI_RESPONSE_TOO_LARGE: 'AI 响应过大，候选题未加入；本次可能已消耗部分配额。',
   CATALOG_API_VERSION_MISMATCH: '当前云端题库服务未识别载入请求。请检查小程序连接的云环境以及 bankSync 云函数版本。',
   CATALOG_ID_UNAVAILABLE: '无法生成新的编号，请稍后重试。',
+  POLICY_SELECTION_REQUIRED: '请为每个考试选择免费或付费。', POLICY_REVIEW_REQUIRED: '请核对并确认所有考试的访问策略。',
+  INVALID_ACCESS_POLICY: '考试访问策略不完整或与当前发布不一致，请重新核对。', PROTECTED_CATALOG_TOO_LARGE: '受保护题库最多支持 19 页，请缩减题库。',
   LOCAL_DRAFT_INVALID: '本机编辑内容损坏，未自动覆盖。', LOCAL_DRAFT_TOO_LARGE: '本机编辑内容超出单项容量，未截断保存。', LOCAL_DRAFT_CLEANUP_FAILED: '本机备份清理未完成，请重试。'
 }
 const editorForm = () => ({ examId: '', examName: '', subjectKey: '', subjectName: '', chapterKey: '', chapterName: '', questionId: '',
@@ -85,6 +89,7 @@ const blank = () => ({ roles: [], canEdit: false, canReview: false, canPublish: 
   editorReady: false, exams: [], subjects: [], visibleSubjects: [], chapters: [], questions: [], questionPage: 1, questionPages: 1, questionTotal: 0, selectedExam: '', selectedSubject: '', selectedChapter: '', selectedExamName: '', selectedSubjectName: '', selectedChapterName: '', editingId: '', form: editorForm(), questionTypes, sourceTypes,
   reviewItems: [], reviewPage: 1, reviewPages: 1, reviewAllSeen: false,
   pagedReady: false, pagedReport: '', pagedSubmissionId: '', pagedRights: false,
+  protectedCatalog: config.protectedCatalog === true, policyRows: [], reviewPolicy: [], policyRequired: false, policyVerified: false,
   activeTab: 'edit', editorTab: 'structure',
   aiTopic: '', aiType: 'single', aiTypeName: '单选题', aiTypes, aiLevel: '1', aiCount: '3', aiReference: '', aiPermission: '', aiResults: [],
   questionTypeName: '单选题', sourceTypeName: '原创', errorMessages })
@@ -101,7 +106,7 @@ Page({
       let ctx
       try { ctx = this._client.capture() } catch (e) { this.setData(blank()); return }
       if (!this._context || this._context.openid !== ctx.openid || this._context.token !== ctx.token) {
-        this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null; this._aiCandidates = null
+        this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._pagedSource = null; this._draft = null; this._reviewRows = null; this._reviewSeen = null; this._workspace = null; this._editorDirty = false; this._questionFormDirty = false; this._checkpointToken = null; this._aiCandidates = null
         this._checkpoint = createCatalogCheckpoint(wx, ctx.openid)
         this.setData(blank())
       }
@@ -150,7 +155,7 @@ Page({
     }
     this.setData({ [field]: e.detail.value })
     if (field === 'inputText') { this._prepared = null; this._preparedBase = null; this.setData({ ready: false, report: '', rightsConfirmed: false }) }
-    if (field === 'draftId') { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, revision: '' }) }
+    if (field === 'draftId') { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, reviewPolicy: [], policyRequired: false, policyVerified: false, revision: '' }) }
   },
   onFormat(e) { if (this.data.busy) return; this._prepared = null; this._preparedBase = null; this.setData({ format: e.currentTarget.dataset.format, ready: false, report: '', rightsConfirmed: false }) },
   onConfirm(e) {
@@ -160,6 +165,7 @@ Page({
     if (field === 'rights') this.setData({ rightsConfirmed: values.includes('rights') })
     else if (field === 'pagedRights') this.setData({ pagedRights: values.includes('rights') })
     else if (field === 'sources') this.setData({ sourceVerified: values.includes('sources') })
+    else if (field === 'policy') this.setData({ policyVerified: values.includes('policy') })
     else this.setData({ rightsConfirmed: values.includes('rights'), sourceVerified: values.includes('sources') })
   },
   onCheck() {
@@ -174,7 +180,7 @@ Page({
     if (!this._prepared) { this.setData({ error: 'PREFLIGHT_REQUIRED' }); return }
     this._run(() => this._client.submitDraft(this._prepared, { submissionId: this.data.submissionId, rightsConfirmed: this.data.rightsConfirmed, basePublication: this._preparedBase }), result => {
       if (this._prepared && this._prepared.bank.schemaVersion === 3) this._editorDirty = false
-      this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) })
+      this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, reviewPolicy: [], policyRequired: false, policyVerified: false, result: JSON.stringify(result, null, 2) })
     })
   },
   onChoosePagedFile() {
@@ -194,20 +200,38 @@ Page({
       if (!buffer || buffer.byteLength !== file.size) throw Object.assign(new Error('BAD_FILE_LENGTH'), { code: 'BAD_FILE_LENGTH' })
       const content = decodeUtf8(buffer)
       const prepared = this._client.preparePaged(content), base = await this._client.pagedBase()
+      if (this.data.protectedCatalog && prepared.root.pages.length > 19) throw Object.assign(new Error('PROTECTED_CATALOG_TOO_LARGE'), { code: 'PROTECTED_CATALOG_TOO_LARGE' })
       return { prepared, base }
     }, result => {
-      this._pagedPrepared = result.prepared; this._pagedBase = result.base
-      this.setData({ pagedReady: true, pagedReport: `校验通过：${result.prepared.root.totalQuestions} 题、${result.prepared.root.pages.length} 页。提交的是完整题库快照，将替换当前目录；基线修订 ${result.base ? result.base.revision : 0}。`, error: '' })
+      this._pagedPrepared = result.prepared; this._pagedBase = result.base; this._pagedSource = 'file'
+      this.setData({ pagedReady: true, policyRows: this.data.protectedCatalog ? this._policyRows(result.prepared.root, [], []) : [],
+        pagedReport: `校验通过：${result.prepared.root.totalQuestions} 题、${result.prepared.root.pages.length} 页。提交的是完整题库快照，将替换当前目录；基线修订 ${result.base ? result.base.revision : 0}。`, error: '' })
     })
   },
   onSubmitPaged() {
     if (!this._pagedPrepared) { this.setData({ error: 'PREFLIGHT_REQUIRED' }); return }
+    if (this.data.protectedCatalog && (this.data.policyRows.length !== this._pagedPrepared.root.manifest.exams.length || this.data.policyRows.some(item => !['free', 'paid'].includes(item.access)))) { this.setData({ error: 'POLICY_SELECTION_REQUIRED' }); return }
     this._run(live => this._client.submitPaged(this._pagedPrepared, { submissionId: this.data.pagedSubmissionId, rightsConfirmed: this.data.pagedRights,
-      basePublication: this._pagedBase, onStarted: (draftId, total) => { if (live()) this.setData({ draftId, pagedReport: `草稿 ${draftId} 已上传 0 / ${total} 页，尚未发布。` }) },
+      basePublication: this._pagedBase, ...(this.data.protectedCatalog ? { accessRules: this.data.policyRows.map(item => ({ examId: item.id, access: item.access })) } : {}),
+      onStarted: (draftId, total) => { if (live()) this.setData({ draftId, pagedReport: `草稿 ${draftId} 已上传 0 / ${total} 页，尚未发布。` }) },
       onProgress: (done, total, draftId) => { if (live()) this.setData({ draftId, pagedReport: `草稿 ${draftId} 已上传 ${done} / ${total} 页，尚未发布。` }) } }, live), result => {
       this._draft = null; this._reviewRows = null; this._reviewSeen = null
-      this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) })
+      this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, reviewPolicy: [], policyRequired: false, policyVerified: false, result: JSON.stringify(result, null, 2) })
     })
+  },
+  _policyRows(root, selected, baseline) {
+    return root.manifest.exams.map(exam => {
+      const previous = selected.find(row => row.id === exam.id) || baseline.find(row => row.examId === exam.id)
+      return { id: exam.id, name: exam.name, access: previous && ['free', 'paid'].includes(previous.access) ? previous.access : '' }
+    })
+  },
+  onPolicyChoice(e) {
+    if (this.data.busy || !this.data.protectedCatalog || !this._pagedPrepared || !this.data.canEdit) return
+    const { id, access } = e.currentTarget.dataset
+    if (!['free', 'paid'].includes(access) || !this.data.policyRows.some(row => row.id === id)) return
+    const rows = this.data.policyRows.map(row => row.id === id ? { ...row, access } : row)
+    if (this._pagedSource === 'workspace' && !this._saveEditorForm(this._editorUI({ policyRows: rows }))) return
+    this.setData({ policyRows: rows, pagedRights: false, error: '' })
   },
   onAbandonPagedDraft() {
     if (!this.data.canEdit || this.data.busy || !this._active || !this._client.current(this._context)) return
@@ -215,7 +239,7 @@ Page({
     if (!/^qpd_[a-f0-9]{64}$/.test(draftId || '')) { this.setData({ error: 'BAD_DRAFT_ID' }); return }
     wx.showModal({ title: '丢弃未封存的暂存草稿', content: '仅可丢弃本人尚在上传的草稿，并删除其私有来源暂存；已封存或发布的草稿不会删除。此操作无法撤销。', success: result => {
       if (!result.confirm || generation !== this._generation || !this._active || ctx !== this._context || draftId !== this.data.draftId || !this._client.current(ctx)) return
-      this._run(() => this._client.abandonPagedDraft(draftId), value => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], result: JSON.stringify(value, null, 2) }) })
+      this._run(() => this._client.abandonPagedDraft(draftId), value => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ preview: '', reviewItems: [], reviewPolicy: [], policyRequired: false, policyVerified: false, result: JSON.stringify(value, null, 2) }) })
     } })
   },
   onCleanupPagedRelease() {
@@ -232,17 +256,24 @@ Page({
       this._run(async () => {
         const result = await this._client.getPagedDraft(this.data.draftId), draft = result.draft
         if (!draft || !paged.validRoot(draft.root) || !paged.validEvidence(draft.root, draft.evidence)) throw Object.assign(new Error('INVALID_DRAFT'), { code: 'INVALID_DRAFT' })
+        if ((this.data.protectedCatalog || draft.accessPolicy) && !accessPolicy.validPolicy(draft.root, (draft.basePublication ? draft.basePublication.revision : 0) + 1, draft.accessPolicy)) throw Object.assign(new Error('INVALID_ACCESS_POLICY'), { code: 'INVALID_ACCESS_POLICY' })
         const first = await this._client.getPagedDraftPage(draft.draftId, 0)
         if (!paged.validPagePair(draft.root, draft.evidence, first.page, first.sourcePage)) throw Object.assign(new Error('INVALID_PAGED_PAGE'), { code: 'INVALID_PAGED_PAGE' })
         return { draft, first }
       }, result => {
         this._draft = result.draft; this._reviewRows = null; this._reviewSeen = new Set()
+        const policy = result.draft.accessPolicy
+        const reviewPolicy = policy ? policy.entries.map(entry => ({ id: entry.examId,
+          name: (result.draft.root.manifest.exams.find(exam => exam.id === entry.examId) || {}).name || entry.examId,
+          label: entry.access === 'free' ? '免费' : '付费' })) : []
         this.setData({ preview: JSON.stringify({ draftId: result.draft.draftId, state: result.draft.state, manifest: result.draft.root.manifest,
-          releaseId: result.draft.root.releaseId, totalQuestions: result.draft.root.totalQuestions }, null, 2), sourceVerified: false })
+          releaseId: result.draft.root.releaseId, totalQuestions: result.draft.root.totalQuestions }, null, 2), sourceVerified: false,
+          reviewPolicy, policyRequired: !!policy, policyVerified: false })
         this._renderPagedReview(result.first)
       })
       return
     }
+    if (this.data.protectedCatalog) { this.setData({ error: 'INVALID_DRAFT' }); return }
     this._run(() => this._client.getDraft(this.data.draftId), result => {
     const preview = JSON.stringify(result.draft)
     if (utf8Bytes(preview) > 800000) { this._draft = null; this._reviewRows = null; this.setData({ preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
@@ -250,7 +281,8 @@ Page({
     this._draft = draft
     this._reviewRows = Object.values(draft.bank.questions).flat().map(q => ({ id: q.id, text: JSON.stringify({ question: q, source: draft.sources[q.id] }, null, 2) }))
     this._reviewSeen = new Set()
-    this.setData({ preview: JSON.stringify({ draftId: draft.draftId, state: draft.state, manifest: draft.bank.manifest, releaseId: draft.bank.releaseId }, null, 2), sourceVerified: false })
+    this.setData({ preview: JSON.stringify({ draftId: draft.draftId, state: draft.state, manifest: draft.bank.manifest, releaseId: draft.bank.releaseId }, null, 2), sourceVerified: false,
+      reviewPolicy: [], policyRequired: false, policyVerified: false })
     this._renderReview(1)
     })
   },
@@ -282,8 +314,9 @@ Page({
   onReview(e) {
     if (!this._draft || this._draft.draftId !== this.data.draftId) { this.setData({ error: 'READ_DRAFT_REQUIRED' }); return }
     if (e.currentTarget.dataset.decision === 'approve' && !this.data.reviewAllSeen) { this.setData({ error: 'REVIEW_PAGES_REQUIRED' }); return }
+    if (e.currentTarget.dataset.decision === 'approve' && this.data.policyRequired && !this.data.policyVerified) { this.setData({ error: 'POLICY_REVIEW_REQUIRED' }); return }
     const method = this._draft.kind === 'pagedCatalogDraft' ? this._client.reviewPaged : this._client.review
-    this._run(() => method({ draftId: this.data.draftId, decision: e.currentTarget.dataset.decision, note: this.data.note, sourceVerified: this.data.sourceVerified })) },
+    this._run(() => method({ draftId: this.data.draftId, decision: e.currentTarget.dataset.decision, note: this.data.note, sourceVerified: this.data.sourceVerified, policyVerified: this.data.policyVerified })) },
   onReadRevision() {
     if (this._draft && this._draft.kind === 'pagedCatalogDraft') this._run(() => this._client.pagedBase(), base => this.setData({ revision: String(base ? base.revision : 0) }))
     else this._run(() => this._client.activeDraft(), result => this.setData({ revision: String(result.basePublication ? result.basePublication.revision : 0) }))
@@ -298,7 +331,7 @@ Page({
     this._run(live => {
       const input = { draftId: this.data.draftId, questionIds: this.data.removeIds.split(/[,，\s]+/).filter(Boolean), submissionId: this.data.submissionId, rightsConfirmed: this.data.rightsConfirmed }
       return /^qpd_/.test(input.draftId) ? this._client.withdrawPaged(input, live) : this._client.withdraw(input)
-    }, result => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, result: JSON.stringify(result, null, 2) }) })
+    }, result => { this._draft = null; this._reviewRows = null; this._reviewSeen = null; this.setData({ draftId: result.draftId, preview: '', reviewItems: [], reviewAllSeen: false, sourceVerified: false, reviewPolicy: [], policyRequired: false, policyVerified: false, result: JSON.stringify(result, null, 2) }) })
   },
   _renderEditor() {
     const w = this._workspace, subject = w && w.bank.manifest.subjects.find(s => s.key === this.data.selectedSubject)
@@ -318,6 +351,7 @@ Page({
   _editorUI(patch = {}) {
     return { form: this.data.form, selectedExam: this.data.selectedExam, selectedSubject: this.data.selectedSubject,
       selectedChapter: this.data.selectedChapter, editingId: this.data.editingId, questionPage: this.data.questionPage,
+      policyRows: this.data.policyRows,
       editorDirty: !!this._editorDirty, questionFormDirty: !!this._questionFormDirty, ...patch }
   },
   _saveEditorForm(ui) {
@@ -393,6 +427,10 @@ Page({
       try {
         const current = await this._client.pagedCurrent()
         if (current.root) return { workspace: await this._client.activePagedWorkspace(live) }
+        if (this.data.protectedCatalog) {
+          if (current.publicationRevision !== 0) throw Object.assign(new Error('INVALID_PUBLISHED_DRAFT'), { code: 'INVALID_PUBLISHED_DRAFT' })
+          return { workspace: { bank: { schemaVersion: 4, manifest: { exams: [], subjects: [] }, questions: {} }, sources: {}, basePublication: null, accessRules: [] } }
+        }
         return { result: await this._client.activeDraft() }
       } catch (e) {
         if (e && e.code === 'BAD_ACTION') throw Object.assign(new Error('CATALOG_API_VERSION_MISMATCH'), { code: 'CATALOG_API_VERSION_MISMATCH' })
@@ -406,7 +444,7 @@ Page({
       if (result && result.draft && result.draft.bank.schemaVersion !== 3) { this.setData({ error: 'LEGACY_IDENTITY_MIGRATION_REQUIRED' }); return }
       const bytes = utf8Bytes(JSON.stringify(result))
       if (result && bytes > 800000) { this.setData({ error: 'DRAFT_TOO_LARGE_FOR_PAGE' }); return }
-      const workspace = loaded.workspace || editor.openWorkspace(result), ui = this._editorUI({ selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', questionPage: 1, form: editorForm(), editorDirty: false, questionFormDirty: false })
+      const workspace = loaded.workspace || editor.openWorkspace(result), ui = this._editorUI({ selectedExam: '', selectedSubject: '', selectedChapter: '', editingId: '', questionPage: 1, form: editorForm(), policyRows: [], editorDirty: false, questionFormDirty: false })
       const token = this._checkpointToken ? this._checkpoint.saveWorkspace(this._checkpointToken, workspace, ui) : this._checkpoint.create(workspace, ui)
       this._workspace = workspace; this._checkpointToken = token; this._prepared = null; this._preparedBase = null; this._pagedPrepared = null; this._pagedBase = null; this._editorDirty = false; this._questionFormDirty = false
       this.setData({ ...ui, questionTypeName: '单选题', sourceTypeName: '原创', ready: false, rightsConfirmed: false, report: '', pagedReady: false, pagedRights: false, pagedReport: '' })
@@ -628,10 +666,15 @@ Page({
     if (this.data.busy || !this.data.canEdit || !this._workspace || !this._active || !this._client.current(this._context)) return
     if (this._questionFormDirty) { this.setData({ ready: false, error: 'SAVE_QUESTION_REQUIRED' }); return }
     try {
+      if (this.data.protectedCatalog && this._workspace.bank.schemaVersion !== 4) throw Object.assign(new Error('INVALID_PUBLISHED_DRAFT'), { code: 'INVALID_PUBLISHED_DRAFT' })
       if (this._workspace.bank.schemaVersion === 4) {
         this._pagedPrepared = editor.prepare(this._workspace); this._pagedBase = this._workspace.basePublication
+        if (this.data.protectedCatalog && this._pagedPrepared.root.pages.length > 19) throw Object.assign(new Error('PROTECTED_CATALOG_TOO_LARGE'), { code: 'PROTECTED_CATALOG_TOO_LARGE' })
+        const selected = this._pagedSource === 'file' ? [] : this.data.policyRows
+        this._pagedSource = 'workspace'
         this._prepared = null; this._preparedBase = null
         this.setData({ activeTab: 'draft', ready: false, rightsConfirmed: false, pagedReady: true, pagedRights: false,
+          policyRows: this.data.protectedCatalog ? this._policyRows(this._pagedPrepared.root, selected, this._workspace.accessRules || []) : [],
           pagedReport: `编辑内容已校验：${this._pagedPrepared.root.totalQuestions} 题、${this._pagedPrepared.root.pages.length} 页。请在下方填写提交 ID 并确认发布权。`, error: '' })
         return
       }

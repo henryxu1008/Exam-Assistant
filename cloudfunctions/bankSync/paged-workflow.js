@@ -5,6 +5,7 @@ const { validRoles } = require('./workflow-domain.js')
 const domain = require('./question-domain.js')
 const exam = require('./exam-catalog-domain.js')
 const paged = require('./paged-catalog-domain.js')
+const accessPolicy = require('./exam-access-policy.js')
 const { sha256, canonical } = domain
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const hexes = '0123456789abcdef'.split('')
@@ -21,14 +22,16 @@ const validRefs = (refs, root) => !!refs && refs.kind === 'pagedReleaseReference
   Number.isSafeInteger(refs.liveDrafts) && refs.liveDrafts >= 0 && refs.digest === digest({ releaseId: refs.releaseId, liveDrafts: refs.liveDrafts })
 const refsValue = (releaseId, liveDrafts) => ({ kind: 'pagedReleaseReferences', releaseId, liveDrafts, digest: digest({ releaseId, liveDrafts }) })
 const validBase = base => base === null || (base && Number.isSafeInteger(base.revision) && base.revision > 0 && /^qb_[a-f0-9]{64}$/.test(base.releaseId || ''))
-const payloadDigest = (root, evidence, base) => digest({ releaseId: root.releaseId, evidenceDigest: evidence.digest, basePublication: base })
+const payloadDigest = (root, evidence, base, policy) => digest({ releaseId: root.releaseId, evidenceDigest: evidence.digest, basePublication: base,
+  ...(policy ? { accessPolicyDigest: policy.digest } : {}) })
 const publishedId = active => active && active.schemaVersion === 4 ? active.root && active.root.releaseId : active && active.releaseId
 function validDraft(draft) {
   try {
     return !!draft && draft.kind === 'pagedCatalogDraft' && typeof draft.createdBy === 'string' && draft.createdBy.length > 0 &&
       /^[A-Za-z0-9_-]{1,80}$/.test(draft.submissionId || '') && draft.draftId === draftId(draft.createdBy, draft.submissionId) &&
       paged.validRoot(draft.root) && paged.validEvidence(draft.root, draft.evidence) && validBase(draft.basePublication) && draft.rightsConfirmed === true &&
-      draft.payloadDigest === payloadDigest(draft.root, draft.evidence, draft.basePublication) &&
+      (!draft.accessPolicy || accessPolicy.validPolicy(draft.root, (draft.basePublication ? draft.basePublication.revision : 0) + 1, draft.accessPolicy)) &&
+      draft.payloadDigest === payloadDigest(draft.root, draft.evidence, draft.basePublication, draft.accessPolicy) &&
       ['uploading', 'sealed', 'approved', 'rejected', 'published', 'abandoned'].includes(draft.state) && Array.isArray(draft.uploaded) &&
       draft.uploaded.length === draft.root.pages.length && draft.uploaded.every(x => typeof x === 'boolean') &&
       draft.uploadedCount === draft.uploaded.filter(Boolean).length && Number.isSafeInteger(draft.identityCount) && draft.identityCount >= 0 &&
@@ -99,23 +102,33 @@ async function commitIdentities(collection, active, root, rows) {
   await markerRef.set({ data: { kind: 'questionIdentityRegistry', version: 1, revision: revision + 1, buckets: present } })
 }
 
-function createPagedWorkflow(db) {
-  return async event => {
+function createPagedWorkflow(db, { protectedMode = false } = {}) {
+  return async (event, context = {}) => {
     if (event.adminSecret !== undefined && event.adminSecret !== null && event.adminSecret !== '') return { ok: false, error: 'PERSONAL_IDENTITY_REQUIRED' }
     if (!event.token) return { ok: false, error: 'NO_TOKEN' }
     let user
     try { user = await findByToken(db.collection('users'), event.token) } catch (e) { return { ok: false, error: 'READ_AUTH_FAILED' } }
-    if (!user) return { ok: false, error: 'INVALID_TOKEN' }
+    if (!user || (protectedMode && (!context.OPENID || context.OPENID !== user.openid))) return { ok: false, error: 'INVALID_TOKEN' }
     if (typeof db.runTransaction !== 'function') return { ok: false, error: 'TRANSACTION_REQUIRED' }
     try {
       return await db.runTransaction(async tx => {
         const identity = await readOptionalDoc(() => tx.collection('users').doc(user._id).get())
         if (!identity || identity.token !== event.token || identity.openid !== user.openid || !identity.tokenAt || Date.now() - identity.tokenAt > TOKEN_TTL) fail('INVALID_TOKEN')
+        if (protectedMode && (!Number.isSafeInteger(identity.tokenAt) || identity.tokenAt > Date.now())) fail('INVALID_TOKEN')
         const roles = await readOptionalDoc(() => tx.collection('appConfig').doc('bankRoles').get())
         if (!validRoles(roles)) fail('ROLE_CONFIG_REQUIRED')
         const actor = identity.openid, collection = tx.collection('questions')
+        if (protectedMode && event.action === 'getCatalogAccess') return { ok: true, roles: ['editors', 'reviewers', 'publishers'].filter(role => roles[role].includes(actor)) }
         const required = { beginPagedDraft: 'editors', uploadPagedDraftPage: 'editors', getActivePagedDraft: 'editors', abandonPagedDraft: 'editors', cleanupPagedRelease: 'editors', sealPagedDraft: 'editors', reviewPagedDraft: 'reviewers', publishPagedDraft: 'publishers' }[event.action]
         if (required ? !roles[required].includes(actor) : !['editors', 'reviewers', 'publishers'].some(role => roles[role].includes(actor))) fail('NOT_CATALOG_ROLE')
+        if (protectedMode && event.action === 'getProtectedCatalogCurrent') {
+          const active = await readOptionalDoc(() => collection.doc('bank').get())
+          if (!active) return { ok: true, root: null, publicationRevision: 0 }
+          if (active.schemaVersion !== 4 || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_ACTIVE_RELEASE')
+          const policy = await readOptionalDoc(() => tx.collection('appConfig').doc('examAccessPolicy').get())
+          if (!accessPolicy.validPolicy(active.root, active.publicationRevision, policy)) fail('INVALID_ACCESS_POLICY')
+          return { ok: true, root: active.root, publicationRevision: active.publicationRevision }
+        }
         if (event.action === 'getActivePagedDraft') {
           const active = await readOptionalDoc(() => collection.doc('bank').get())
           if (!active || active.schemaVersion !== 4 || !paged.validRoot(active.root) || !Number.isSafeInteger(active.publicationRevision) || active.publicationRevision < 1) fail('INVALID_ACTIVE_RELEASE')
@@ -125,15 +138,26 @@ function createPagedWorkflow(db) {
           const draft = await readOptionalDoc(() => collection.doc(audit.approval.draftId).get())
           if (!validDraft(draft) || draft.state !== 'published' || draft.publicationRevision !== active.publicationRevision || !same(draft.root, active.root) ||
               draft.payloadDigest !== audit.approval.payloadDigest || draft.reviewedBy !== audit.approval.reviewedBy) fail('INVALID_PUBLISHED_DRAFT')
+          if (protectedMode) {
+            const policy = await readOptionalDoc(() => tx.collection('appConfig').doc('examAccessPolicy').get())
+            if (!draft.accessPolicy || !accessPolicy.validPolicy(active.root, active.publicationRevision, policy) ||
+                draft.accessPolicy.digest !== policy.digest || audit.approval.accessPolicyDigest !== policy.digest) fail('INVALID_ACCESS_POLICY')
+          } else if (draft.accessPolicy) fail('PROTECTED_DRAFT_REQUIRED')
           return { ok: true, draftId: draft.draftId, root: draft.root, evidence: draft.evidence,
+            ...(protectedMode ? { accessPolicy: draft.accessPolicy } : {}),
             basePublication: { revision: active.publicationRevision, releaseId: active.root.releaseId } }
         }
         if (event.action === 'beginPagedDraft') {
           if (!/^[A-Za-z0-9_-]{1,80}$/.test(event.submissionId || '')) fail('BAD_SUBMISSION_ID')
           if (event.rightsConfirmed !== true) fail('RIGHTS_CONFIRMATION_REQUIRED')
           if (!paged.validRoot(event.root) || !paged.validEvidence(event.root, event.evidence) || !validBase(event.basePublication)) fail('BAD_PAGED_CATALOG')
+          if (!protectedMode && event.accessRules !== undefined) fail('PROTECTED_MODE_REQUIRED')
+          // The additional policy read/write would exceed the 100-operation budget at 20 pages.
+          if (protectedMode && event.root.pages.length > 19) fail('PROTECTED_CATALOG_TOO_LARGE')
+          const nextRevision = (event.basePublication ? event.basePublication.revision : 0) + 1
+          const policy = protectedMode ? accessPolicy.buildPolicy(event.root, nextRevision, event.accessRules) : null
           const id = draftId(actor, event.submissionId), ref = collection.doc(id), existing = await readOptionalDoc(() => ref.get())
-          const payload = payloadDigest(event.root, event.evidence, event.basePublication)
+          const payload = payloadDigest(event.root, event.evidence, event.basePublication, policy)
           if (existing) {
             if (!validDraft(existing) || existing.payloadDigest !== payload) fail('DRAFT_OPERATION_CONFLICT')
             return { ok: true, draftId: id, state: existing.state, replayed: true }
@@ -146,7 +170,8 @@ function createPagedWorkflow(db) {
           const liveDrafts = (refs ? refs.liveDrafts : 0) + 1
           if (!Number.isSafeInteger(liveDrafts)) fail('PAGED_REFERENCES_INVALID')
           const draft = { kind: 'pagedCatalogDraft', draftId: id, submissionId: event.submissionId, createdBy: actor, createdAt: Date.now(), state: 'uploading',
-            root: event.root, evidence: event.evidence, basePublication: event.basePublication, rightsConfirmed: true, payloadDigest: payload, uploaded: event.root.pages.map(() => false),
+            root: event.root, evidence: event.evidence, basePublication: event.basePublication, rightsConfirmed: true, payloadDigest: payload,
+            ...(policy ? { accessPolicy: policy } : {}), uploaded: event.root.pages.map(() => false),
             uploadedCount: 0, identityCount: 0, identityBytes: 0, identityBuckets: [] }
           await refsRef.set({ data: refsValue(event.root.releaseId, liveDrafts) })
           await ref.set({ data: draft })
@@ -156,7 +181,19 @@ function createPagedWorkflow(db) {
         const ref = collection.doc(event.draftId), draft = await readOptionalDoc(() => ref.get())
         if (!draft) fail('DRAFT_NOT_FOUND')
         if (!validDraft(draft)) fail('INVALID_DRAFT')
-        if (event.action === 'getPagedDraft') return { ok: true, draft }
+        if (protectedMode !== !!draft.accessPolicy) fail('PROTECTED_DRAFT_REQUIRED')
+        if (protectedMode && draft.root.pages.length > 19) fail('PROTECTED_CATALOG_TOO_LARGE')
+        if (event.action === 'getPagedDraft') {
+          if (protectedMode && roles.reviewers.includes(actor) && actor !== draft.createdBy && draft.state === 'sealed') {
+            const vref = collection.doc(visitId(draft.draftId, actor)), prior = await readOptionalDoc(() => vref.get())
+            if (prior && (prior.kind !== 'pagedReviewVisits' || prior.payloadDigest !== draft.payloadDigest || prior.actor !== actor ||
+                !Array.isArray(prior.pages) || prior.pages.length !== draft.root.pages.length || prior.pages.some(x => typeof x !== 'boolean') ||
+                (prior.policyRead !== undefined && typeof prior.policyRead !== 'boolean'))) fail('INVALID_REVIEW_RECEIPT')
+            const pages = prior ? prior.pages.slice() : draft.root.pages.map(() => false)
+            await vref.set({ data: { kind: 'pagedReviewVisits', payloadDigest: draft.payloadDigest, actor, pages, policyRead: true } })
+          }
+          return { ok: true, draft }
+        }
         if (event.action === 'cleanupPagedRelease') {
           if (draft.createdBy !== actor || draft.state !== 'abandoned') fail('DRAFT_NOT_EDITABLE')
           const refsRef = collection.doc(refsId(draft.root.releaseId)), refs = await readOptionalDoc(() => refsRef.get())
@@ -260,9 +297,11 @@ function createPagedWorkflow(db) {
           if (roles.reviewers.includes(actor) && actor !== draft.createdBy && draft.state === 'sealed') {
             const vref = collection.doc(visitId(draft.draftId, actor)), prior = await readOptionalDoc(() => vref.get())
             if (prior && (prior.kind !== 'pagedReviewVisits' || prior.payloadDigest !== draft.payloadDigest || prior.actor !== actor ||
-                !Array.isArray(prior.pages) || prior.pages.length !== draft.root.pages.length || prior.pages.some(x => typeof x !== 'boolean'))) fail('INVALID_REVIEW_RECEIPT')
+                !Array.isArray(prior.pages) || prior.pages.length !== draft.root.pages.length || prior.pages.some(x => typeof x !== 'boolean') ||
+                (protectedMode && prior.policyRead !== undefined && typeof prior.policyRead !== 'boolean'))) fail('INVALID_REVIEW_RECEIPT')
             const pages = prior ? prior.pages.slice() : draft.root.pages.map(() => false); pages[index] = true
-            await vref.set({ data: { kind: 'pagedReviewVisits', payloadDigest: draft.payloadDigest, actor, pages } })
+            await vref.set({ data: { kind: 'pagedReviewVisits', payloadDigest: draft.payloadDigest, actor, pages,
+              ...(protectedMode ? { policyRead: !!(prior && prior.policyRead) } : {}) } })
           }
           return { ok: true, page: pub.page, sourcePage: priv.page }
         }
@@ -272,18 +311,22 @@ function createPagedWorkflow(db) {
             const prior = await readOptionalDoc(() => collection.doc(reviewId(draft.draftId)).get())
             if (prior && prior.kind === 'pagedReview' && prior.draftId === draft.draftId && prior.payloadDigest === draft.payloadDigest &&
                 prior.reviewedBy === actor && prior.decision === event.decision && prior.note === event.note &&
-                prior.sourceVerified === (event.decision === 'approve') && (event.decision !== 'approve' || event.sourceVerified === true)) return { ok: true, state: draft.state, replayed: true }
+                prior.sourceVerified === (event.decision === 'approve') && (event.decision !== 'approve' || event.sourceVerified === true) &&
+                (!protectedMode || event.decision !== 'approve' || (prior.policyVerified === true && event.policyVerified === true))) return { ok: true, state: draft.state, replayed: true }
             fail('REVIEW_ALREADY_DECIDED')
           }
           if (!['approve', 'reject'].includes(event.decision) || typeof event.note !== 'string' || !event.note.trim() || event.note.length > 2000) fail('BAD_REVIEW')
           if (event.decision === 'approve') {
             if (event.sourceVerified !== true) fail('SOURCE_REVIEW_REQUIRED')
+            if (protectedMode && event.policyVerified !== true) fail('POLICY_REVIEW_REQUIRED')
             const visits = await readOptionalDoc(() => collection.doc(visitId(draft.draftId, actor)).get())
             if (!visits || visits.kind !== 'pagedReviewVisits' || visits.actor !== actor || visits.payloadDigest !== draft.payloadDigest ||
-                !Array.isArray(visits.pages) || visits.pages.length !== draft.root.pages.length || visits.pages.some(x => x !== true)) fail('REVIEW_PAGES_REQUIRED')
+                !Array.isArray(visits.pages) || visits.pages.length !== draft.root.pages.length || visits.pages.some(x => x !== true) ||
+                (protectedMode && visits.policyRead !== true)) fail('REVIEW_PAGES_REQUIRED')
           }
           const receipt = { kind: 'pagedReview', draftId: draft.draftId, payloadDigest: draft.payloadDigest, reviewedBy: actor,
-            decision: event.decision, note: event.note, sourceVerified: event.decision === 'approve', reviewedAt: Date.now() }
+            decision: event.decision, note: event.note, sourceVerified: event.decision === 'approve',
+            ...(protectedMode ? { policyVerified: event.decision === 'approve' } : {}), reviewedAt: Date.now() }
           const receiptRef = collection.doc(reviewId(draft.draftId))
           if (await readOptionalDoc(() => receiptRef.get())) fail('REVIEW_RECEIPT_CONFLICT')
           await receiptRef.set({ data: receipt })
@@ -291,13 +334,27 @@ function createPagedWorkflow(db) {
           return { ok: true, state: event.decision === 'approve' ? 'approved' : 'rejected' }
         }
         if (event.action === 'publishPagedDraft') {
-          if (draft.state === 'published') return { ok: true, releaseId: draft.root.releaseId, publicationRevision: draft.publicationRevision, alreadyPublished: true }
+          if (draft.state === 'published') {
+            if (protectedMode) {
+              const active = await readOptionalDoc(() => collection.doc('bank').get())
+              const currentPolicy = await readOptionalDoc(() => tx.collection('appConfig').doc('examAccessPolicy').get())
+              if (!active || active.schemaVersion !== 4 || active.publicationRevision !== draft.publicationRevision ||
+                  !same(active.root, draft.root) || !accessPolicy.validPolicy(active.root, active.publicationRevision, currentPolicy) ||
+                  currentPolicy.digest !== draft.accessPolicy.digest) fail('STALE_BASE_RELEASE')
+            }
+            return { ok: true, releaseId: draft.root.releaseId, publicationRevision: draft.publicationRevision, alreadyPublished: true }
+          }
           if (draft.state !== 'approved' || !roles.reviewers.includes(draft.reviewedBy) || draft.reviewedBy === draft.createdBy) fail('DRAFT_NOT_APPROVED')
           const receipt = await readOptionalDoc(() => collection.doc(reviewId(draft.draftId)).get())
           if (!receipt || receipt.kind !== 'pagedReview' || receipt.draftId !== draft.draftId || receipt.payloadDigest !== draft.payloadDigest ||
-              receipt.reviewedBy !== draft.reviewedBy || receipt.decision !== 'approve' || receipt.sourceVerified !== true) fail('INVALID_REVIEW_RECEIPT')
+              receipt.reviewedBy !== draft.reviewedBy || receipt.decision !== 'approve' || receipt.sourceVerified !== true ||
+              (protectedMode && receipt.policyVerified !== true)) fail('INVALID_REVIEW_RECEIPT')
           const active = await readOptionalDoc(() => collection.doc('bank').get()); checkBase(active, draft.basePublication)
           if (!Number.isSafeInteger(event.expectedRevision) || event.expectedRevision !== (active ? active.publicationRevision : 0)) fail('STALE_BASE_RELEASE')
+          if (protectedMode) {
+            const currentPolicy = await readOptionalDoc(() => tx.collection('appConfig').doc('examAccessPolicy').get())
+            if ((!active && currentPolicy) || (active && (active.schemaVersion !== 4 || !accessPolicy.validPolicy(active.root, active.publicationRevision, currentPolicy)))) fail('INVALID_ACCESS_POLICY')
+          }
           // Both page kinds must still match the approved root inside the activation transaction.
           for (const descriptor of draft.root.pages) {
             const pub = await readOptionalDoc(() => collection.doc(paged.pageDocumentId(draft.root.releaseId, descriptor.index)).get())
@@ -311,10 +368,13 @@ function createPagedWorkflow(db) {
           await commitIdentities(collection, active, draft.root, identities)
           const revision = (active ? active.publicationRevision : 0) + 1
           if (!Number.isSafeInteger(revision)) fail('BAD_REVISION')
+          if (protectedMode && !accessPolicy.validPolicy(draft.root, revision, draft.accessPolicy)) fail('INVALID_ACCESS_POLICY')
           if (!existing) await releaseRef.set({ data: { kind: 'pagedQuestionBankRelease', root: draft.root, publishedAt: Date.now(), publishedBy: actor } })
           await collection.doc('bank_publication_' + revision).set({ data: { kind: 'bankPublication', publicationRevision: revision,
             releaseId: draft.root.releaseId, previousReleaseId: publishedId(active) || null, at: Date.now(), by: actor,
-            approval: { draftId: draft.draftId, reviewedBy: draft.reviewedBy, payloadDigest: draft.payloadDigest, sourceVerified: true } } })
+            approval: { draftId: draft.draftId, reviewedBy: draft.reviewedBy, payloadDigest: draft.payloadDigest, sourceVerified: true,
+              ...(protectedMode ? { accessPolicyDigest: draft.accessPolicy.digest } : {}) } } })
+          if (protectedMode) await tx.collection('appConfig').doc('examAccessPolicy').set({ data: draft.accessPolicy })
           await collection.doc('bank').set({ data: { _id: 'bank', schemaVersion: 4, root: draft.root, publicationRevision: revision,
             workflowVersion: 1, updatedAt: Date.now(), updatedBy: actor } })
           await ref.set({ data: { ...draft, state: 'published', publishedBy: actor, publishedAt: Date.now(), publicationRevision: revision } })

@@ -3,6 +3,10 @@ const app = getApp()
 const bank = require('../../utils/questions.js')
 const store = require('../../utils/store.js')
 const user = require('../../utils/user.js')
+const config = require('../../utils/config.js')
+const { runtimeProtectedReportLoader } = require('../../utils/protected-report-loader.js')
+const { runtimeProtectedPracticeClient } = require('../../utils/protected-practice-client.js')
+const { runtimeProtectedMarkerClient } = require('../../utils/protected-marker-client.js')
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -29,25 +33,44 @@ Page({
     list: [],
     total: 0,
     counts: { all: 0, stubborn: 0, due: 0, starred: 0 },
-    emptyTip: ''
+    emptyTip: '', protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true), protectedPracticeEnabled: (config.protectedPracticePreview === true || config.protectedCatalog === true),
+    protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
+    protectedWrongs: [], protectedHasMore: false, protectedTab: 'all', protectedCounts: {}, protectedMarkerBusy: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false
   },
 
   onLoad() {
+    this._protectedMarkers = runtimeProtectedMarkerClient()
     this.setData({ subjects: bank.getSubjects() })
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true)) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
   },
 
   onShow() {
-    user.whenReady(() => this.refresh())
+    if ((config.protectedRecordsPreview === true || config.protectedCatalog === true) && !this._protectedLoader) { this._protectedLoader = runtimeProtectedReportLoader(); this._protectedReader = runtimeProtectedPracticeClient() }
+    this.setData({ protectedMode: config.protectedCatalog === true, protectedEnabled: (config.protectedRecordsPreview === true || config.protectedCatalog === true),
+      protectedPracticeEnabled: (config.protectedPracticePreview === true || config.protectedCatalog === true) })
+    this._visible = true; const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
+    user.whenReady(() => { if (this._visible && generation === this._protectedGeneration) { this.refresh(); this.refreshProtected() } })
   },
 
+  onHide() {
+    this._visible = false; this._markerOperation = (this._markerOperation || 0) + 1; this._protectedGeneration = (this._protectedGeneration || 0) + 1; this._questionGeneration = (this._questionGeneration || 0) + 1
+    this._protectedContext = null; this._protectedRows = []; this.setData({ protectedMarkerBusy: false, protectedBusy: false, protectedLoaded: false, protectedError: '', protectedWrongCount: 0,
+      protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false })
+  },
+  onUnload() { this.onHide() },
+
   onPullDownRefresh() {
-    user.whenReady(() => this.refresh())
+    user.whenReady(() => { this.refresh(); this.refreshProtected() })
     wx.stopPullDownRefresh()
   },
 
   /* ---------------- 数据 ---------------- */
 
   refresh() {
+    if (config.protectedCatalog === true) {
+      this.setData({ list: [], total: 0, counts: { all: 0, stubborn: 0, due: 0, starred: 0 }, subjects: [], subject: '', emptyTip: '' })
+      return
+    }
     const now = Date.now()
     const subject = store.getCurrentSubject()
     const records = store.getRecords()
@@ -75,6 +98,95 @@ Page({
       counts,
       tabs: TABS.map((t) => ({ key: t.key, label: t.label, count: counts[t.key] }))
     })
+  },
+
+  async refreshProtected() {
+    if ((config.protectedRecordsPreview !== true && config.protectedCatalog !== true) || !this._visible || !this._protectedLoader) return
+    const generation = this._protectedGeneration = (this._protectedGeneration || 0) + 1
+    this._questionGeneration = (this._questionGeneration || 0) + 1
+    this._protectedContext = null; this._protectedRows = []
+    this.setData({ protectedBusy: true, protectedLoaded: false, protectedError: '', protectedWrongCount: 0, protectedWrongs: [], protectedHasMore: false,
+      protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false })
+    try {
+      const ctx = this._protectedLoader.capture(), report = await this._protectedLoader.load(ctx)
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      this._protectedContext = ctx
+      this._protectedRows = report.questions.filter(item => item.wrong > 0 || item.starred || item.mastered).map((item, index) => ({ ...item, label: `题目 ${index + 1}` }))
+      this._protectedRevision = report.markerRevision; this._protectedRelease = { releaseId: report.releaseId, publicationRevision: report.publicationRevision }
+      this._protectedLimit = 20; this._renderProtected()
+      this.setData({ protectedBusy: false, protectedLoaded: true, protectedWrongCount: report.wrongs.length,
+        protectedCounts: { all: this._protectedRows.filter(item => item.wrong && !item.mastered).length,
+          due: this._protectedRows.filter(item => item.due).length, starred: this._protectedRows.filter(item => item.starred).length,
+          mastered: this._protectedRows.filter(item => item.mastered).length } })
+    } catch (e) {
+      if (this._visible && generation === this._protectedGeneration) this.setData({ protectedBusy: false, protectedLoaded: false,
+        protectedError: e.code === 'NO_TOKEN' ? '登录后可查看受保护错题记录。' : e.code === 'STALE_CONTEXT' ? '账号或考试已切换，请重新载入。' : '受保护学习记录读取失败，请联网后重试。' })
+    }
+  },
+  _invalidateProtected() {
+    this._protectedContext = null; this._protectedRows = []
+    this.setData({ protectedBusy: false, protectedLoaded: false, protectedError: '账号或考试已切换，请重新载入。', protectedWrongCount: 0,
+      protectedWrongs: [], protectedHasMore: false, protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false })
+  },
+  _renderProtected() {
+    const tab = this.data.protectedTab
+    const rows = this._protectedRows.filter(item => tab === 'due' ? item.due : tab === 'starred' ? item.starred : tab === 'mastered' ? item.mastered : item.wrong && !item.mastered)
+    this.setData({ protectedWrongs: rows.slice(0, this._protectedLimit), protectedHasMore: rows.length > this._protectedLimit })
+  },
+  protectedTabChange(e) {
+    const tab = e.currentTarget.dataset.tab
+    if (!['all', 'due', 'starred', 'mastered'].includes(tab)) return
+    this._protectedLimit = 20; this.setData({ protectedTab: tab }); this._renderProtected()
+  },
+  async setProtectedMarker(e) {
+    const ctx = this._protectedContext, field = e.currentTarget.dataset.field
+    const row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
+    if (!row || !ctx || !['starred', 'mastered'].includes(field) || this.data.protectedMarkerBusy || !this._visible) return
+    if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+    const generation = this._protectedGeneration, operation = this._markerOperation = (this._markerOperation || 0) + 1
+    const input = { examId: ctx.examId, questionId: row.questionId, field, value: !row[field], expectedRevision: this._protectedRevision,
+      ...this._protectedRelease, operationId: 'pm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) }
+    this.setData({ protectedMarkerBusy: true, protectedQuestionError: '' })
+    try {
+      await this._protectedMarkers.set(input, ctx.context, value => this._protectedLoader.current({ ...ctx, context: value }))
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      await this.refreshProtected()
+    } catch (err) {
+      if (!this._visible || generation !== this._protectedGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      await this.refreshProtected()
+      if (this._visible) this.setData({ protectedQuestionError: err.code === 'STATE_CONFLICT' ? '其他设备已修改，请核对最新状态后重试。' :
+        err.code === 'ENTITLEMENT_REQUIRED' ? '当前权限已失效，记录仍保留。' : '状态未确认，请核对最新状态后重试。' })
+    } finally { if (this._visible && operation === this._markerOperation) this.setData({ protectedMarkerBusy: false }) }
+  },
+  showMoreProtected() { if (!this._protectedContext || !this._protectedLoader.current(this._protectedContext)) { this.refreshProtected(); return }; this._protectedLimit += 20; this._renderProtected() },
+  async showProtectedQuestion(e) {
+    const ctx = this._protectedContext, row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
+    if (!row || !ctx || !this._protectedLoader.current(ctx) || !this._visible) { this.refreshProtected(); return }
+    const generation = this._protectedGeneration, request = this._questionGeneration = (this._questionGeneration || 0) + 1
+    this.setData({ protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: true })
+    try {
+      const result = await this._protectedReader.question(ctx.examId, row.questionId, ctx.context.identity)
+      if (!this._visible || generation !== this._protectedGeneration || request !== this._questionGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      this.setData({ protectedQuestion: { ...result.question, answerText: typeof bank.answerPlain === 'function' ? bank.answerPlain(result.question) : '',
+        updated: !!row.lastWrongVersion && result.question.versionId !== row.lastWrongVersion }, protectedQuestionBusy: false })
+    } catch (err) {
+      if (!this._visible || generation !== this._protectedGeneration || request !== this._questionGeneration) return
+      if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+      const message = err.code === 'ENTITLEMENT_REQUIRED' ? '当前没有有效权限，错题记录仍保留；续费后可查看题目。' :
+        err.code === 'QUESTION_UNAVAILABLE' ? '该题已不在当前题库，错题记录仍保留。' : '题目读取失败，请联网后重试。'
+      this.setData({ protectedQuestion: null, protectedQuestionBusy: false, protectedQuestionError: message })
+    }
+  },
+  closeProtectedQuestion() { this._questionGeneration = (this._questionGeneration || 0) + 1; this.setData({ protectedQuestion: null, protectedQuestionError: '', protectedQuestionBusy: false }) },
+  redoProtected(e) {
+    const ctx = this._protectedContext, row = (this._protectedRows || []).find(item => item.key === e.currentTarget.dataset.key)
+    if (!row || !ctx || (config.protectedPracticePreview !== true && config.protectedCatalog !== true)) return
+    if (!this._protectedLoader.current(ctx)) { this._invalidateProtected(); return }
+    wx.navigateTo({ url: '/pages/protected-practice/protected-practice?questionId=' + encodeURIComponent(row.questionId) })
   },
 
   _render(pool, dueSet) {
@@ -143,13 +255,16 @@ Page({
   },
 
   onSubjectChange(e) {
+    if (config.protectedCatalog === true) return
     const subject = e.currentTarget.dataset.subject || ''
     if (!subject) return // 已去掉「全部」
     store.setCurrentSubject(subject)
     this.refresh()
+    this.refreshProtected()
   },
 
   onStar(e) {
+    if (config.protectedCatalog === true) return
     const id = e.currentTarget.dataset.id
     const starred = store.toggleStar(id)
     wx.showToast({ title: starred ? '已收藏' : '已取消收藏', icon: 'none' })
@@ -158,6 +273,7 @@ Page({
 
   /** 标记为已掌握，移出错题本 */
   onMaster(e) {
+    if (config.protectedCatalog === true) return
     const id = e.currentTarget.dataset.id
     const self = this
     wx.showModal({
@@ -165,7 +281,7 @@ Page({
       content: '该题将从错题本移除，并进入长期复习队列',
       confirmText: '已掌握',
       success(res) {
-        if (!res.confirm) return
+        if (!res.confirm || config.protectedCatalog === true) return
         store.resetWrong(id)
         wx.showToast({ title: '已移出错题本', icon: 'none' })
         self.refresh()
@@ -175,11 +291,13 @@ Page({
 
   /** 单题重练 */
   onRedo(e) {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'single', ids: [e.currentTarget.dataset.id] })
   },
 
   /** 交给 AI 助教讲解 */
   onAi(e) {
+    if (config.protectedCatalog === true) return
     const id = e.currentTarget.dataset.id
     const q = bank.findQuestion(id)
     if (!q) return
@@ -190,6 +308,7 @@ Page({
 
   /** 全部错题重练 */
   redoAll() {
+    if (config.protectedCatalog === true) return
     if (!this.data.counts.all) {
       wx.showToast({ title: '错题本是空的', icon: 'none' })
       return
@@ -199,6 +318,7 @@ Page({
 
   /** 只练顽固错题 */
   redoStubborn() {
+    if (config.protectedCatalog === true) return
     const ids = this._ids((r) => r.wrong >= 2)
     if (!ids.length) {
       wx.showToast({ title: '暂无顽固错题', icon: 'none' })
@@ -209,6 +329,7 @@ Page({
 
   /** 只练到期复习——与「待复习」列表共用同一选择器 getDueRecords()，避免列表有题却提示无题 */
   redoDue() {
+    if (config.protectedCatalog === true) return
     const subject = store.getCurrentSubject()
     const ids = store
       .getDueRecords()
@@ -235,6 +356,7 @@ Page({
   },
 
   goPractice() {
+    if (config.protectedCatalog === true) return
     app.startPractice({ mode: 'random' })
   }
 })

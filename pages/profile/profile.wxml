@@ -137,10 +137,20 @@
 
   <!-- 入口 -->
   <view class="card menu">
+    <view class="menu-item" wx:if="{{commercePreview}}" bindtap="goExamPlans">
+      <text class="menu-icon mi-blue">学</text>
+      <text class="grow">考试套餐体验</text>
+      <text class="small muted">开发预览 ›</text>
+    </view>
     <view class="menu-item" wx:if="{{catalogAccess}}" bindtap="goCatalogAdmin">
       <text class="menu-icon mi-blue">题</text>
       <text class="grow">考试题库管理</text>
       <text class="small muted">编辑与审核 ›</text>
+    </view>
+    <view class="menu-item" wx:if="{{commerceAccess}}" bindtap="goCommerceAdmin">
+      <text class="menu-icon mi-blue">商</text>
+      <text class="grow">考试商品管理</text>
+      <text class="small muted">商品配置 ›</text>
     </view>
     <view class="menu-item" bindtap="goAnalysis">
       <text class="menu-icon mi-blue">报</text>

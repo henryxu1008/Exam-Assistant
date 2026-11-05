@@ -104,7 +104,7 @@
       </block>
     </view>
     <view hidden="{{activeTab !== 'draft'}}" class="section-group">
-    <view class="card section-card">
+    <view class="card section-card" wx:if="{{!protectedCatalog}}">
       <view class="title">提交题库草稿</view>
       <view class="ready-note" wx:if="{{ready}}">题库内容已通过本地检查，请填写提交 ID 并确认来源。</view>
       <view class="hint">导入内容是完整题库快照，会替换当前目录；已有发布时请先载入当前题库以绑定基线。</view>
@@ -117,10 +117,20 @@
       <button class="{{(busy || !canEdit || !ready || !rightsConfirmed) ? 'is-disabled' : ''}}" bindtap="onSubmit" disabled="{{busy || !canEdit || !ready || !rightsConfirmed}}">提交草稿</button>
     </view>
     <view class="card" wx:if="{{canEdit}}">
-      <view class="title">大题库文件导入</view>
-      <view class="hint">选择包含完整考试题库和逐题来源的 JSON 文件。导入会替换整个目录；上传完成后仍须逐页独立审核并发布。</view>
+      <view class="title">{{protectedCatalog ? '题库提交与访问方式' : '大题库文件导入'}}</view>
+      <view wx:if="{{protectedCatalog}}" class="hint">可先在题库编辑中检查内容，也可选择完整 JSON 文件；提交前请设置每个考试的访问方式。</view>
+      <view wx:else class="hint">选择包含完整考试题库和逐题来源的 JSON 文件。导入会替换整个目录；上传完成后仍须逐页独立审核并发布。</view>
       <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onChoosePagedFile" disabled="{{busy}}">选择并校验 JSON 文件</button>
       <text class="report" selectable="true">{{pagedReport}}</text>
+      <view wx:if="{{protectedCatalog && pagedReady}}" class="policy-box">
+        <view class="title">设置考试访问方式</view>
+        <view class="hint">请逐个选择免费或付费；价格在商品管理中设置，提交后须由独立审核人确认。</view>
+        <view wx:for="{{policyRows}}" wx:key="id" class="policy-row">
+          <text class="policy-name">{{item.name}}</text>
+          <button size="mini" class="choice {{item.access === 'free' ? 'selected' : ''}}" disabled="{{busy}}" data-id="{{item.id}}" data-access="free" bindtap="onPolicyChoice">免费</button>
+          <button size="mini" class="choice {{item.access === 'paid' ? 'selected' : ''}}" disabled="{{busy}}" data-id="{{item.id}}" data-access="paid" bindtap="onPolicyChoice">付费</button>
+        </view>
+      </view>
       <input disabled="{{busy}}" value="{{pagedSubmissionId}}" data-field="pagedSubmissionId" bindinput="onInput" placeholder="稳定提交 ID；断网后使用同一 ID 续传" />
       <checkbox-group data-field="pagedRights" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="rights" checked="{{pagedRights}}" />我已核对来源并确认具有发布权</label></checkbox-group>
       <button class="{{(busy || !pagedReady || !pagedRights) ? 'is-disabled' : ''}}" bindtap="onSubmitPaged" disabled="{{busy || !pagedReady || !pagedRights}}">分批上传并提交审核</button>
@@ -133,11 +143,16 @@
       <button class="{{(busy) ? 'is-disabled' : ''}}" wx:if="{{canEdit}}" bindtap="onCleanupPagedRelease" disabled="{{busy}}">清理已丢弃且无引用的题目暂存</button>
       <button class="{{(busy) ? 'is-disabled' : ''}}" bindtap="onReadDraft" disabled="{{busy}}">读取题目与来源证据</button>
       <text class="report" selectable="true">{{preview}}</text>
+      <view wx:if="{{policyRequired}}" class="policy-box">
+        <view class="title">考试访问方式</view>
+        <view wx:for="{{reviewPolicy}}" wx:key="id" class="policy-row"><text class="policy-name">{{item.name}}</text><text>{{item.label}}</text></view>
+        <checkbox-group data-field="policy" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="policy" checked="{{policyVerified}}" />我已核对所有考试的免费与付费设置</label></checkbox-group>
+      </view>
       <view wx:for="{{reviewItems}}" wx:key="id" class="question-row"><text class="report" selectable="true">{{item.text}}</text></view>
       <view class="row wrap" wx:if="{{preview}}"><button class="{{(reviewPage <= 1 || busy) ? 'is-disabled' : ''}}" size="mini" data-delta="-1" bindtap="onReviewPage" disabled="{{reviewPage <= 1 || busy}}">上一页</button><text>审核第 {{reviewPage}} / {{reviewPages}} 页</text><button class="{{(reviewPage >= reviewPages || busy) ? 'is-disabled' : ''}}" size="mini" data-delta="1" bindtap="onReviewPage" disabled="{{reviewPage >= reviewPages || busy}}">下一页</button></view>
       <checkbox-group data-field="sources" bindchange="onConfirm"><label><checkbox disabled="{{busy}}" value="sources" checked="{{sourceVerified}}" />我作为独立审核人已核验来源证据</label></checkbox-group>
       <input disabled="{{busy}}" value="{{note}}" data-field="note" bindinput="onInput" maxlength="2000" placeholder="审核结论（必填）" />
-      <view class="row"><button class="{{(busy || !canReview || !sourceVerified || !reviewAllSeen) ? 'is-disabled' : ''}}" data-decision="approve" bindtap="onReview" disabled="{{busy || !canReview || !sourceVerified || !reviewAllSeen}}">批准</button><button class="{{(busy || !canReview) ? 'is-disabled' : ''}}" data-decision="reject" bindtap="onReview" disabled="{{busy || !canReview}}">拒绝</button></view>
+      <view class="row"><button class="{{(busy || !canReview || !sourceVerified || !reviewAllSeen || (policyRequired && !policyVerified)) ? 'is-disabled' : ''}}" data-decision="approve" bindtap="onReview" disabled="{{busy || !canReview || !sourceVerified || !reviewAllSeen || (policyRequired && !policyVerified)}}">批准</button><button class="{{(busy || !canReview) ? 'is-disabled' : ''}}" data-decision="reject" bindtap="onReview" disabled="{{busy || !canReview}}">拒绝</button></view>
     </view>
     <view class="card section-card" hidden="{{activeTab !== 'publish'}}">
       <view class="title">发布</view>

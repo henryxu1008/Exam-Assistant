@@ -9,6 +9,7 @@ const config = require('./config.js')
 const attemptOutbox = require('./attempt-outbox.js')
 const grading = require('../shared/grading-domain.js')
 const { createLocalRepository } = require('./local-repository.js')
+const { isStorageReadable } = require('./storage-status.js')
 const localStorageListeners = new Set()
 function effectiveLocalStatus(status) {
   return { ...status, ...(scopeMigrationError ? { state: 'read_error', readError: 'LOCAL_LEGACY_MIGRATION_FAILED', error: 'LOCAL_LEGACY_MIGRATION_FAILED' } : {}) }
@@ -393,7 +394,7 @@ function load(options = {}) {
   // 启动时恢复一次；之后由登录、前台和网络事件通过协调器继续增量恢复。
   if (!options.localOnly) {
     if (isLogged() && getPendingDelete(userScope)) deleteCloud()
-    else if (isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
+    else if (config.protectedCatalog !== true && isLogged() && (state.aiClearQueue || []).length) clearAiFromCloud()
     else if (!bootPulled && isLogged()) pullFromCloud()
   }
   return state
@@ -415,7 +416,7 @@ function flush() {
   // 待重试的云端删除：先补发，成功后再放行上传。
   // 离线清空后恢复网络时，靠这里把删除意图真正推到服务端（评审 P2 4425593448）。
   if (state && hasCloud() && isLogged() && getPendingDelete(userScope)) deleteCloud()
-  if (!dirty && state && (state.aiClearQueue || []).length) clearAiFromCloud()
+  if (config.protectedCatalog !== true && !dirty && state && (state.aiClearQueue || []).length) clearAiFromCloud()
   if (!state) return
   if (!dirty) {
     try { if (attemptOutbox.pending(state).length) pushToCloud() } catch (e) { dirty = true }
@@ -539,6 +540,19 @@ function isStaleContext(ctx) {
   return ctx.gen !== cloudSyncGeneration || ctx.scope !== userScope || getToken() !== ctx.token
 }
 
+/** 受保护作答不能越过本机待确认的清空操作。 */
+function captureProtectedSyncContext() {
+  load()
+  const ctx = captureSyncContext()
+  if (ctx.scope === 'anon' || !ctx.token || getPendingDelete(ctx.scope) || !Number.isSafeInteger(ctx.dataEpoch) || ctx.dataEpoch < 0 ||
+      !isStorageReadable(effectiveLocalStatus(localRepository.status(ctx.scope)))) throw Object.assign(new Error('PROTECTED_SYNC_UNAVAILABLE'), { code: 'PROTECTED_SYNC_UNAVAILABLE' })
+  return ctx
+}
+function isProtectedSyncContextCurrent(ctx) {
+  try { return !!ctx && !isStaleContext(ctx) && !getPendingDelete(ctx.scope) && Number(load().dataEpoch || 0) === ctx.dataEpoch &&
+    isStorageReadable(effectiveLocalStatus(localRepository.status(ctx.scope))) } catch (e) { return false }
+}
+
 /**
  * 初次按修订号校验全量基线，之后按服务端序号拉取新增事实。
  * 任一页失败、上下文失效或检查点写盘失败均不发布半批数据/游标。
@@ -563,6 +577,11 @@ function savedCursor(snapshot) {
 }
 
 function pullFromCloud(onDone, options = {}) {
+  if (config.protectedCatalog === true) {
+    const result = syncProtectedEpoch()
+    if (typeof onDone === 'function') result.then(onDone)
+    return result
+  }
   if (!hasCloud() || !isLogged()) return Promise.resolve(false)
   if (!state) load()
   if (getSessionOpenid() !== userScope) return Promise.resolve(false)
@@ -600,7 +619,7 @@ function pullFromCloud(onDone, options = {}) {
   let pages = 0
   let completed = false
   const allAttempts = []
-  const current = () => !isStaleContext(ctx) && conversationVersion === aiConversationVersion
+  const current = () => config.protectedCatalog !== true && !isStaleContext(ctx) && conversationVersion === aiConversationVersion
   const done = ok => {
     if (completed) return
     completed = true
@@ -852,6 +871,7 @@ function enqueueCloudWrite(task) {
 function syncPersistedState() {
   if (!state) return
   if (getPendingDelete(userScope)) deleteCloud()
+  else if (config.protectedCatalog === true) return
   else if ((state.aiClearQueue || []).length) clearAiFromCloud()
   else pushToCloud()
 }
@@ -862,6 +882,7 @@ const confirmedAliases = new Map()
 let lastPushFailure = null
 
 function pushToCloud() {
+  if (config.protectedCatalog === true) return
   if (!hasCloud() || !isLogged() || !state) return
   const openid = getSessionOpenid()
   if (!openid || userScope !== openid) return
@@ -903,7 +924,7 @@ function pushToCloud() {
   queuedPushes.add(signature)
   enqueueCloudWrite(async () => {
     try {
-      if (isStaleContext(ctx)) return
+      if (config.protectedCatalog === true || isStaleContext(ctx)) return
       // 排队期间前一请求可能已确认其中部分 ID；不依赖流水数组的位置。
       const currentOperations = new Map(attemptOutbox.pending(state).map(a => [a.id, a]))
       const unsent = operations.filter(a => currentOperations.has(a.id) && attemptDomain.canonical(a) === attemptDomain.canonical(currentOperations.get(a.id)))
@@ -912,7 +933,7 @@ function pushToCloud() {
       for (let i = 0; i < unsent.length; i += batchSize) batches.push(unsent.slice(i, i + batchSize))
       if (!batches.length) batches.push([])
       for (let index = 0; index < batches.length; index++) {
-        if (isStaleContext(ctx)) return
+        if (config.protectedCatalog === true || isStaleContext(ctx)) return
         const sent = batches[index], pagedBatch = sent.some(grading.isPaged)
         const result = await new Promise(resolve => {
           try {
@@ -923,7 +944,7 @@ function pushToCloud() {
               success: res => resolve(res && res.result), fail: () => resolve(null) })
           } catch (e) { resolve(null) }
         })
-        if (isStaleContext(ctx)) return
+        if (config.protectedCatalog === true || isStaleContext(ctx)) return
         const accepted = attemptOutbox.acknowledged(result, sent, ctx.dataEpoch)
         const receipts = accepted === null ? null : attemptDomain.validateReceipts(result, sent, accepted, state)
         if (receipts === null) {
@@ -982,9 +1003,42 @@ const runSync = createSyncCoordinator({
   pull: () => pullFromCloud(undefined, { force: true })
 })
 
+let activeProtectedEpoch = null
+function syncProtectedEpoch() {
+  if (config.protectedCatalog !== true || !hasCloud() || !isLogged() || getSessionOpenid() !== userScope || !state) return Promise.resolve(false)
+  if (getPendingDelete(userScope)) {
+    deleteCloud()
+    return cloudWriteChain.then(() => getPendingDelete(userScope) ? false : syncProtectedEpoch())
+  }
+  const ctx = captureSyncContext()
+  if (activeProtectedEpoch && !isStaleContext(activeProtectedEpoch.ctx)) return activeProtectedEpoch.promise
+  let resolveRun
+  const run = { ctx, promise: new Promise(resolve => { resolveRun = resolve }) }
+  activeProtectedEpoch = run
+  const finish = value => { if (activeProtectedEpoch === run) activeProtectedEpoch = null; resolveRun(value) }
+  try {
+    callCloud({ name: config.functions.studySync, data: { action: 'getProtectedEpoch', token: ctx.token },
+      success: response => {
+        if (config.protectedCatalog !== true || isStaleContext(ctx) || getPendingDelete(ctx.scope)) { finish(false); return }
+        const result = response && response.result, epoch = result && result.dataEpoch
+        if (!result || result.ok !== true || !Number.isSafeInteger(epoch) || epoch < ctx.dataEpoch || Number(state.dataEpoch || 0) !== ctx.dataEpoch) { finish(false); return }
+        if (epoch > ctx.dataEpoch) {
+          const next = getDefaultState(); next.dataEpoch = epoch
+          try { localRepository.write(ctx.scope, next) } catch (e) { finish(false); return }
+          state = next; cloudSyncGeneration++; practiceGeneration++; aiConversationVersion++; aiStudyScopeVersion++
+          setPendingPush(ctx.scope, false); dirty = false
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+          practiceRestoredListeners.forEach(listener => { try { listener() } catch (e) { console.error('[store] 练习恢复通知失败', e) } })
+          syncRestoredListeners.forEach(listener => { try { listener() } catch (e) { console.error('[store] 学习恢复通知失败', e) } })
+        }
+        finish(true)
+      }, fail: () => finish(false) })
+  } catch (e) { finish(false) }
+  return run.promise
+}
 function syncNow() {
   load()
-  return runSync()
+  return config.protectedCatalog === true ? syncProtectedEpoch() : runSync()
 }
 
 /** 删除云端学习档案与全部作答流水（对应「清空学习数据」）；本地已清空，无需回写 */
@@ -1019,6 +1073,7 @@ function deleteCloud() {
 const queuedAiClears = new Set()
 
 function clearAiFromCloud() {
+  if (config.protectedCatalog === true) return
   if (!hasCloud() || !isLogged() || !state || getPendingDelete(userScope) || getSessionOpenid() !== userScope) return
   const operation = (state.aiClearQueue || [])[0]
   if (!operation) return
@@ -1684,6 +1739,8 @@ module.exports = {
   exportLocalSnapshot: () => localRepository.read(userScope),
   rollbackLocalStorage,
   getPracticeContext,
+  captureProtectedSyncContext,
+  isProtectedSyncContextCurrent,
   isPracticeContextCurrent,
   onPracticeRestored,
   onSyncRestored,

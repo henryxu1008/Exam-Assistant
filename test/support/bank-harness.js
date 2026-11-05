@@ -17,6 +17,12 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
   const collections = {
     questions: new Map(),
     aiQuestionUsage: new Map(),
+    commerceProducts: new Map(),
+    commerceOrders: new Map(),
+    commerceGrants: new Map(),
+    commerceEvents: new Map(),
+    commerceTimelines: new Map(),
+    protectedQuestionStates: new Map(), protectedStateReceipts: new Map(), studyStats: new Map(),
     users: new Map([
       ['u1', { _id: 'u1', openid: 'normal-openid', token: USER_TOKEN, tokenAt: NOW }],
       ['u2', { _id: 'u2', openid: ADMIN_OPENID, token: ADMIN_TOKEN, tokenAt: NOW }],
@@ -125,11 +131,14 @@ function harness({ admins = [ADMIN_OPENID], env = {} } = {}) {
     return module.exports
   }
 
-  const main = loadModule(path.join(__dirname, '../../cloudfunctions/bankSync/index.js')).main
+  const bankModule = loadModule(path.join(__dirname, '../../cloudfunctions/bankSync/index.js'))
+  const main = bankModule.main
   return {
     main: main,
+    createMain: bankModule.createMain,
     documents: collections.questions,
     transactions,
+    collections,
     config: collections.appConfig,
     users: collections.users,
     db: db,

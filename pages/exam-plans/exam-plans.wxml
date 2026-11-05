@@ -1,0 +1,37 @@
+<view class="page">
+  <view wx:if="{{!available}}" class="card"><view class="title">功能尚未开放</view></view>
+  <block wx:else>
+    <view class="card notice"><view class="title">开发体验</view><view class="sub">当前不可真实购买。模拟体验使用示例套餐和示例题目，不会扣款、开通权益或保存学习记录。</view></view>
+    <block wx:if="{{!demo}}">
+      <view class="card">
+        <view class="title">当前考试套餐</view>
+        <view wx:if="{{!logged}}" class="sub">登录后可查看当前考试的配置和账号有效期。</view>
+        <button wx:if="{{!logged}}" bindtap="goLogin">登录</button>
+        <view wx:if="{{busy}}" class="sub">正在读取套餐与有效期…</view>
+        <view wx:if="{{error}}" class="sub error">{{error}}</view>
+        <button wx:if="{{error && logged}}" bindtap="refresh">重试</button>
+        <block wx:if="{{loaded}}">
+          <view class="sub">{{exam.name}} · {{subscription.active ? '有效至 ' + endText : '当前无有效套餐'}}</view>
+          <view wx:if="{{!plans.length}}" class="sub">当前考试暂无可展示的套餐。</view>
+          <view wx:for="{{plans}}" wx:key="id" class="plan"><view class="name">{{item.name}} · {{item.durationDays}} 天</view><view class="price">¥{{item.price}}</view></view>
+          <view class="sub">真实购买暂未开放，不会自动扣费。</view>
+        </block>
+      </view>
+      <view wx:if="{{demoAvailable}}" class="card"><view class="title">模拟购买与练习</view><view class="sub">体验期限接续、到期和退款后的练习变化。关闭页面后演示状态清除。</view><button class="btn" type="primary" bindtap="startDemo">开始模拟体验</button></view>
+      <view wx:if="{{protectedPreview && logged}}" class="card"><view class="title">受保护题库联调</view><view class="sub">需隔离环境的受保护服务和对应测试权益；模拟开通不会产生真实权限。</view><button bindtap="goProtectedPractice">开始在线练习</button></view>
+    </block>
+    <block wx:else>
+      <view class="card"><view class="title">示例考试 · 模拟套餐</view><view class="sub">所有内容仅用于演示，无实际交易。</view>
+        <view class="row"><button wx:for="{{[30,90,365]}}" wx:key="*this" size="mini" class="choice {{selected === item ? 'active' : ''}}" data-days="{{item}}" bindtap="selectTerm">{{item}} 天</button></view>
+        <view class="sub">{{demoActive ? '模拟有效至 ' + demoEnd : '尚未开通或模拟有效期已结束'}}</view>
+        <view wx:if="{{answerText && !answered}}" class="sub">{{answerText}}</view>
+        <button type="primary" bindtap="demoBuy">{{demoActive ? '模拟续费' : '模拟开通'}}</button>
+        <view class="row"><button size="mini" bindtap="demoExpire">模拟到期</button><button size="mini" bindtap="demoRefund">模拟退最近一笔</button></view>
+      </view>
+      <view class="card"><view class="title">示例练习</view><view wx:if="{{!demoActive}}" class="sub">模拟开通后可练习这道示例题。</view>
+        <block wx:else><view class="sub">学习新知识时，哪种方法更有助于巩固？</view><button class="btn" data-choice="A" bindtap="demoAnswer">A. 只看标题</button><button class="btn" data-choice="B" bindtap="demoAnswer">B. 理解后练习</button><view wx:if="{{answered}}" class="answer">{{answerText}}</view></block>
+      </view>
+      <button bindtap="exitDemo">结束模拟体验</button>
+    </block>
+  </block>
+</view>

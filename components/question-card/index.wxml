@@ -6,7 +6,7 @@
       <text class="tag tag-gray">{{chapterLabel || question.chapter}}</text>
       <text class="tag tag-orange">{{levelText}}</text>
     </view>
-    <view class="qc-star {{starred ? 'on' : ''}}" bindtap="onStar">{{starred ? '★' : '☆'}}</view>
+    <view wx:if="{{showTools}}" class="qc-star {{starred ? 'on' : ''}}" bindtap="onStar">{{starred ? '★' : '☆'}}</view>
   </view>
 
   <view class="qc-stem">
@@ -83,7 +83,7 @@
 
   <view wx:if="{{submitted}}" class="qc-result {{isRight ? 'right' : 'wrong'}}">
     <text class="qc-result-text">{{resultText}}</text>
-    <view class="qc-ai" bindtap="onAiTap">
+    <view wx:if="{{showTools}}" class="qc-ai" bindtap="onAiTap">
       <text class="qc-ai-logo">AI</text>
       <text>智能细致讲解</text>
       <text class="qc-ai-arrow">›</text>

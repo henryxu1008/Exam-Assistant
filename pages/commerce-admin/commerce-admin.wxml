@@ -1,0 +1,25 @@
+<view class="page">
+  <view class="card">
+    <view class="title">考试商品管理</view>
+    <view class="notice">收费功能尚未开放。这里保存商品配置，不会向用户发起扣款。</view>
+    <view wx:if="{{error}}" class="error">{{errors[error] || '操作未完成，请核对后重试。'}}（{{error}}）</view>
+    <view wx:if="{{message}}" class="success">{{message}}</view>
+    <view wx:if="{{allowed}}">
+      <view class="label">1. 选择已发布的考试</view>
+      <view wx:if="{{!exams.length}}" class="muted">当前没有已发布考试，请先发布题库。</view>
+      <button wx:for="{{exams}}" wx:key="id" size="mini" class="choice {{selected === item.id ? 'selected' : ''}}" disabled="{{busy}}" data-id="{{item.id}}" bindtap="onSelect">{{item.name}}</button>
+      <view wx:if="{{selected}}" class="label">2. 选择套餐期限</view>
+      <button wx:if="{{selected}}" wx:for="{{terms}}" wx:key="days" size="mini" class="choice {{termDays === item.days ? 'selected' : ''}}" disabled="{{busy}}" data-days="{{item.days}}" bindtap="onTerm">{{item.label}}</button>
+      <button wx:if="{{selected && !loaded}}" disabled="{{busy}}" bindtap="onDiscard">重新载入已选考试的商品</button>
+      <view wx:if="{{selected && loaded}}">
+        <view class="label">3. 配置 {{selectedName}} · {{termDays}} 天套餐</view>
+        <view class="muted">每期限日按 24 小时计算，续费由用户主动购买，不自动扣款。</view>
+        <view class="caption">商品名称</view><input value="{{name}}" data-field="name" bindinput="onInput" placeholder="例如：综合备考题库" />
+        <view class="caption">价格（元）</view><input type="digit" value="{{price}}" data-field="price" bindinput="onInput" placeholder="例如：99.00" />
+        <view class="row"><text>商品启用状态</text><switch checked="{{active}}" bindchange="onActive" disabled="{{busy}}" /></view>
+        <button type="primary" disabled="{{busy}}" bindtap="onSave">保存配置</button>
+        <button disabled="{{busy || !dirty}}" bindtap="onDiscard">放弃修改并重新载入</button>
+      </view>
+    </view>
+  </view>
+</view>

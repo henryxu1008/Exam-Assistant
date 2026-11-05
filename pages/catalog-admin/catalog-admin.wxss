@@ -47,3 +47,7 @@
 .catalog-admin .choice.selected { border-color: #6f8fec; background: #edf3ff; color: #2f5bd0; font-weight: 600; }
 .catalog-admin .hint { color: #68758b; font-size: 24rpx; line-height: 1.7; margin: 14rpx 0; }
 .catalog-admin .question-row { margin: 16rpx 0; padding: 20rpx; border: 1rpx solid #e4eaf3; border-radius: 16rpx; background: #fbfcff; overflow-wrap: anywhere; line-height: 1.6; }
+.catalog-admin .policy-box { margin: 22rpx 0; padding: 20rpx; border-radius: 14rpx; background: #f2f6ff; }
+.catalog-admin .policy-row { display: flex; align-items: center; gap: 12rpx; flex-wrap: wrap; margin-top: 12rpx; }
+.catalog-admin .policy-row button { flex: 0 0 auto; width: auto; margin: 6rpx 0; }
+.catalog-admin .policy-name { flex: 1; min-width: 160rpx; color: #18345d; }
